@@ -26,18 +26,21 @@
 namespace fs = std::filesystem;
 
 namespace {
+    bool is_starts_with_ic(std::string_view str, std::string_view prefix) {
+        if (str.size() < prefix.size()) return false;
+        return std::equal(prefix.begin(), prefix.end(), str.begin(), 
+            [](char a, char b) {
+                return std::tolower(static_cast<unsigned char>(a)) == 
+                       std::tolower(static_cast<unsigned char>(b));
+            });
+    }
+
     std::string capitalize(std::string_view s) {
         if (s.empty()) return {};
         std::string ret(s);
         ret[0] = static_cast<char>(std::toupper(ret[0]));
         if (ret == "Zram") return "ZRAM";
         return ret;
-    }
-
-    std::string to_lower_copy(std::string_view s) {
-        std::string out(s);
-        std::transform(out.begin(), out.end(), out.begin(), [](unsigned char c){ return std::tolower(c); });
-        return out;
     }
 }
 
@@ -70,10 +73,8 @@ std::string SystemInfo::get_model_name() {
     const std::array<std::string, 5> keys = {"model name", "hardware", "processor", "cpu", "Model"};
     
     while (std::getline(ss, line)) {
-        std::string lower_line = to_lower_copy(line);
         for (const auto& k : keys) {
-            std::string lk = to_lower_copy(k);
-            if (lower_line.rfind(lk, 0) == 0) {
+            if (is_starts_with_ic(line, k)) {
                 auto colon = line.find(':');
                 if (colon != std::string::npos) {
                     auto model = trim(line.substr(colon + 1));
@@ -161,7 +162,6 @@ bool SystemInfo::has_vmx() {
 }
 
 std::string SystemInfo::get_virtualization() {
-    
     if (fs::exists("/.dockerenv") || fs::exists("/run/.containerenv")) return "Docker";
     
     if (fs::exists("/proc/1/environ")) {
