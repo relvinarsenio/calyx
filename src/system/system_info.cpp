@@ -161,6 +161,19 @@ bool SystemInfo::has_vmx() {
 }
 
 std::string SystemInfo::get_virtualization() {
+    
+    if (fs::exists("/.dockerenv") || fs::exists("/run/.containerenv")) return "Docker";
+    
+    if (fs::exists("/proc/1/environ")) {
+        std::ifstream f("/proc/1/environ");
+        std::string env;
+        while (std::getline(f, env, '\0')) {
+            if (env.find("container=lxc") != std::string::npos) return "LXC";
+        }
+    }
+    
+    if (fs::exists("/proc/user_beancounters")) return "OpenVZ";
+
     auto get_cpuid_vendor = [](unsigned int leaf) -> std::string {
         #if defined(__x86_64__) || defined(__i386__)
         unsigned int eax, ebx, ecx, edx;
@@ -202,18 +215,6 @@ std::string SystemInfo::get_virtualization() {
         if (sig == "prl hyperv  ") return "Parallels";
         if (sig == "TCGTCGTCGTCG") return "QEMU";
     }
-
-    if (fs::exists("/.dockerenv") || fs::exists("/run/.containerenv")) return "Docker";
-    
-    if (fs::exists("/proc/1/environ")) {
-        std::ifstream f("/proc/1/environ");
-        std::string env;
-        while (std::getline(f, env, '\0')) {
-            if (env.find("container=lxc") != std::string::npos) return "LXC";
-        }
-    }
-    
-    if (fs::exists("/proc/user_beancounters")) return "OpenVZ";
 
     std::ifstream dmi("/sys/class/dmi/id/product_name");
     std::string product;
