@@ -16,6 +16,8 @@
 
 #include <curl/curl.h>
 
+#include <nlohmann/json.hpp>
+
 #include "include/cli_renderer.hpp"
 #include "include/color.hpp"
 #include "include/config.hpp"
@@ -29,6 +31,7 @@
 
 namespace fs = std::filesystem;
 using namespace std::chrono;
+using json = nlohmann::json;
 using namespace std::string_literals;
 
 class LibCurlContext {
@@ -133,58 +136,29 @@ void run_app(std::string_view app_path) {
     );
 
     try {
-        std::string json = http.get("http://ip-api.com/json");
+        std::string json_str = http.get("http://ip-api.com/json");
+        
+        auto data = json::parse(json_str);
 
-        auto extract = [&](std::string_view key) -> std::string {
-            std::string search_key = std::format("\"{}\"", key);
-            size_t pos = 0;
-            while (true) {
-                pos = json.find(search_key, pos);
-                if (pos == std::string::npos) return "";
-                pos = json.find(':', pos + search_key.size());
-                if (pos == std::string::npos) return "";
-                ++pos;
-                while (pos < json.size() && std::isspace(static_cast<unsigned char>(json[pos]))) ++pos;
-                if (pos >= json.size()) return "";
+        std::string org = data.value("as", "");
+        std::string city = data.value("city", "-");
+        std::string country = data.value("country", "-");
+        std::string region = data.value("regionName", "");
 
-                if (json[pos] == '"') {
-                    ++pos;
-                    std::string out;
-                    bool esc = false;
-                    for (size_t i = pos; i < json.size(); ++i) {
-                        char c = json[i];
-                        if (esc) {
-                            out.push_back(c);
-                            esc = false;
-                            continue;
-                        }
-                        if (c == '\\') { esc = true; continue; }
-                        if (c == '"') return out;
-                        out.push_back(c);
-                    }
-                    return "";
-                }
+        if (!org.empty()) {
+            std::println(" {:<20} : {}", "ISP", Color::colorize(org, Color::CYAN));
+        }
 
-                size_t end = pos;
-                while (end < json.size() && json[end] != ',' && json[end] != '}' && json[end] != '\n' && json[end] != '\r') ++end;
-                while (end > pos && std::isspace(static_cast<unsigned char>(json[end - 1]))) --end;
-                return json.substr(pos, end - pos);
-            }
-        };
-
-        std::string org = extract("as");
-        if (!org.empty()) std::println(" {:<20} : {}", "ISP", Color::colorize(org, Color::CYAN));
-
-        auto city = extract("city");
-        auto country = extract("country");
         std::println(" {:<20} : {} / {}", "Location",
-            Color::colorize(city.empty() ? "-" : city, Color::CYAN),
-            Color::colorize(country.empty() ? "-" : country, Color::CYAN));
+            Color::colorize(city, Color::CYAN),
+            Color::colorize(country, Color::CYAN));
 
-        std::string region = extract("regionName");
-        if (!region.empty()) std::println(" {:<20} : {}", "Region", Color::colorize(region, Color::CYAN));
-    } catch (const std::exception&) {
-        std::println(" {:<20} : {}", "IP Info", Color::colorize("Failed to fetch", Color::RED));
+        if (!region.empty()) {
+            std::println(" {:<20} : {}", "Region", Color::colorize(region, Color::CYAN));
+        }
+
+    } catch (const std::exception& e) {
+        std::println(" {:<20} : {}", "IP Info", Color::colorize("Failed to fetch info", Color::RED));
     }
 
     print_line();
