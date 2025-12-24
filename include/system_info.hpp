@@ -12,6 +12,18 @@ struct SwapEntry {
     bool is_zswap = false;
 };
 
+struct MemInfo {
+    uint64_t total;
+    uint64_t used;
+    uint64_t available;
+};
+
+struct DiskInfo {
+    uint64_t total;
+    uint64_t used;
+    uint64_t free;
+};
+
 class SystemInfo {
     static const std::string& get_cpuinfo_cache();
 public:
@@ -29,4 +41,7 @@ public:
     static std::string get_load_avg();
     
     static std::vector<SwapEntry> get_swaps();
+
+    static MemInfo get_memory_status();
+    static DiskInfo get_disk_usage(const std::string& mountpoint);
 };

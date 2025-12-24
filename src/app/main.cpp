@@ -11,11 +11,7 @@
 #include <vector>
 #include <cctype>
 
-#include <sys/statvfs.h>
-#include <sys/sysinfo.h>
-
 #include <curl/curl.h>
-
 #include <nlohmann/json.hpp>
 
 #include "include/cli_renderer.hpp"
@@ -80,41 +76,26 @@ void run_app(std::string_view app_path) {
     std::println(" {:<20} : {}", "System Uptime", Color::colorize(SystemInfo::get_uptime(), Color::CYAN));
     std::println(" {:<20} : {}", "Load Average", Color::colorize(SystemInfo::get_load_avg(), Color::YELLOW));
 
-    struct sysinfo si; sysinfo(&si);
-    uint64_t total_ram = si.totalram * si.mem_unit;
-    uint64_t total_swap = si.totalswap * si.mem_unit;
-    uint64_t used_swap = (si.totalswap - si.freeswap) * si.mem_unit;
-
-    uint64_t available_ram = 0;
-    std::ifstream meminfo("/proc/meminfo");
-    std::string line;
-    while(std::getline(meminfo, line)) {
-        if(line.starts_with("MemAvailable:")) {
-            std::stringstream ss(line);
-            std::string key, unit;
-            uint64_t val;
-            ss >> key >> val;
-            available_ram = val * 1024;
-            break;
-        }
-    }
-    if(available_ram == 0) available_ram = si.freeram * si.mem_unit;
-    uint64_t used_ram = total_ram - available_ram;
-
-    struct statvfs disk; statvfs("/", &disk);
-    uint64_t total_disk = disk.f_blocks * disk.f_frsize;
-    uint64_t used_disk = (disk.f_blocks - disk.f_bfree) * disk.f_frsize;
+    auto mem = SystemInfo::get_memory_status();
+    auto disk = SystemInfo::get_disk_usage("/");
 
     std::println("\n -> {}", Color::colorize("Storage & Memory", Color::BOLD));
-    std::println(" {:<20} : {} ({} Used)", "Total Disk", Color::colorize(format_bytes(total_disk), Color::YELLOW), Color::colorize(format_bytes(used_disk), Color::CYAN));
-    std::println(" {:<20} : {} ({} Used)", "Total Mem", Color::colorize(format_bytes(total_ram), Color::YELLOW), Color::colorize(format_bytes(used_ram), Color::CYAN));
+    std::println(" {:<20} : {} ({} Used)", "Total Disk", Color::colorize(format_bytes(disk.total), Color::YELLOW), Color::colorize(format_bytes(disk.used), Color::CYAN));
+    std::println(" {:<20} : {} ({} Used)", "Total Mem", Color::colorize(format_bytes(mem.total), Color::YELLOW), Color::colorize(format_bytes(mem.used), Color::CYAN));
     
-    if (total_swap > 0) {
+    auto swaps = SystemInfo::get_swaps();
+    if (!swaps.empty()) {
+        uint64_t total_swap = 0;
+        uint64_t used_swap = 0;
+        for (const auto& s : swaps) {
+            total_swap += s.size;
+            used_swap += s.used;
+        }
+
         std::println(" {:<20} : {} ({} Used)", "Total Swap", 
             Color::colorize(format_bytes(total_swap), Color::YELLOW), 
             Color::colorize(format_bytes(used_swap), Color::CYAN));
 
-        auto swaps = SystemInfo::get_swaps();
         for (const auto& s : swaps) {
             std::string label = "   -> " + s.type;
             
