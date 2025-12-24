@@ -152,35 +152,38 @@ void run_app(std::string_view app_path) {
     print_line();
 
     std::vector<DiskRunResult> disk_runs;
-    try {
-        disk_runs.reserve(3);
-        std::println("Running I/O Test (1GB File)...");
+    disk_runs.reserve(3);
+    std::println("Running I/O Test (1GB File)...");
 
-        for(int i=1; i<=3; ++i) {
-            std::string label = std::format(" I/O Speed (Run #{}) : ", i);
-            auto progress_cb = [&](std::size_t current, std::size_t total, std::string_view lbl) {
-                int percent = static_cast<int>((current * 100) / total);
-                std::print("\r{} [{:3}%] ", lbl, percent);
-                std::cout << std::flush;
-            };
-
-            auto run = DiskBenchmark::run_write_test(1024, label, progress_cb);
-            std::print("\r{}\r", std::string(label.size() + 6, ' '));
+    bool disk_error = false;
+    for(int i=1; i<=3; ++i) {
+        std::string label = std::format(" I/O Speed (Run #{}) : ", i);
+        auto progress_cb = [&](std::size_t current, std::size_t total, std::string_view lbl) {
+            int percent = static_cast<int>((current * 100) / total);
+            std::print("\r{} [{:3}%] ", lbl, percent);
             std::cout << std::flush;
-            
-            std::println("{}{}", run.label, Color::colorize(std::format("{:.1f} MB/s", run.mbps), Color::YELLOW));
-            
-            disk_runs.push_back(run);
-        }
+        };
 
+        auto result = DiskBenchmark::run_write_test(1024, label, progress_cb);
+        std::print("\r{}\r", std::string(label.size() + 6, ' '));
+        std::cout << std::flush;
+        
+        if (result) {
+            std::println("{}{}", result->label, Color::colorize(std::format("{:.1f} MB/s", result->mbps), Color::YELLOW));
+            disk_runs.push_back(*result);
+        } else {
+            std::println("\r{}[!] Disk Benchmark Skipped: {}{}", Color::RED, result.error(), Color::RESET);
+            disk_error = true;
+            break;
+        }
+    }
+
+    if (!disk_error) {
         double total_speed = 0.0;
         for (const auto& r : disk_runs) total_speed += r.mbps;
         double avg = disk_runs.empty() ? 0.0 : total_speed / static_cast<double>(disk_runs.size());
         
         std::println(" I/O Speed (Average) : {}", Color::colorize(std::format("{:.1f} MB/s", avg), Color::YELLOW));
-
-    } catch (const std::exception& e) {
-        std::println("\r{}[!] Disk Benchmark Skipped: {}{}", Color::RED, e.what(), Color::RESET);
     }
 
     print_line();

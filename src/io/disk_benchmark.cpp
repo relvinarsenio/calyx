@@ -12,6 +12,7 @@
 #include <stop_token>
 #include <system_error>
 #include <stdexcept>
+#include <format>
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -69,7 +70,7 @@ std::string get_error_message(int err, std::string_view operation) {
 
 }
 
-DiskRunResult DiskBenchmark::run_write_test(
+std::expected<DiskRunResult, std::string> DiskBenchmark::run_write_test(
     int size_mb,
     std::string_view label,
     const std::function<void(std::size_t, std::size_t, std::string_view)>& progress_cb,
@@ -97,7 +98,7 @@ DiskRunResult DiskBenchmark::run_write_test(
     }
 
     if (fd_raw < 0) {
-        throw std::runtime_error(get_error_message(errno, "create"));
+        return std::unexpected(get_error_message(errno, "create"));
     }
 
     FileDescriptor fd(fd_raw);
@@ -106,15 +107,18 @@ DiskRunResult DiskBenchmark::run_write_test(
     size_t blocks = (size_t(size_mb) * 1024 * 1024) / block_size;
 
     for (size_t i = 0; i < blocks; ++i) {
-        check_interrupted();
+        if (g_interrupted) {
+            return std::unexpected("Operation interrupted by user");
+        }
+        
         if (stop.stop_requested()) {
-            throw std::runtime_error("Operation interrupted by user request.");
+            return std::unexpected("Operation interrupted by user request.");
         }
         
         ssize_t written = ::write(fd.get(), buffer.get(), block_size);
         
         if (written != static_cast<ssize_t>(block_size)) {
-            throw std::runtime_error("Benchmark failed: " + get_error_message(errno, "write"));
+            return std::unexpected("Benchmark failed: " + get_error_message(errno, "write"));
         }
 
         if (progress_cb && i % 2 == 0) progress_cb(i + 1, blocks, label);
