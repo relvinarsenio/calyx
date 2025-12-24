@@ -113,36 +113,40 @@ void run_app(std::string_view app_path) {
         v6 ? Color::colorize("\u2713 Online", Color::GREEN) : Color::colorize("\u2717 Offline", Color::RED)
     );
 
-    try {
-        std::string json_str = http.get("https://speed.cloudflare.com/meta");
-        auto data = json::parse(json_str);
+    auto ip_res = http.get("https://speed.cloudflare.com/meta");
+    if (ip_res) {
+        try {
+            auto data = json::parse(*ip_res);
 
-        int asn = data.value("asn", 0); 
-        std::string org_name = data.value("asOrganization", ""); 
-        
-        std::string city = data.value("city", "-");
-        std::string country = data.value("country", "-");
-        std::string region = data.value("region", "");
+            int asn = data.value("asn", 0); 
+            std::string org_name = data.value("asOrganization", ""); 
+            
+            std::string city = data.value("city", "-");
+            std::string country = data.value("country", "-");
+            std::string region = data.value("region", "");
 
-        std::string display_isp = org_name;
-        if (asn != 0 && !org_name.empty()) {
-            display_isp = std::format("AS{} {}", asn, org_name);
+            std::string display_isp = org_name;
+            if (asn != 0 && !org_name.empty()) {
+                display_isp = std::format("AS{} {}", asn, org_name);
+            }
+
+            if (!display_isp.empty()) {
+                std::println(" {:<20} : {}", "ISP", Color::colorize(display_isp, Color::CYAN));
+            }
+
+            std::println(" {:<20} : {} / {}", "Location",
+                Color::colorize(city, Color::CYAN),
+                Color::colorize(country, Color::CYAN));
+
+            if (!region.empty()) {
+                std::println(" {:<20} : {}", "Region", Color::colorize(region, Color::CYAN));
+            }
+
+        } catch (...) {
+            std::println(" {:<20} : {}", "IP Info", Color::colorize("Parse Error", Color::RED));
         }
-
-        if (!display_isp.empty()) {
-            std::println(" {:<20} : {}", "ISP", Color::colorize(display_isp, Color::CYAN));
-        }
-
-        std::println(" {:<20} : {} / {}", "Location",
-            Color::colorize(city, Color::CYAN),
-            Color::colorize(country, Color::CYAN));
-
-        if (!region.empty()) {
-            std::println(" {:<20} : {}", "Region", Color::colorize(region, Color::CYAN));
-        }
-
-    } catch (const std::exception& e) {
-        std::println(" {:<20} : {}", "IP Info", Color::colorize("Failed to fetch info", Color::RED));
+    } else {
+        std::println(" {:<20} : {}", "IP Info", Color::colorize("Failed: " + ip_res.error(), Color::RED));
     }
 
     print_line();

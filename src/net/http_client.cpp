@@ -5,9 +5,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
-#include <memory>
-#include <stdexcept>
-#include <system_error>
+#include <curl/curl.h>
 
 namespace {
 
@@ -77,12 +75,11 @@ size_t HttpClient::write_file(void* ptr, size_t size, size_t nmemb, std::ofstrea
     }
 }
 
-std::string HttpClient::get(const std::string& url) {
+std::expected<std::string, std::string> HttpClient::get(const std::string& url) {
     curl_easy_reset(handle_.get());
 
     std::string response;
     CurlHeaders headers;
-    
     setup_browser_impersonation(handle_.get(), headers);
 
     curl_easy_setopt(handle_.get(), CURLOPT_URL, url.c_str());
@@ -104,22 +101,21 @@ std::string HttpClient::get(const std::string& url) {
     check_interrupted();
 
     if (res != CURLE_OK) {
-        throw std::runtime_error(std::format("Network error: {}", curl_easy_strerror(res)));
+        return std::unexpected(std::format("Network error: {}", curl_easy_strerror(res)));
     }
     return response;
 }
 
-void HttpClient::download(const std::string& url, const std::string& filepath) {
+std::expected<void, std::string> HttpClient::download(const std::string& url, const std::string& filepath) {
     curl_easy_reset(handle_.get());
 
     std::ofstream outfile(filepath, std::ios::binary);
     if (!outfile) {
-        throw std::runtime_error(std::format("Cannot save file '{}': {}", 
+        return std::unexpected(std::format("Cannot save file '{}': {}", 
             filepath, std::system_category().message(errno)));
     }
 
     CurlHeaders headers;
-    
     setup_browser_impersonation(handle_.get(), headers);
 
     curl_easy_setopt(handle_.get(), CURLOPT_URL, url.c_str());
@@ -142,19 +138,19 @@ void HttpClient::download(const std::string& url, const std::string& filepath) {
     if (res != CURLE_OK) {
         outfile.close();
         std::filesystem::remove(filepath);
-        throw std::runtime_error(std::format("Download failed: {}", curl_easy_strerror(res)));
+        return std::unexpected(std::format("Download failed: {}", curl_easy_strerror(res)));
     }
+    
+    return {}; 
 }
 
 bool HttpClient::check_connectivity(const std::string& host) {
     try {
         curl_easy_reset(handle_.get());
-        
         curl_easy_setopt(handle_.get(), CURLOPT_URL, ("http://" + host).c_str());
         curl_easy_setopt(handle_.get(), CURLOPT_NOBODY, 1L);
         curl_easy_setopt(handle_.get(), CURLOPT_TIMEOUT, 5L);
         curl_easy_setopt(handle_.get(), CURLOPT_USERAGENT, kUserAgent);
-        
         return curl_easy_perform(handle_.get()) == CURLE_OK;
     } catch (...) {
         return false;

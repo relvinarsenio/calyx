@@ -103,7 +103,11 @@ void SpeedTest::install() {
     std::println("Downloading Speedtest CLI...");
     std::string url = std::format("https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-linux-{}.tgz", get_arch());
 
-    http_.download(url, tgz_path_.string());
+    auto result = http_.download(url, tgz_path_.string());
+    if (!result) {
+        throw std::runtime_error(result.error());
+    }
+
     fs::create_directories(cli_dir_);
 
     std::vector<std::string> tar_args = {
