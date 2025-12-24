@@ -5,11 +5,9 @@
 #include <fstream>
 #include <iostream>
 #include <print>
-#include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
-#include <cctype>
 
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
@@ -28,7 +26,6 @@
 namespace fs = std::filesystem;
 using namespace std::chrono;
 using json = nlohmann::json;
-using namespace std::string_literals;
 
 class LibCurlContext {
 public:
@@ -118,7 +115,6 @@ void run_app(std::string_view app_path) {
 
     try {
         std::string json_str = http.get("http://ip-api.com/json");
-        
         auto data = json::parse(json_str);
 
         std::string org = data.value("as", "");

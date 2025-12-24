@@ -169,6 +169,14 @@ SpeedTestResult SpeedTest::run(const SpinnerCallback& spinner_cb) {
             while(std::getline(ss, line)) {
                 if (trim(line).empty()) continue;
 
+                if (line.find("Limit reached") != std::string::npos || 
+                    line.find("Too many requests") != std::string::npos) {
+                    entry.rate_limited = true;
+                    entry.error = "Rate Limit Reached";
+                    result.rate_limited = true;
+                    break;
+                }
+
                 try {
                     auto j = json::parse(line);
                     std::string type = j.value("type", "");
