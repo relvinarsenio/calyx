@@ -7,6 +7,8 @@
 #include <functional>
 #include <memory>
 #include <new>
+#include <ranges>
+#include <span>
 #include <stop_token>
 #include <system_error>
 
@@ -22,33 +24,23 @@ using namespace std::chrono;
 
 namespace {
 
-struct AlignedDeleter {
-    std::size_t alignment_;
+struct AlignedDelete {
+    std::size_t alignment;
 
-    explicit AlignedDeleter(std::size_t alignment) : alignment_(alignment) {}
-
-    void operator()(void* ptr) const {
-        ::operator delete(ptr, std::align_val_t(alignment_));
+    void operator()(void* ptr) const noexcept {
+        ::operator delete(ptr, std::align_val_t(alignment));
     }
 };
 
+std::unique_ptr<std::byte[], AlignedDelete> make_aligned_buffer(std::size_t size, std::size_t alignment) {
+    void* ptr = ::operator new(size, std::align_val_t(alignment));
+    return std::unique_ptr<std::byte[], AlignedDelete>(
+        static_cast<std::byte*>(ptr),
+        AlignedDelete{alignment}
+    );
 }
 
-class DiskBenchmarkBuffer {
-    std::unique_ptr<void, AlignedDeleter> buffer_;
-
-public:
-    explicit DiskBenchmarkBuffer(std::size_t size, std::size_t alignment)
-        : buffer_(nullptr, AlignedDeleter(alignment)) {
-        
-        void* ptr = ::operator new(size, std::align_val_t(alignment));
-        buffer_.reset(ptr);
-    }
-
-    [[nodiscard]] void* data() const noexcept {
-        return buffer_.get();
-    }
-};
+}
 
 DiskRunResult DiskBenchmark::run_write_test(
     int size_mb,
@@ -59,10 +51,9 @@ DiskRunResult DiskBenchmark::run_write_test(
     const std::string filename(Config::BENCH_FILENAME);
     const size_t block_size = Config::IO_BLOCK_SIZE;
 
-    DiskBenchmarkBuffer buffer(block_size, Config::IO_ALIGNMENT);
+    auto buffer = make_aligned_buffer(block_size, Config::IO_ALIGNMENT);
     
-    auto* byte_ptr = static_cast<std::byte*>(buffer.data());
-    std::fill(byte_ptr, byte_ptr + block_size, std::byte{0});
+    std::ranges::fill(std::span{buffer.get(), block_size}, std::byte{0});
 
     int flags = O_WRONLY | O_CREAT | O_TRUNC | O_EXCL;
     #ifdef O_DIRECT
@@ -93,7 +84,7 @@ DiskRunResult DiskBenchmark::run_write_test(
             throw std::runtime_error("Operation interrupted");
         }
         
-        ssize_t written = ::write(fd.get(), buffer.data(), block_size);
+        ssize_t written = ::write(fd.get(), buffer.get(), block_size);
         if (written != static_cast<ssize_t>(block_size)) {
             throw std::system_error(errno, std::generic_category(), "Disk write failed");
         }

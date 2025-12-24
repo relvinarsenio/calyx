@@ -1,6 +1,7 @@
 #include "include/speed_test.hpp"
 
 #include <cctype>
+#include <cstdlib>
 #include <filesystem>
 #include <format>
 #include <print>
@@ -65,19 +66,15 @@ std::string sanitize_error(std::string_view msg) {
 }
 
 SpeedTest::SpeedTest(HttpClient& h) : http_(h) {
-    fs::path temp_dir;
-    try {
-        temp_dir = fs::temp_directory_path();
-    } catch (...) {
-        temp_dir = "/tmp"; 
+    std::string temp_template = (fs::temp_directory_path() / "bench_XXXXXX").string();
+    
+    char* path_ptr = mkdtemp(temp_template.data());
+
+    if (!path_ptr) {
+        throw std::system_error(errno, std::generic_category(), "Failed to create secure temp dir");
     }
 
-    std::string unique_folder = std::format("bench_tools_{}", getpid());
-    base_dir_ = temp_dir / unique_folder;
-
-    std::error_code ec;
-    if (fs::exists(base_dir_, ec)) fs::remove_all(base_dir_, ec);
-    fs::create_directories(base_dir_);
+    base_dir_ = path_ptr;
 
     fs::path cli_rel(Config::SPEEDTEST_CLI_PATH);
     cli_dir_ = base_dir_ / cli_rel.parent_path();

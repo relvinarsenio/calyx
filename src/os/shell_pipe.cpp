@@ -12,17 +12,17 @@
 #include <system_error>
 #include <unistd.h>
 
-#include "include/interrupts.hpp"
-
 ShellPipe::ShellPipe(const std::vector<std::string>& args) {
     if (args.empty()) {
         throw std::invalid_argument("ShellPipe: Empty argument list");
     }
 
+    std::vector<std::string> args_copy = args;
     std::vector<char*> c_args;
-    c_args.reserve(args.size() + 1);
-    for (const auto& arg : args) {
-        c_args.push_back(const_cast<char*>(arg.c_str()));
+    c_args.reserve(args_copy.size() + 1);
+    
+    for (auto& arg : args_copy) {
+        c_args.push_back(arg.data());
     }
     c_args.push_back(nullptr);
 
