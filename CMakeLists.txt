@@ -39,12 +39,17 @@ endif()
 # --- 5. Flags (Optimasi & Security) ---
 if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(
-        -O3 -march=x86-64-v3 -flto=auto
+        -O3 -flto=auto
         -Wall -Wextra
-        -fstack-protector-strong -fcf-protection -fPIE
+        -fstack-protector-strong -fPIE
         -D_FORTIFY_SOURCE=2
         -Wformat -Werror=format-security
     )
+    
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
+        add_compile_options(-march=x86-64-v3 -fcf-protection)
+    endif()
+
     add_link_options(-Wl,-z,relro -Wl,-z,now -Wl,--gc-sections -pie)
 endif()
 
