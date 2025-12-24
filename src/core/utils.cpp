@@ -14,12 +14,8 @@
 namespace fs = std::filesystem;
 
 void print_line() {
-    std::println("{}", std::string(78, '-'));
+    std::println("{:-<78}", "");
     std::cout << std::flush;
-}
-
-[[nodiscard]] std::string trim(const std::string& str) {
-    return detail::trim_generic(str);
 }
 
 std::string format_bytes(std::uint64_t bytes) {
