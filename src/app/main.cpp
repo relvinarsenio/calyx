@@ -171,7 +171,6 @@ void run_app(std::string_view app_path) {
     } catch (const std::exception& e) {
         std::println("\r{}[!] Disk Benchmark Skipped: {}{}", Color::RED, e.what(), Color::RESET);
     }
-    // ---------------------------------------------
 
     print_line();
 
