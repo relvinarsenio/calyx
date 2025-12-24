@@ -166,4 +166,3 @@ bool HttpClient::check_connectivity(const std::string& host) {
         return false;
     }
 }
-}
