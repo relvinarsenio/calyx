@@ -6,6 +6,7 @@
 #include <format>
 #include <fstream>
 #include <curl/curl.h>
+#include <span>
 
 namespace {
 
@@ -58,8 +59,12 @@ HttpClient::HttpClient() : handle_(curl_easy_init(), curl_easy_cleanup) {
 
 size_t HttpClient::write_string(void* ptr, size_t size, size_t nmemb, std::string* s) noexcept {
     try {
-        s->append(static_cast<char*>(ptr), size * nmemb);
-        return size * nmemb;
+        size_t total_size = size * nmemb;
+        std::span<const char> data_view(static_cast<const char*>(ptr), total_size);
+        
+        s->append(data_view.begin(), data_view.end());
+        
+        return total_size;
     } catch (...) {
         return 0;
     }
@@ -67,9 +72,13 @@ size_t HttpClient::write_string(void* ptr, size_t size, size_t nmemb, std::strin
 
 size_t HttpClient::write_file(void* ptr, size_t size, size_t nmemb, std::ofstream* f) noexcept {
     try {
-        f->write(static_cast<char*>(ptr), size * nmemb);
+        size_t total_size = size * nmemb;
+        std::span<const char> data_view(static_cast<const char*>(ptr), total_size);
+        
+        f->write(data_view.data(), data_view.size());
+        
         if (!*f) return 0;
-        return size * nmemb;
+        return total_size;
     } catch (...) {
         return 0;
     }
