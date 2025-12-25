@@ -52,7 +52,7 @@ cmake --build build
 ```
 
 #### Option B: Using LLVM / Clang (Recommended for Performance)
-If you are using Clang, CMake will automatically enable **Full LTO (Link Time Optimization)** and detect the appropriate standard library.
+If you are using Clang, CMake will automatically enable **Thin LTO (Link Time Optimization)** and detect the appropriate standard library.
 
 If your system's `libstdc++` is outdated (lacks `<print>` support), CMake will automatically switch to the **LLVM Full Stack** (`libc++` + `lld`).
 
