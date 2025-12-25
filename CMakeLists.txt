@@ -43,8 +43,9 @@ if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         message(STATUS "⚠️ Clang: System libstdc++ does NOT support <print>.")
         message(STATUS "🔹 Switching to LLVM Full Stack (libc++, lld)...")
         
-        add_compile_options(-stdlib=libc++)
-        add_link_options(-stdlib=libc++ -fuse-ld=lld)
+        # Prepare flags for libc++
+        set(LIBCXX_FLAGS "-stdlib=libc++")
+        set(LIBCXX_LINKER_FLAGS "-stdlib=libc++" "-fuse-ld=lld")
 
         # Attempt to find LLVM library path relative to compiler
         get_filename_component(COMPILER_BIN ${CMAKE_CXX_COMPILER} REALPATH)
@@ -56,9 +57,24 @@ if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         if(EXISTS "${LLVM_LIB_DIR}/libc++.so")
             message(STATUS "   Using LLVM libraries from: ${LLVM_LIB_DIR}")
             link_directories(${LLVM_LIB_DIR})
-            add_link_options("-Wl,-rpath,${LLVM_LIB_DIR}")
-            # Ensure we link against the correct libraries
-            add_link_options(-lc++ -lc++abi)
+            list(APPEND LIBCXX_LINKER_FLAGS "-Wl,-rpath,${LLVM_LIB_DIR}" "-lc++" "-lc++abi")
+        endif()
+
+        # 2. Double Check: Apakah libc++ ini support <print>?
+        unset(CLANG_HAS_LIBCXX_PRINT CACHE)
+        set(CMAKE_REQUIRED_FLAGS "${LIBCXX_FLAGS}")
+        check_include_file_cxx("print" CLANG_HAS_LIBCXX_PRINT)
+        unset(CMAKE_REQUIRED_FLAGS)
+
+        if(CLANG_HAS_LIBCXX_PRINT)
+             message(STATUS "✅ Clang: LLVM libc++ supports <print>. Proceeding with Full Stack.")
+             add_compile_options(${LIBCXX_FLAGS})
+             add_link_options(${LIBCXX_LINKER_FLAGS})
+        else()
+             message(FATAL_ERROR "❌ CRITICAL ERROR: \n"
+             "   1. System libstdc++ does not support <print>.\n"
+             "   2. LLVM libc++ also does not support <print>.\n"
+             "   Solution: Please upgrade to Clang 20+ (with libc++ 20+) or GCC 14+.")
         endif()
     endif()
     
@@ -79,7 +95,7 @@ check_include_file_cxx("print" HAVE_STD_PRINT)
 
 if(NOT HAVE_STD_PRINT)
     message(FATAL_ERROR "❌ ERROR: Header <print> tidak ditemukan!\n"
-    "Harap gunakan GCC 14+ atau Clang 18+ dengan libc++ terbaru.")
+    "Harap gunakan GCC 14+ atau Clang 20+ dengan libc++ terbaru.")
 endif()
 
 # --- 6. Flags (Optimasi & Security) ---
@@ -92,16 +108,6 @@ if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         -Wformat -Werror=format-security
     )
     
-    # LTO Configuration
-    if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        message(STATUS "🚀 Clang: Enabling Full LTO")
-        add_compile_options(-flto=full)
-        add_link_options(-flto=full)
-    else()
-        add_compile_options(-flto=auto)
-        add_link_options(-flto=auto)
-    endif()
-    
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
         add_compile_options(-march=x86-64-v3 -fcf-protection)
     endif()
@@ -109,7 +115,17 @@ if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     add_link_options(-Wl,-z,relro -Wl,-z,now -Wl,--gc-sections -pie)
 endif()
 
-# --- 7. Build ---
+# --- 7. LTO / IPO Configuration ---
+include(CheckIPOSupported)
+check_ipo_supported(RESULT result OUTPUT output)
+if(result)
+    message(STATUS "🚀 IPO/LTO is supported: Enabling globally")
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
+else()
+    message(WARNING "⚠️ IPO/LTO is not supported: ${output}")
+endif()
+
+# --- 8. Build ---
 add_executable(bench
     src/app/main.cpp
     src/core/interrupts.cpp

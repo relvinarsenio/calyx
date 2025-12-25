@@ -17,7 +17,7 @@ Tidak seperti script bash biasa, Bench melakukan parsing langsung ke kernel inte
 Karena menggunakan standar C++ terbaru, pastikan environment kamu mendukung:
 
 * **OS**: Linux (RHEL, Oracle Linux, Ubuntu, Debian, dll).
-* **Compiler**: GCC 14+ atau Clang 18+ (Wajib support C++23 `<print>`).
+* **Compiler**: GCC 14+ atau Clang 20+ (Wajib support C++23 `<print>`).
 * **Build System**: CMake 3.20+.
 * **Dependencies**: `libcurl-devel` (RHEL/CentOS) atau `libcurl4-openssl-dev` (Debian/Ubuntu).
 
