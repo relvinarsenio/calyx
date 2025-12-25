@@ -4,6 +4,8 @@
 
 Unlike traditional bash scripts, Bench parses kernel interfaces (`/proc`, `/sys`) directly and utilizes native *system calls* to ensure precision and minimal overhead.
 
+Inspired by the legendary [bench.sh](https://github.com/teddysun/across/blob/master/bench.sh), rewritten in Modern C++ for maximum accuracy and zero-overhead performance
+
 ## 🔥 Key Features
 
 * **Hardcore Disk I/O Test**: Utilizes the `O_DIRECT` flag to bypass the RAM Cache (Page Cache), measuring the true raw speed of the disk.
