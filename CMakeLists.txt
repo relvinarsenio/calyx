@@ -140,3 +140,30 @@ target_include_directories(bench PRIVATE
 
 # Link ke CURL dan nlohmann_json
 target_link_libraries(bench PRIVATE CURL::libcurl nlohmann_json::nlohmann_json m)
+
+# --- 9. Install & Packaging (CPack) ---
+install(TARGETS bench DESTINATION bin)
+
+set(CPACK_PACKAGE_NAME "bench")
+set(CPACK_PACKAGE_VENDOR "Alfie Ardinata")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Modern Linux Server Benchmark Tool (C++23)")
+set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+set(CPACK_PACKAGE_CONTACT "Alfie Ardinata")
+set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
+set(CPACK_STRIP_FILES TRUE)
+
+# DEB Generator Settings
+set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Alfie Ardinata")
+set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON) # Auto-detect dependencies
+set(CPACK_DEBIAN_PACKAGE_SECTION "utils")
+set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
+
+# RPM Generator Settings
+set(CPACK_RPM_PACKAGE_LICENSE "Apache-2.0")
+set(CPACK_RPM_PACKAGE_GROUP "Applications/System")
+set(CPACK_RPM_PACKAGE_AUTOREQPROV ON) # Auto-detect dependencies
+
+# Generators to use
+set(CPACK_GENERATOR "TGZ;DEB;RPM")
+
+include(CPack)
