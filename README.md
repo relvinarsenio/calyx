@@ -1,49 +1,73 @@
 # Bench - Modern Linux Server Benchmark
 
-**Bench** adalah tool benchmark server Linux yang ditulis menggunakan **Modern C++ (C++23)**. Tool ini dirancang untuk memberikan metrik performa yang akurat, detail, dan aman (memory-safe).
+**Bench** is a high-performance Linux server benchmarking tool written in **Modern C++ (C++23)**. It is designed to provide accurate, detailed, and memory-safe performance metrics.
 
-Tidak seperti script bash biasa, Bench melakukan parsing langsung ke kernel interface (`/proc`, `/sys`) dan menggunakan *system calls* native untuk hasil yang presisi.
+Unlike traditional bash scripts, Bench parses kernel interfaces (`/proc`, `/sys`) directly and utilizes native *system calls* to ensure precision and minimal overhead.
 
-## 🔥 Fitur Unggulan
+## 🔥 Key Features
 
-* **Hardcore Disk I/O Test**: Menggunakan flag `O_DIRECT` untuk menembus RAM Cache (Page Cache) dan mengukur kecepatan disk yang sesungguhnya.
-* **Detailed System Info**: Mendeteksi hardware secara mendalam (CPU Model, Cache, Virtualization Type, Swap Types) tanpa bergantung pada tool eksternal seperti `lscpu`.
-* **Network Speedtest**: Integrasi dengan binary resmi Ookla Speedtest CLI (via JSON parsing) untuk data latensi, jitter, dan packet loss yang akurat.
-* **Memory Safe & Robust**: Ditulis dengan prinsip RAII, *Async-Signal-Safe*, dan penanganan error yang "optimistic" (tidak mudah crash).
-* **Modern Tech Stack**: Menggunakan fitur terbaru C++23 seperti `std::print`, `std::format`, dan `std::expected`.
+* **Hardcore Disk I/O Test**: Utilizes the `O_DIRECT` flag to bypass the RAM Cache (Page Cache), measuring the true raw speed of the disk.
+* **Detailed System Info**: Performs deep hardware detection (CPU Model, Cache, Virtualization Type, Swap Types) without relying on external tools like `lscpu`.
+* **Network Speedtest**: Integrates with the official Ookla Speedtest CLI (via JSON parsing) to provide accurate latency, jitter, and packet loss data.
+* **Memory Safe & Robust**: Built with RAII principles, *Async-Signal-Safe* handling, and optimistic error management to ensure stability.
+* **Modern Tech Stack**: Leverages the latest C++23 features such as `std::print`, `std::format`, and `std::expected`.
 
 ## 🛠️ Requirements
 
-Karena menggunakan standar C++ terbaru, pastikan environment kamu mendukung:
+Since this project utilizes the latest C++ standards, ensure your environment supports:
 
-* **OS**: Linux (RHEL, Oracle Linux, Ubuntu, Debian, dll).
-* **Compiler**: GCC 14+ atau Clang 20+ (Wajib support C++23 `<print>`).
+* **OS**: Linux (RHEL, Oracle Linux, Ubuntu, Debian, etc.).
+* **Compiler**: 
+    * **GCC 14+** (Native support for `<print>`).
+    * **Clang 20+** (Support via LLVM Full Stack: `libc++` + `lld`).
 * **Build System**: CMake 3.20+.
-* **Dependencies**: `libcurl-devel` (RHEL/CentOS) atau `libcurl4-openssl-dev` (Debian/Ubuntu).
+* **Dependencies**: `libcurl-devel` (RHEL/CentOS) or `libcurl4-openssl-dev` (Debian/Ubuntu).
 
-## 🚀 Cara Build & Install
+## 🚀 Build & Install
 
-1.  **Install Dependencies** (Contoh di Oracle Linux / RHEL):
-    ```bash
-    sudo dnf install cmake gcc-c++ libcurl-devel
-    ```
+### 1. Install Dependencies
 
-2.  **Clone & Build**:
-    ```bash
-    git clone https://github.com/relvinarsenio/bench.git
-    cd bench
-    mkdir build && cd build
-    cmake ..
-    make
-    ```
-    *Note: CMake akan otomatis mendownload library `nlohmann/json`.*
+**Ubuntu / Debian:**
+```bash
+sudo apt update
+sudo apt install cmake build-essential libcurl4-openssl-dev
+# Optional: Install LLVM Full Stack
+# sudo apt install clang-20 libc++-20-dev libc++abi-20-dev lld-20
+```
 
-3.  **Jalankan**:
-    ```bash
-    ./bench
-    ```
+**RHEL / Oracle Linux:**
+```bash
+sudo dnf install cmake gcc-c++ libcurl-devel
+```
 
-## 📊 Contoh Output
+### 2. Build Project
+
+Bench features an intelligent build system that automatically detects the optimal configuration for your compiler.
+
+#### Option A: Using GCC (Default)
+If you have GCC 14+ installed, simply run:
+```bash
+cmake -S . -B build
+cmake --build build
+```
+
+#### Option B: Using LLVM / Clang (Recommended for Performance)
+If you are using Clang, CMake will automatically enable **Full LTO (Link Time Optimization)** and detect the appropriate standard library.
+
+If your system's `libstdc++` is outdated (lacks `<print>` support), CMake will automatically switch to the **LLVM Full Stack** (`libc++` + `lld`).
+
+```bash
+# Example using Clang 20
+cmake -DCMAKE_CXX_COMPILER=clang++-20 -S . -B build
+cmake --build build
+```
+
+### 3. Run
+```bash
+./build/bench
+```
+
+## 📊 Example Output
 
 ```text
 ------------------------------------------------------------------------------
@@ -100,4 +124,4 @@ Downloading Speedtest CLI...
 
 ## ⚖️ License
 
-Project ini dilisensikan di bawah **Apache License 2.0**.
+This project is licensed under the **Apache License 2.0**.
