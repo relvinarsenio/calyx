@@ -69,21 +69,11 @@ cmake --build build --parallel
 ./build/bench
 ```
 
-## 📦 Install via Package (Recommended)
+## 📦 Run via pre-built binary (Recommended)
 
 For those who prefer not to compile from source, you can download the pre-built binaries directly from the [Release Page](https://github.com/relvinarsenio/bench/releases/):
 
-**Debian/Ubuntu:**
-```bash
-sudo dpkg -i bench_6.9.6_amd64.deb
-```
-
-**RHEL/Fedora/Oracle:**
-```bash
-sudo rpm -ivh bench-6.9.6-1.x86_64.rpm
-```
-
-**Another Distro:**
+**All Distro:**
 ```bash
 curl -L -o bench https://github.com/relvinarsenio/bench/releases/latest/download/bench && chmod +x bench && ./bench
 ```
