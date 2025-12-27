@@ -47,7 +47,7 @@ ShellPipe::ShellPipe(const std::vector<std::string>& args) {
 
         ::execvp(c_args[0], c_args.data());
 
-        const char* msg = "Error: execvp failed\n";
+        const char* msg = "Error: Failed to execute binary\n";
         [[maybe_unused]] auto val = ::write(STDOUT_FILENO, msg, std::strlen(msg));
         
         ::_exit(127);
