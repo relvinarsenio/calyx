@@ -14,10 +14,15 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # =============================================================================
-# LLVM Toolchain Detection (for Clang builds)
+# Pre-flight Check: Ensure 'xxd' is available
 # =============================================================================
-# Use full LLVM toolchain for consistent builds when using Clang compiler.
-# This applies to ALL targets: zlib, libcurl, and main project code.
+find_program(XXD_EXE xxd)
+if(NOT XXD_EXE)
+    message(FATAL_ERROR "Error: 'xxd' tool is required but not found. Please install xxd (usually part of vim-common or xxd package) to compile this project.")
+endif()
+
+# =============================================================================
+# LLVM Toolchain Detection (for Clang builds)
 # =============================================================================
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     find_program(LLVM_AR llvm-ar)
@@ -41,22 +46,17 @@ endif()
 # =============================================================================
 # Optimization flags (compiler-specific)
 # =============================================================================
-# Clang: -Oz (aggressive size optimization) - smaller binary
-# GCC:   -O3 (aggressive speed optimization) - faster code
-# =============================================================================
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
-    # Common flags for both compilers
     add_compile_options(
-        -ffunction-sections     # Put each function in its own section
-        -fdata-sections         # Put each data item in its own section
-        -fvisibility=hidden     # Hide symbols by default
+        -ffunction-sections
+        -fdata-sections
+        -fvisibility=hidden
     )
     add_link_options(
-        -Wl,--gc-sections       # Remove unused sections (linker garbage collection)
-        -Wl,--as-needed         # Only link libraries that are actually used
+        -Wl,--gc-sections
+        -Wl,--as-needed
     )
     
-    # Compiler-specific optimization level
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         add_compile_options(-Oz -flto)
         add_link_options(-Oz -flto)
@@ -68,16 +68,10 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release")
     endif()
 endif()
 
-# Add cmake modules path
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 # =============================================================================
 # 1. Smart Compiler Detection (GCC 14+ or Clang 20+)
-# =============================================================================
-# Tries in order:
-#   1. GCC 14+ with libstdc++ (if std::print works)
-#   2. Clang 20+ with libstdc++ (RHEL/Fedora)
-#   3. Clang 20+ with libc++ (Ubuntu/Alpine)
 # =============================================================================
 include(DetectCompiler)
 
@@ -87,14 +81,12 @@ include(DetectCompiler)
 include(FetchContent)
 include(StaticDeps)
 
-# Fetch nlohmann/json
 FetchContent_Declare(
     json
     URL https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz
 )
 FetchContent_MakeAvailable(json)
 
-# Fetch libcurl (uses OpenSSL and ZLIB built in StaticDeps.cmake)
 FetchContent_Declare(
     CURL
     URL https://github.com/curl/curl/releases/download/curl-8_17_0/curl-8.17.0.tar.xz
@@ -102,26 +94,22 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(CURL)
 
 # =============================================================================
-# 3. Compiler Configuration (based on DetectCompiler.cmake results)
+# 3. Compiler Configuration
 # =============================================================================
 add_link_options("-static")
 
 if(USE_LIBCXX)
-    # Clang with libc++ (Ubuntu/Alpine)
     message(STATUS "🔧 Mode: Clang ${DETECTED_COMPILER_VERSION} + libc++ (LLVM Full Stack)")
     add_compile_options("-stdlib=libc++")
     add_link_options("-fuse-ld=lld")
     add_link_options("-nostdlib++")
     
 elseif(USE_LIBSTDCXX AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    # Clang with libstdc++ (RHEL/Fedora)
     message(STATUS "🔧 Mode: Clang ${DETECTED_COMPILER_VERSION} + libstdc++ (GNU)")
     add_link_options("-fuse-ld=lld")
     
 elseif(USE_LIBSTDCXX AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-    # GCC with libstdc++
     message(STATUS "🔧 Mode: GCC ${DETECTED_COMPILER_VERSION} + libstdc++ (Full GNU)")
-    # GCC uses gold or bfd linker by default
 endif()
 
 # =============================================================================
@@ -155,6 +143,21 @@ target_include_directories(bench PRIVATE
 )
 
 # =============================================================================
+# Embedded Certificate Generation (Standard xxd)
+# =============================================================================
+file(DOWNLOAD "https://curl.se/ca/cacert.pem" "${CMAKE_BINARY_DIR}/cacert.pem")
+
+add_custom_command(
+    OUTPUT "${CMAKE_CURRENT_SOURCE_DIR}/include/embedded_cert.hpp"
+    COMMAND "${XXD_EXE}" -i cacert.pem "${CMAKE_CURRENT_SOURCE_DIR}/include/embedded_cert.hpp"
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+    DEPENDS "${CMAKE_BINARY_DIR}/cacert.pem"
+    COMMENT "Embedding CA Cert into header (Standard xxd)..."
+)
+
+add_custom_target(generate_cert DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/include/embedded_cert.hpp")
+add_dependencies(bench generate_cert)
+# =============================================================================
 # 6. Linking
 # =============================================================================
 target_link_libraries(bench 
@@ -168,18 +171,13 @@ target_link_libraries(bench
     m
 )
 
-# Add static C++ stdlib libs based on detected configuration
 if(USE_LIBCXX AND STL_STATIC_LIBS)
-    # Clang + libc++: link static libc++.a, libc++abi.a, etc.
     target_link_libraries(bench PRIVATE ${STL_STATIC_LIBS})
     
-    # On musl systems (Alpine), also need to link libc++abi explicitly
-    # and potentially compiler-rt builtins
     if(EXISTS "/usr/lib/libc++abi.a")
         target_link_libraries(bench PRIVATE /usr/lib/libc++abi.a)
     endif()
 elseif(USE_LIBSTDCXX)
-    # GCC or Clang + libstdc++: link static libstdc++
     target_link_libraries(bench PRIVATE -static-libstdc++ -static-libgcc)
 endif()
 
@@ -201,7 +199,6 @@ Features:
 - System Information Monitoring
 - Fully Static Build (No Dependencies Required)")
 
-# Debian package settings
 set(CPACK_GENERATOR "TGZ;DEB")
 set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Alfie Ardinata <alfieardinata@outlook.com>")
 set(CPACK_DEBIAN_PACKAGE_SECTION "utils")

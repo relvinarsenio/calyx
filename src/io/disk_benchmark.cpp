@@ -125,7 +125,10 @@ std::expected<DiskRunResult, std::string> DiskBenchmark::run_write_test(
     }
     if (progress_cb) progress_cb(blocks, blocks, label);
 
-    ::fdatasync(fd.get());
+    if (::fdatasync(fd.get()) == -1) {
+        return std::unexpected("Disk sync failed: " + get_error_message(errno, "sync"));
+    }
+
     auto end = high_resolution_clock::now();
     
     std::error_code ec; 

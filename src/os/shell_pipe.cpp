@@ -11,6 +11,7 @@
 #include <sys/wait.h>
 #include <system_error>
 #include <unistd.h>
+#include <signal.h>
 
 ShellPipe::ShellPipe(const std::vector<std::string>& args) {
     if (args.empty()) {
@@ -63,7 +64,8 @@ ShellPipe::~ShellPipe() {
         ::close(read_fd_);
     }
     if (pid_ != -1) {
-        ::waitpid(pid_, nullptr, WNOHANG);
+        ::kill(pid_, SIGTERM);
+        ::waitpid(pid_, nullptr, 0);
     }
 }
 

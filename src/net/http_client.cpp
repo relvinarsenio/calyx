@@ -1,6 +1,7 @@
 #include "include/http_client.hpp"
 #include "include/interrupts.hpp"
 #include "include/config.hpp"
+#include "include/embedded_cert.hpp"
 
 #include <cerrno>
 #include <filesystem>
@@ -13,23 +14,6 @@
 namespace {
 
 constexpr auto kUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-
-std::string get_ca_bundle_path() {
-    constexpr std::array paths = {
-        "/etc/ssl/certs/ca-certificates.crt",
-        "/etc/pki/tls/certs/ca-bundle.crt",
-        "/etc/ssl/ca-bundle.pem",
-        "/etc/pki/tls/cacert.pem",
-        "/etc/ssl/cert.pem"
-    };
-
-    for (const auto& path : paths) {
-        if (std::filesystem::exists(path)) {
-            return path;
-        }
-    }
-    return "";
-}
 
 struct CurlSlistDeleter {
     void operator()(struct curl_slist* list) const noexcept {
@@ -69,10 +53,11 @@ void setup_browser_impersonation(CURL* handle, CurlHeaders& headers) {
     curl_easy_setopt(handle, CURLOPT_REFERER, "https://www.google.com/");
     curl_easy_setopt(handle, CURLOPT_ACCEPT_ENCODING, "gzip, deflate, br");
 
-    static const std::string ca_path = get_ca_bundle_path();
-    if (!ca_path.empty()) {
-        curl_easy_setopt(handle, CURLOPT_CAINFO, ca_path.c_str());
-    }
+    struct curl_blob blob;
+    blob.data = (void*)cacert_pem;
+    blob.len = cacert_pem_len;
+    blob.flags = CURL_BLOB_COPY;
+    curl_easy_setopt(handle, CURLOPT_CAINFO_BLOB, &blob);
 }
 
 }
@@ -187,6 +172,7 @@ bool HttpClient::check_connectivity(const std::string& host) {
         curl_easy_setopt(handle_.get(), CURLOPT_TIMEOUT, 5L);
         curl_easy_setopt(handle_.get(), CURLOPT_USERAGENT, kUserAgent);
         curl_easy_setopt(handle_.get(), CURLOPT_NOSIGNAL, 1L);
+        curl_easy_setopt(handle_.get(), CURLOPT_FORBID_REUSE, 1L);
         return curl_easy_perform(handle_.get()) == CURLE_OK;
     } catch (...) {
         return false;

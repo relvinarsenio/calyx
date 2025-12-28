@@ -105,17 +105,18 @@ sudo apt install -y \
     lld-20 \
     libc++-20-dev \
     libc++abi-20-dev \
-    perl
+    perl \
+    xxd 
 
 # For older Ubuntu, add LLVM repo first:
-# wget https://apt.llvm.org/llvm.sh && chmod +x llvm.sh && sudo ./llvm.sh 20
+# wget https://apt.llvm.org/llvm.sh && chmod +x llvm.sh && sudo ./llvm.sh all 20
 ```
 
 #### Build
 
 ```bash
 # Configure (auto-detects compiler and stdlib)
-CC=clang-20 CXX=clang++-20 cmake -B build -DCMAKE_BUILD_TYPE=Release
+CC=clang-20 CXX=clang++-20 cmake -DCMAKE_BUILD_TYPE="Release" -S . -B build
 
 # Build
 cmake --build build -j$(nproc)
@@ -129,10 +130,10 @@ strip build/bench
 
 ```bash
 # Install build tools (GCC 14+ and libstdc++ have std::print support)
-sudo dnf install -y gcc-c++ cmake make perl
+sudo dnf install -y gcc-c++ cmake make perl xxd
 
 # Build (auto-detects GCC + libstdc++)
-cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake -DCMAKE_BUILD_TYPE="Release" -S . -B build
 cmake --build build -j$(nproc)
 
 # Strip and run
@@ -145,7 +146,7 @@ strip build/bench
 ```bash
 # Install build tools only
 apk add clang clang-extra-tools lld llvm libc++-static libc++-dev compiler-rt \
-    cmake make linux-headers perl bash
+    cmake make linux-headers perl bash xxd
 
 # Build (all libraries compiled from source)
 CC=clang CXX=clang++ cmake -B build -DCMAKE_BUILD_TYPE=Release
@@ -255,7 +256,7 @@ Downloading Speedtest CLI...
  Los Angeles, US        36.35 Mbps        28.20 Mbps        197.47 ms   0.00 %  
  Montreal, CA           42.75 Mbps        21.44 Mbps        273.46 ms   0.00 %  
  Paris, FR              72.95 Mbps        22.23 Mbps        184.56 ms   0.00 %  
- Amsterdam, NL          4.60 Gbps         644.83 Mbps       158.95 ms   0.00 %  
+ Amsterdam, NL          63.13 Mbps        20.63 Mbps        260.96 ms   0.00 %  
  Melbourne, AU          78.91 Mbps        21.80 Mbps        280.85 ms   0.00 %  
 ------------------------------------------------------------------------------
  Finished in        : 213 sec
