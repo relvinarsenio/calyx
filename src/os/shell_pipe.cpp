@@ -73,6 +73,8 @@ std::string ShellPipe::read_all() {
     std::string output;
     std::array<char, 4096> buffer;
     ssize_t bytes_read;
+    size_t total_read = 0;
+    const size_t MAX_OUTPUT_SIZE = 10 * 1024 * 1024;
 
     while (true) {
         if (g_interrupted) break;
@@ -80,7 +82,13 @@ std::string ShellPipe::read_all() {
         bytes_read = ::read(read_fd_, buffer.data(), buffer.size());
         
         if (bytes_read > 0) {
+            if (total_read + bytes_read > MAX_OUTPUT_SIZE) {
+                output += "\n[Output truncated (too large)]";
+                ::kill(pid_, SIGTERM);
+                break;
+            }
             output.append(buffer.data(), static_cast<std::size_t>(bytes_read));
+            total_read += static_cast<std::size_t>(bytes_read);
         } else if (bytes_read == 0) {
             break;
         } else {
