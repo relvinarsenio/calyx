@@ -34,6 +34,17 @@ struct AlignedDelete {
     }
 };
 
+struct FileCleaner {
+    std::filesystem::path path;
+
+    ~FileCleaner() {
+        std::error_code ec;
+        if (std::filesystem::exists(path, ec)) {
+            std::filesystem::remove(path, ec);
+        }
+    }
+};
+
 std::unique_ptr<std::byte[], AlignedDelete> make_aligned_buffer(std::size_t size, std::size_t alignment) {
     void* ptr = ::operator new(size, std::align_val_t(alignment));
     return std::unique_ptr<std::byte[], AlignedDelete>(
@@ -77,6 +88,8 @@ std::expected<DiskRunResult, std::string> DiskBenchmark::run_write_test(
     std::stop_token stop) {
     
     const std::string filename(Config::BENCH_FILENAME);
+    FileCleaner cleaner{filename};
+
     const size_t block_size = Config::IO_BLOCK_SIZE;
 
     auto buffer = make_aligned_buffer(block_size, Config::IO_ALIGNMENT);
@@ -131,9 +144,6 @@ std::expected<DiskRunResult, std::string> DiskBenchmark::run_write_test(
 
     auto end = high_resolution_clock::now();
     
-    std::error_code ec; 
-    std::filesystem::remove(filename, ec);
-
     duration<double> diff = end - start;
     double speed = diff.count() <= 0 ? 0.0 : static_cast<double>(size_mb) / diff.count();
     
