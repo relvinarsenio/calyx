@@ -126,6 +126,7 @@ if(NOT EXISTS "${OPENSSL_INSTALL_DIR}/lib/libssl.a" OR NOT EXISTS "${OPENSSL_INS
         COMMAND ./Configure 
             --prefix=${OPENSSL_INSTALL_DIR}
             --libdir=lib
+            --release
             CC=${OPENSSL_CC}
             AR=${OPENSSL_AR}
             RANLIB=${OPENSSL_RANLIB}
@@ -163,7 +164,6 @@ if(NOT EXISTS "${OPENSSL_INSTALL_DIR}/lib/libssl.a" OR NOT EXISTS "${OPENSSL_INS
             no-legacy
             # Keep only what we need for TLS 1.2/1.3
             linux-x86_64
-            -O3
         WORKING_DIRECTORY ${OPENSSL_SRC}
         RESULT_VARIABLE CONFIG_RESULT
         OUTPUT_QUIET
