@@ -164,9 +164,9 @@ std::string SystemInfo::get_cpu_cache() {
         return std::format("{} B", size);
     };
 
-    std::vector<std::string> caches = {"3", "2", "1", "0"};
+    constexpr std::array<std::string_view, 4> caches = {"3", "2", "1", "0"};
     for(const auto& idx : caches) {
-        std::string path = "/sys/devices/system/cpu/cpu0/cache/index" + idx + "/size";
+        std::string path = std::format("/sys/devices/system/cpu/cpu0/cache/index{}/size", idx);
         std::ifstream f(path);
         std::string size;
         if (f >> size) return parse_cache(size);
