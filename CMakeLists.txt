@@ -18,65 +18,101 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # =============================================================================
 find_program(XXD_EXE xxd)
 if(NOT XXD_EXE)
-    message(FATAL_ERROR "Error: 'xxd' tool is required but not found. Please install xxd (usually part of vim-common or xxd package) to compile this project.")
+    message(FATAL_ERROR "Error: 'xxd' tool is required but not found.")
 endif()
 
 # =============================================================================
-# LLVM Toolchain Detection (for Clang builds)
+# LLVM Full Stack Configuration
 # =============================================================================
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    find_program(LLVM_AR llvm-ar)
-    find_program(LLVM_RANLIB llvm-ranlib)
-    find_program(LLVM_NM llvm-nm)
-    
-    if(LLVM_AR)
-        set(CMAKE_AR "${LLVM_AR}" CACHE FILEPATH "Archiver" FORCE)
-        message(STATUS "🔧 Using llvm-ar: ${LLVM_AR}")
-    endif()
-    if(LLVM_RANLIB)
-        set(CMAKE_RANLIB "${LLVM_RANLIB}" CACHE FILEPATH "Ranlib" FORCE)
-        message(STATUS "🔧 Using llvm-ranlib: ${LLVM_RANLIB}")
-    endif()
-    if(LLVM_NM)
-        set(CMAKE_NM "${LLVM_NM}" CACHE FILEPATH "NM" FORCE)
-        message(STATUS "🔧 Using llvm-nm: ${LLVM_NM}")
-    endif()
+find_program(LLVM_AR llvm-ar REQUIRED)
+find_program(LLVM_RANLIB llvm-ranlib REQUIRED)
+find_program(LLVM_NM llvm-nm)
+find_program(LLD_LINKER ld.lld REQUIRED)
+
+set(CMAKE_AR "${LLVM_AR}" CACHE FILEPATH "Archiver" FORCE)
+set(CMAKE_RANLIB "${LLVM_RANLIB}" CACHE FILEPATH "Ranlib" FORCE)
+if(LLVM_NM)
+    set(CMAKE_NM "${LLVM_NM}" CACHE FILEPATH "NM" FORCE)
 endif()
 
+message(STATUS "🔧 LLVM Stack:")
+message(STATUS "   AR:     ${LLVM_AR}")
+message(STATUS "   RANLIB: ${LLVM_RANLIB}")
+message(STATUS "   LLD:    ${LLD_LINKER}")
+
 # =============================================================================
-# Optimization flags (compiler-specific)
+# Global Full LTO Configuration
+# =============================================================================
+# Libraries are built with -Oz for max performance (in StaticDeps.cmake)
+# Final binary is also built with -Oz for consistency
+# Full LTO merges everything for maximum optimization across all code
+set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -flto")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -flto")
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -flto -fuse-ld=lld")
+
+message(STATUS "🚀 LTO: Full LTO enabled (all code: -Oz)")
+
+# =============================================================================
+# Security Hardening Flags (ALWAYS ON)
+# =============================================================================
+add_compile_options(
+    # Buffer overflow protection
+    -D_FORTIFY_SOURCE=2
+    # Stack smashing protection
+    -fstack-protector-strong
+    # Prevent stack clash attacks
+    -fstack-clash-protection
+    # Format string vulnerability warnings
+    -Wformat
+    -Wformat-security
+)
+
+# Control-flow integrity (Intel CET) - x86_64 only
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
+    add_compile_options(-fcf-protection=full)
+endif()
+
+# Full RELRO - makes GOT read-only after relocation
+add_link_options(
+    -Wl,-z,relro
+    -Wl,-z,now
+    -Wl,-z,noexecstack
+)
+
+message(STATUS "🛡️  Security: FORTIFY_SOURCE + Stack Protector + CFI + Full RELRO")
+
+# =============================================================================
+# Optimization flags (Release)
 # =============================================================================
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
     add_compile_options(
+        # Maximum performance optimization
+        -Oz
+        # Dead code elimination
         -ffunction-sections
         -fdata-sections
+        # Symbol visibility
         -fvisibility=hidden
+        -fvisibility-inlines-hidden
     )
+    # Linker optimizations
     add_link_options(
         -Wl,--gc-sections
         -Wl,--as-needed
     )
-    
-    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        add_compile_options(-Oz -flto)
-        add_link_options(-Oz -flto)
-        message(STATUS "🚀 Optimization: Clang -Oz + LTO + GC sections (size optimized)")
-    else()
-        add_compile_options(-O3 -flto)
-        add_link_options(-O3 -flto)
-        message(STATUS "🚀 Optimization: GCC -O3 + LTO + GC sections (speed optimized)")
-    endif()
+    message(STATUS "🚀 Optimization: -Oz + Full LTO + GC sections (performance optimized)")
 endif()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 # =============================================================================
-# 1. Smart Compiler Detection (GCC 14+ or Clang 20+)
+# 1. Compiler Detection (Clang 20+ required)
 # =============================================================================
 include(DetectCompiler)
 
 # =============================================================================
-# 2. Configure Static Dependencies (ALL FROM SOURCE)
+# 2. Configure Static Dependencies (ALL FROM SOURCE with LTO)
 # =============================================================================
 include(FetchContent)
 include(StaticDeps)
@@ -93,30 +129,44 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(CURL)
 
-# =============================================================================
-# 3. Compiler Configuration
-# =============================================================================
-add_link_options("-static")
-
-if(USE_LIBCXX)
-    message(STATUS "🔧 Mode: Clang ${DETECTED_COMPILER_VERSION} + libc++ (LLVM Full Stack)")
-    add_compile_options("-stdlib=libc++")
-    add_link_options("-fuse-ld=lld")
-    add_link_options("-nostdlib++")
-    
-elseif(USE_LIBSTDCXX AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    message(STATUS "🔧 Mode: Clang ${DETECTED_COMPILER_VERSION} + libstdc++ (GNU)")
-    add_link_options("-fuse-ld=lld")
-    
-elseif(USE_LIBSTDCXX AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-    message(STATUS "🔧 Mode: GCC ${DETECTED_COMPILER_VERSION} + libstdc++ (Full GNU)")
+# Apply Full LTO with -Oz to libcurl for maximum performance
+if(TARGET libcurl_static)
+    target_compile_options(libcurl_static PRIVATE -flto -Oz)
 endif()
 
 # =============================================================================
-# 4. Optimization Flags
+# 3. Compiler Configuration (Clang + libc++ or libstdc++)
 # =============================================================================
-add_compile_options(-O3 -Wall -Wextra -fPIE)
+add_link_options("-static")
+add_link_options("-fuse-ld=lld")
 
+if(USE_LIBCXX)
+    message(STATUS "Mode: Clang ${DETECTED_COMPILER_VERSION} + libc++ (LLVM Full Stack)")
+    add_compile_options("-stdlib=libc++")
+    add_link_options("-nostdlib++")
+    
+elseif(USE_LIBSTDCXX)
+    message(STATUS "Mode: Clang ${DETECTED_COMPILER_VERSION} + libstdc++ (GNU) [fallback]")
+    add_link_options("-static-libstdc++")
+endif()
+
+# =============================================================================
+# 4. Warning Flags & Architecture
+# =============================================================================
+add_compile_options(
+    -Wall
+    -Wextra
+    -Wpedantic
+    -Wconversion
+    -Wsign-conversion
+    -Wcast-qual
+    -Wdouble-promotion
+    -Wshadow
+    -Wnull-dereference
+    -Wno-unused-parameter
+)
+
+# x86-64-v3: AVX, AVX2, BMI1, BMI2, F16C, FMA, LZCNT, MOVBE, XSAVE
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
     add_compile_options(-march=x86-64-v3)
 endif()
@@ -137,13 +187,18 @@ add_executable(bench
     src/ui/cli_renderer.cpp
 )
 
+# Apply ICF optimization only to the final executable
+set_target_properties(bench PROPERTIES
+    LINK_FLAGS "-Wl,--icf=all"
+)
+
 target_include_directories(bench PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
 # =============================================================================
-# Embedded Certificate Generation (Standard xxd)
+# Embedded Certificate Generation
 # =============================================================================
 file(DOWNLOAD "https://curl.se/ca/cacert.pem" "${CMAKE_BINARY_DIR}/cacert.pem")
 
@@ -152,11 +207,12 @@ add_custom_command(
     COMMAND "${XXD_EXE}" -i cacert.pem "${CMAKE_CURRENT_SOURCE_DIR}/include/embedded_cert.hpp"
     WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
     DEPENDS "${CMAKE_BINARY_DIR}/cacert.pem"
-    COMMENT "Embedding CA Cert into header (Standard xxd)..."
+    COMMENT "Embedding CA Cert into header..."
 )
 
 add_custom_target(generate_cert DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/include/embedded_cert.hpp")
 add_dependencies(bench generate_cert)
+
 # =============================================================================
 # 6. Linking
 # =============================================================================
@@ -177,8 +233,6 @@ if(USE_LIBCXX AND STL_STATIC_LIBS)
     if(EXISTS "/usr/lib/libc++abi.a")
         target_link_libraries(bench PRIVATE /usr/lib/libc++abi.a)
     endif()
-elseif(USE_LIBSTDCXX)
-    target_link_libraries(bench PRIVATE -static-libstdc++ -static-libgcc)
 endif()
 
 # =============================================================================

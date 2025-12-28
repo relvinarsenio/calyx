@@ -108,7 +108,7 @@ std::string ShellPipe::read_all() {
         bytes_read = ::read(read_fd_, buffer.data(), buffer.size());
         
         if (bytes_read > 0) {
-            if (total_read + bytes_read > MAX_OUTPUT_SIZE) {
+            if (total_read + static_cast<size_t>(bytes_read) > MAX_OUTPUT_SIZE) {
                 output += "\n[Output truncated (too large)]";
                 ::kill(pid_, SIGTERM);
                 break;

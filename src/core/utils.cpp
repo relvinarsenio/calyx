@@ -29,7 +29,7 @@ std::string format_bytes(std::uint64_t bytes) {
         d /= 1024;
         i++;
     }
-    return std::format("{:.1f} {}", d, units[i]);
+    return std::format("{:.1f} {}", d, units[static_cast<size_t>(i)]);
 }
 
 void cleanup_artifacts() {

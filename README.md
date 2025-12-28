@@ -33,41 +33,32 @@ curl -L -o bench https://github.com/relvinarsenio/bench/releases/latest/download
 
 ### Requirements
 
-| Component | Minimum Version | Notes |
-|-----------|-----------------|-------|
-| **OS** | Linux | Any distro (Ubuntu, Debian, RHEL, Alpine, etc.) |
-| **Compiler** | GCC 14+ or Clang 20+ | Auto-detected based on std::print support |
-| **CMake** | 3.24+ | Build system |
-| **Perl** | 5.x | Required for OpenSSL build |
-
-### Smart Compiler Detection 🧠
-
-The build system automatically detects the best compiler configuration:
-
-| Priority | Compiler | Stdlib | When Used |
-|----------|----------|--------|-----------|
-| 1️⃣ | GCC 14+ | libstdc++ | If std::print works (Fedora 41+, RHEL 10+) |
-| 2️⃣ | Clang 20+ | libc++ | Ubuntu/Alpine (libc++ has std::print) |
-| 3️⃣ | Clang 20+ | libstdc++ | RHEL/Fedora with updated libstdc++ |
-
-> **Note**: Ubuntu 24.04's libstdc++ lacks `<print>` support, so we use LLVM's libc++. RHEL/Fedora may have updated libstdc++ that works with Clang.
+| Component | Requirement | Notes |
+|-----------|-------------|-------|
+| **OS** | Linux | Any distro with Docker support |
+| **Docker** | 20.10+ | Required for building |
 
 ### All Dependencies Built from Source ✨
 
-This project is **fully reproducible** - all dependencies are automatically downloaded and built from source during CMake configuration:
+This project is **fully reproducible** - all dependencies are automatically downloaded and built from source during the Docker build:
 
-| Library | Version | Protocols/Features |
-|---------|---------|-------------------|
-| **zlib** | 1.3.1 | Compression |
-| **OpenSSL** | 3.6.0 | TLS/SSL (libs only, no binaries) |
-| **libcurl** | 8.17.0 | HTTP/HTTPS only (minimal build) |
-| **nlohmann/json** | 3.12.0 | JSON parsing |
+| Library | Version | Purpose | Optimization |
+|---------|---------|---------|--------------|
+| **zlib** | 1.3.1 | Compression | Full LTO + -Oz |
+| **LibreSSL** | 4.2.1 | TLS/SSL (libs only) | Full LTO + -Oz |
+| **libcurl** | 8.17.0 | HTTP/HTTPS only | Full LTO + -Oz |
+| **nlohmann/json** | 3.12.0 | JSON parsing | Header-only |
 
-> **Note**: libcurl is built with **minimal protocols** (HTTP/HTTPS only). FTP, GOPHER, TELNET, etc. are disabled to reduce binary size.
+> **Build Optimizations**:
+> - All libraries compiled with **Full LTO** and **-Oz** for maximum performance
+> - Final binary compiled with **-Oz** for size optimization
+> - libcurl built with **ultra-minimal features** (HTTP/HTTPS only, no FTP/LDAP/SMTP/etc.)
+> - LibreSSL built without apps/tests/netcat
+> - ICF (Identical Code Folding) enabled for the final binary
 
-### Option 1: Docker Build (Recommended) 🐳
+### Build with Docker 🐳
 
-The easiest way to build a fully static musl binary (~6.5MB):
+The Docker build creates a fully static musl binary (~2.6MB):
 
 ```bash
 # Clone the repo
@@ -82,7 +73,22 @@ chmod +x build-static.sh
 ./dist/bench
 ```
 
-Or manually with Docker:
+#### Build Options
+
+```bash
+# Normal build (uses cached Docker image if available)
+./build-static.sh
+
+# Fresh build (removes existing Docker image and rebuilds from scratch)
+./build-static.sh --fresh-build
+
+# Show help
+./build-static.sh --help
+```
+
+#### Manual Docker Commands
+
+If you prefer to run Docker commands manually:
 
 ```bash
 docker build -t bench-builder .
@@ -90,77 +96,6 @@ docker create --name extract bench-builder
 docker cp extract:/src/build/bench ./bench
 docker rm extract
 ./bench
-```
-
-### Option 2: Native Build (Ubuntu/Debian)
-
-#### Install Build Tools
-
-```bash
-# Install LLVM 20 (Ubuntu 24.04+)
-sudo apt update
-sudo apt install -y \
-    cmake \
-    clang-20 \
-    lld-20 \
-    libc++-20-dev \
-    libc++abi-20-dev \
-    perl \
-    xxd 
-
-# For older Ubuntu, add LLVM repo first:
-# wget https://apt.llvm.org/llvm.sh && chmod +x llvm.sh && sudo ./llvm.sh all 20
-```
-
-#### Build
-
-```bash
-# Configure (auto-detects compiler and stdlib)
-CC=clang-20 CXX=clang++-20 cmake -DCMAKE_BUILD_TYPE="Release" -S . -B build
-
-# Build
-cmake --build build -j$(nproc)
-
-# Strip and run (~7.4 MB with glibc)
-strip build/bench
-./build/bench
-```
-
-### Option 3: Native Build (RHEL/Fedora with GCC 14+)
-
-```bash
-# Install build tools (GCC 14+ and libstdc++ have std::print support)
-sudo dnf install -y gcc-c++ cmake make perl xxd
-
-# Install Glibc Static and libstdc++ static on CRB Repo (Example On Oracle Linux)
-sudo dnf install --enablerepo="ol10_codeready_builder" glibc-static libstdc++-static
-
-# Note: RHEL family distributions do not provide static libraries by default.
-
-# Build (auto-detects GCC + libstdc++)
-cmake -DCMAKE_BUILD_TYPE="Release" -S . -B build
-cmake --build build -j$(nproc)
-
-# Strip and run
-strip build/bench
-./build/bench
-```
-
-### Option 4: Native Build (Alpine Linux)
-
-```bash
-# Install build tools only
-apk add clang clang-extra-tools lld llvm libc++-static libc++-dev compiler-rt \
-    cmake make linux-headers perl bash xxd
-
-# Build (all libraries compiled from source)
-CC=clang CXX=clang++ cmake -B build -DCMAKE_BUILD_TYPE=Release
-
-cmake --build build -j$(nproc)
-
-# The binary is fully static (~6.5 MB with musl)
-strip build/bench
-./build/bench
 ```
 
 ---
@@ -173,8 +108,8 @@ bench/
 ├── Dockerfile              # Docker build for musl static binary
 ├── build-static.sh         # Helper script for Docker builds
 ├── cmake/
-│   ├── DetectCompiler.cmake # Auto-detect GCC 14+ or Clang 20+
-│   └── StaticDeps.cmake    # Builds ALL deps from source (zlib, openssl, curl, json)
+│   ├── DetectCompiler.cmake # Clang + libc++ detection
+│   └── StaticDeps.cmake    # Builds ALL deps from source with Full LTO
 ├── include/                # Header files
 │   ├── cli_renderer.hpp
 │   ├── config.hpp
@@ -195,20 +130,15 @@ bench/
 
 ### Build Process
 
-1. **CMake Configure** (~3-4 min first time):
-   - Detects compiler (GCC 14+ or Clang 20+) and stdlib
-   - Downloads zlib, OpenSSL, libcurl, nlohmann/json
-   - Builds OpenSSL libraries (no binaries, faster!)
-   - Configures all dependencies with minimal features
+1. **Docker Build** (~5-6 min first time):
+   - Uses Alpine Linux with **Clang + libc++ (Full LLVM Stack)**
+   - Downloads zlib, LibreSSL, libcurl, nlohmann/json
+   - Builds all libraries with **Full LTO + -Oz** for maximum performance
+   - Final binary compiled with **-Oz** for size optimization
+   - ICF (Identical Code Folding) enabled for further size reduction
+   - Compiles and links everything statically
 
-2. **CMake Build** (~1 min):
-   - Compiles zlib and libcurl
-   - Compiles application code
-   - Links everything statically
-
-3. **Result**: Single static executable
-   - **musl/Alpine**: ~6.5 MB (smallest)
-   - **glibc/Ubuntu**: ~7.4 MB
+2. **Result**: Single static executable (~2.6 MB with musl, stripped)
 
 ---
 
