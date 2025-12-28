@@ -67,24 +67,22 @@ ShellPipe::~ShellPipe() {
     }
 
     if (pid_ != -1) {
+        int status;
+        pid_t result = ::waitpid(pid_, &status, WNOHANG);
+
+        if (result == pid_) {
+            return;
+        }
+
         ::kill(pid_, SIGTERM);
         
         bool exited = false;
         for (int i = 0; i < 10; ++i) {
-            int status;
-            pid_t result = ::waitpid(pid_, &status, WNOHANG);
-            
-            if (result == pid_) {
+            result = ::waitpid(pid_, &status, WNOHANG);
+            if (result == pid_ || (result == -1 && errno != EINTR)) {
                 exited = true;
                 break;
             }
-            
-            if (result == -1) {
-                if (errno == EINTR) continue;
-                exited = true; 
-                break;
-            }
-            
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
 
@@ -110,7 +108,6 @@ std::string ShellPipe::read_all() {
         if (bytes_read > 0) {
             if (total_read + static_cast<size_t>(bytes_read) > MAX_OUTPUT_SIZE) {
                 output += "\n[Output truncated (too large)]";
-                ::kill(pid_, SIGTERM);
                 break;
             }
             output.append(buffer.data(), static_cast<std::size_t>(bytes_read));
@@ -125,10 +122,6 @@ std::string ShellPipe::read_all() {
             throw std::system_error(errno, std::generic_category(), "Failed to read from pipe");
         }
     }
-
-    int status;
-    ::waitpid(pid_, &status, 0);
-    pid_ = -1;
 
     return output;
 }

@@ -107,6 +107,7 @@ std::expected<DiskRunResult, std::string> DiskBenchmark::run_write_test(
          #ifdef O_DIRECT
          flags &= ~O_DIRECT;
          #endif
+         flags |= O_SYNC;
          fd_raw = ::open(filename.c_str(), flags, 0644);
     }
 
