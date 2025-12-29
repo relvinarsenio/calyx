@@ -38,8 +38,8 @@ show_help() {
     echo "  -h, --help       Show this help message"
 }
 
-for arg in "$@"; do
-    case $arg in
+while [[ $# -gt 0 ]]; do
+    case $1 in
         --fresh-build)
             FRESH_BUILD=true
             shift
@@ -49,7 +49,7 @@ for arg in "$@"; do
             exit 0
             ;;
         *)
-            echo "Unknown option: $arg"
+            echo "Unknown option: $1"
             show_help
             exit 1
             ;;

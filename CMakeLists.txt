@@ -43,9 +43,6 @@ message(STATUS "   LLD:    ${LLD_LINKER}")
 # =============================================================================
 # Global Full LTO Configuration
 # =============================================================================
-# Libraries are built with -Oz for max performance (in StaticDeps.cmake)
-# Final binary is also built with -Oz for consistency
-# Full LTO merges everything for maximum optimization across all code
 set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -flto")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -flto")
@@ -57,23 +54,17 @@ message(STATUS "🚀 LTO: Full LTO enabled (all code: -Oz)")
 # Security Hardening Flags (ALWAYS ON)
 # =============================================================================
 add_compile_options(
-    # Buffer overflow protection
     -D_FORTIFY_SOURCE=2
-    # Stack smashing protection
     -fstack-protector-strong
-    # Prevent stack clash attacks
     -fstack-clash-protection
-    # Format string vulnerability warnings
     -Wformat
     -Wformat-security
 )
 
-# Control-flow integrity (Intel CET) - x86_64 only
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
     add_compile_options(-fcf-protection=full)
 endif()
 
-# Full RELRO - makes GOT read-only after relocation
 add_link_options(
     -Wl,-z,relro
     -Wl,-z,now
@@ -87,32 +78,28 @@ message(STATUS "🛡️  Security: FORTIFY_SOURCE + Stack Protector + CFI + Full
 # =============================================================================
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
     add_compile_options(
-        # Maximum performance optimization
         -Oz
-        # Dead code elimination
         -ffunction-sections
         -fdata-sections
-        # Symbol visibility
         -fvisibility=hidden
         -fvisibility-inlines-hidden
     )
-    # Linker optimizations
     add_link_options(
         -Wl,--gc-sections
         -Wl,--as-needed
     )
-    message(STATUS "🚀 Optimization: -Oz + Full LTO + GC sections (performance optimized)")
+    message(STATUS "🚀 Optimization: -Oz + Full LTO + GC sections")
 endif()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 # =============================================================================
-# 1. Compiler Detection (Clang 20+ required)
+# 1. Compiler Detection
 # =============================================================================
 include(DetectCompiler)
 
 # =============================================================================
-# 2. Configure Static Dependencies (ALL FROM SOURCE with LTO)
+# 2. Configure Static Dependencies
 # =============================================================================
 include(FetchContent)
 include(StaticDeps)
@@ -129,24 +116,22 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(CURL)
 
-# Apply Full LTO with -Oz to libcurl for maximum performance
 if(TARGET libcurl_static)
     target_compile_options(libcurl_static PRIVATE -flto -Oz)
 endif()
 
 # =============================================================================
-# 3. Compiler Configuration (Clang + libc++ or libstdc++)
+# 3. Compiler Configuration
 # =============================================================================
 add_link_options("-static")
 add_link_options("-fuse-ld=lld")
 
 if(USE_LIBCXX)
-    message(STATUS "Mode: Clang ${DETECTED_COMPILER_VERSION} + libc++ (LLVM Full Stack)")
+    message(STATUS "Mode: Clang ${DETECTED_COMPILER_VERSION} + libc++")
     add_compile_options("-stdlib=libc++")
     add_link_options("-nostdlib++")
-    
 elseif(USE_LIBSTDCXX)
-    message(STATUS "Mode: Clang ${DETECTED_COMPILER_VERSION} + libstdc++ (GNU) [fallback]")
+    message(STATUS "Mode: Clang ${DETECTED_COMPILER_VERSION} + libstdc++")
     add_link_options("-static-libstdc++")
 endif()
 
@@ -154,25 +139,60 @@ endif()
 # 4. Warning Flags & Architecture
 # =============================================================================
 add_compile_options(
-    -Wall
-    -Wextra
-    -Wpedantic
-    -Wconversion
-    -Wsign-conversion
-    -Wcast-qual
-    -Wdouble-promotion
-    -Wshadow
-    -Wnull-dereference
+    -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion
+    -Wcast-qual -Wdouble-promotion -Wshadow -Wnull-dereference
     -Wno-unused-parameter
 )
 
-# x86-64-v3: AVX, AVX2, BMI1, BMI2, F16C, FMA, LZCNT, MOVBE, XSAVE
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
     add_compile_options(-march=x86-64-v3)
 endif()
 
 # =============================================================================
-# 5. Build Target
+# 5. Embedded Certificate Generation (MOVED UP FOR SAFETY)
+# =============================================================================
+set(CACERT_HASH "SHA256=f1407d974c5ed87d544bd931a278232e13925177e239fca370619aba63c757b4")
+
+message(STATUS "📥 Downloading CA Certificate bundle...")
+
+file(DOWNLOAD 
+    "https://curl.se/ca/cacert-2025-12-02.pem" 
+    "${CMAKE_BINARY_DIR}/cacert.pem"
+    EXPECTED_HASH ${CACERT_HASH}
+    TLS_VERIFY ON
+    STATUS DOWNLOAD_STATUS
+)
+
+list(GET DOWNLOAD_STATUS 0 STATUS_CODE)
+list(GET DOWNLOAD_STATUS 1 STATUS_MESSAGE)
+
+if(NOT STATUS_CODE EQUAL 0)
+    message(FATAL_ERROR "❌ Failed to download CA certificates: ${STATUS_MESSAGE}")
+endif()
+
+message(STATUS "✅ CA Certificate downloaded and verified.")
+
+# Setup Generated Paths
+set(GEN_INC_DIR "${CMAKE_BINARY_DIR}/generated")
+set(EMBEDDED_CERT_PATH "${GEN_INC_DIR}/include/embedded_cert.hpp")
+
+# Ensure directory exists at Configure time
+file(MAKE_DIRECTORY "${GEN_INC_DIR}/include")
+
+add_custom_command(
+    OUTPUT "${EMBEDDED_CERT_PATH}"
+    # Force creation at Build time (Fix for parallel build race condition)
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${GEN_INC_DIR}/include"
+    COMMAND "${XXD_EXE}" -i cacert.pem "${EMBEDDED_CERT_PATH}"
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+    DEPENDS "${CMAKE_BINARY_DIR}/cacert.pem"
+    COMMENT "Embedding CA Cert into header..."
+)
+
+add_custom_target(generate_cert DEPENDS "${EMBEDDED_CERT_PATH}")
+
+# =============================================================================
+# 6. Build Target
 # =============================================================================
 add_executable(bench
     src/app/main.cpp
@@ -185,36 +205,25 @@ add_executable(bench
     src/io/disk_benchmark.cpp
     src/net/speed_test.cpp
     src/ui/cli_renderer.cpp
+    "${EMBEDDED_CERT_PATH}"
 )
 
-# Apply ICF optimization only to the final executable
+# Apply ICF optimization
 set_target_properties(bench PROPERTIES
     LINK_FLAGS "-Wl,--icf=all"
 )
 
+# Explicit dependency
+add_dependencies(bench generate_cert)
+
 target_include_directories(bench PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+    "${GEN_INC_DIR}"
 )
 
 # =============================================================================
-# Embedded Certificate Generation
-# =============================================================================
-file(DOWNLOAD "https://curl.se/ca/cacert.pem" "${CMAKE_BINARY_DIR}/cacert.pem")
-
-add_custom_command(
-    OUTPUT "${CMAKE_CURRENT_SOURCE_DIR}/include/embedded_cert.hpp"
-    COMMAND "${XXD_EXE}" -i cacert.pem "${CMAKE_CURRENT_SOURCE_DIR}/include/embedded_cert.hpp"
-    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
-    DEPENDS "${CMAKE_BINARY_DIR}/cacert.pem"
-    COMMENT "Embedding CA Cert into header..."
-)
-
-add_custom_target(generate_cert DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/include/embedded_cert.hpp")
-add_dependencies(bench generate_cert)
-
-# =============================================================================
-# 6. Linking
+# 7. Linking
 # =============================================================================
 target_link_libraries(bench 
     PRIVATE 
@@ -229,14 +238,10 @@ target_link_libraries(bench
 
 if(USE_LIBCXX AND STL_STATIC_LIBS)
     target_link_libraries(bench PRIVATE ${STL_STATIC_LIBS})
-    
-    if(EXISTS "/usr/lib/libc++abi.a")
-        target_link_libraries(bench PRIVATE /usr/lib/libc++abi.a)
-    endif()
 endif()
 
 # =============================================================================
-# 7. Install & Packaging (CPack)
+# 8. Install & Packaging (CPack)
 # =============================================================================
 install(TARGETS bench DESTINATION bin)
 
@@ -246,12 +251,7 @@ set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
 set(CPACK_PACKAGE_CONTACT "Alfie Ardinata <alfieardinata@outlook.com>")
 set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/relvinarsenio/bench")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "System Information & Network Benchmark Tool")
-set(CPACK_PACKAGE_DESCRIPTION "Bench is a high-performance Linux server benchmarking tool written in Modern C++ (C++23).
-Features:
-- Network Speed Test (Upload/Download)
-- Disk I/O Benchmark
-- System Information Monitoring
-- Fully Static Build (No Dependencies Required)")
+set(CPACK_PACKAGE_DESCRIPTION "Bench is a high-performance Linux server benchmarking tool written in Modern C++ (C++23).")
 
 set(CPACK_GENERATOR "TGZ;DEB")
 set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Alfie Ardinata <alfieardinata@outlook.com>")

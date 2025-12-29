@@ -6,7 +6,7 @@
 FROM alpine:latest AS builder
 
 # 1. Install Build Tools (minimal required packages)
-# Note: perl/bash NOT needed - LibreSSL uses CMake native
+# Note: perl is required for some OpenSSL/LibreSSL build scripts
 RUN apk add --no-cache \
     clang \
     lld \

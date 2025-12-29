@@ -172,7 +172,7 @@ bool HttpClient::check_connectivity(const std::string& host) {
         curl_easy_setopt(handle_.get(), CURLOPT_URL, ("http://" + host).c_str());
         curl_easy_setopt(handle_.get(), CURLOPT_NOBODY, 1L);
         curl_easy_setopt(handle_.get(), CURLOPT_TIMEOUT, 5L);
-        curl_easy_setopt(handle_.get(), CURLOPT_CONNECTTIMEOUT, 10L);
+        curl_easy_setopt(handle_.get(), CURLOPT_CONNECTTIMEOUT, 3L);
         curl_easy_setopt(handle_.get(), CURLOPT_USERAGENT, kUserAgent);
         curl_easy_setopt(handle_.get(), CURLOPT_NOSIGNAL, 1L);
         curl_easy_setopt(handle_.get(), CURLOPT_FORBID_REUSE, 1L);

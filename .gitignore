@@ -10,7 +10,6 @@
 
 # Output directory
 /dist/
-/include/embedded_cert.hpp
 
 # =============================================================================
 # Dependencies (built from source during cmake configure)

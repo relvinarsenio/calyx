@@ -17,12 +17,13 @@
 #include <sys/syscall.h>
 #include <poll.h>
 
-#ifndef __NR_pidfd_open
-#define __NR_pidfd_open 434
-#endif
-
 static int pidfd_open(pid_t pid, unsigned int flags) {
+#ifdef __NR_pidfd_open
     return static_cast<int>(syscall(__NR_pidfd_open, pid, flags));
+#else
+    errno = ENOSYS;
+    return -1;
+#endif
 }
 
 ShellPipe::ShellPipe(const std::vector<std::string>& args) {

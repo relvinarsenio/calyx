@@ -102,7 +102,7 @@ docker rm extract
 
 ## 📁 Project Structure
 
-```
+```text
 bench/
 ├── CMakeLists.txt          # Main build configuration
 ├── Dockerfile              # Docker build for musl static binary
