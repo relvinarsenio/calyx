@@ -198,12 +198,22 @@ SpeedTestResult SpeedTest::run(const SpinnerCallback& spinner_cb) {
                     std::string type = j.value("type", "");
 
                     if (type == "result") {
+                        if (!j.contains("download") || !j.contains("upload")) {
+                            entry.error = "Malformed result (missing speed data)";
+                            continue;
+                        }
+
                         double dl_bytes = j["download"].value("bandwidth", 0.0);
                         double ul_bytes = j["upload"].value("bandwidth", 0.0);
                         
                         entry.download_mbps = (dl_bytes * 8.0) / 1000000.0;
                         entry.upload_mbps = (ul_bytes * 8.0) / 1000000.0;
-                        entry.latency_ms = j["ping"].value("latency", 0.0);
+                        
+                        if (j.contains("ping")) {
+                            entry.latency_ms = j["ping"].value("latency", 0.0);
+                        } else {
+                            entry.latency_ms = 0.0;
+                        }
                         
                         if (j.contains("packetLoss")) {
                             double loss = j.value("packetLoss", 0.0);

@@ -66,7 +66,7 @@ std::string SystemInfo::get_model_name() {
             
             std::string brand;
             brand.resize(48);
-            std::memcpy(brand.data(), data.data(), 48);
+            std::memcpy(brand.data(), data.data(), std::min(brand.size(), sizeof(data)));
             
             if (auto pos = brand.find('\0'); pos != std::string::npos) {
                 brand.resize(pos);

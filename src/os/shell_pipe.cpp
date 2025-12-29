@@ -78,41 +78,45 @@ ShellPipe::~ShellPipe() {
 
     if (pid_ != -1) {
         int status;
-        if (::waitpid(pid_, &status, WNOHANG) == pid_) {
+        pid_t result = ::waitpid(pid_, &status, WNOHANG);
+        
+        if (result == pid_) {
             return;
         }
 
         ::kill(pid_, SIGTERM);
         
+        bool reaped = false;
         int pfd = pidfd_open(pid_, 0);
+        
         if (pfd >= 0) {
             struct pollfd pfd_struct;
             pfd_struct.fd = pfd;
             pfd_struct.events = POLLIN;
 
-            int ret = ::poll(&pfd_struct, 1, 1000);
-            
+            int ret = ::poll(&pfd_struct, 1, 1000); 
             ::close(pfd);
 
             if (ret > 0) {
-                ::waitpid(pid_, &status, 0);
-                return;
+                ::waitpid(pid_, &status, 0); 
+                reaped = true;
             }
-        } else {
-            bool exited = false;
-            for (int i = 0; i < 10; ++i) {
-                pid_t result = ::waitpid(pid_, &status, WNOHANG);
-                if (result == pid_ || (result == -1 && errno != EINTR)) {
-                    exited = true;
+        } 
+        
+        if (!reaped) {
+            for (int i = 0; i < 5; ++i) {
+                if (::waitpid(pid_, &status, WNOHANG) == pid_) {
+                    reaped = true;
                     break;
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
-            if (exited) return;
-        }
 
-        ::kill(pid_, SIGKILL);
-        ::waitpid(pid_, nullptr, 0); 
+            if (!reaped) {
+                ::kill(pid_, SIGKILL);
+                ::waitpid(pid_, nullptr, 0);
+            }
+        }
     }
 }
 
