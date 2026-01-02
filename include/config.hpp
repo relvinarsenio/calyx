@@ -10,7 +10,7 @@ namespace Config {
     constexpr int IO_LABEL_WIDTH = 22;
     constexpr int PROGRESS_BAR_WIDTH = 26;
 
-    constexpr std::size_t IO_BLOCK_SIZE = 4 * 1024 * 1024;
+    constexpr std::size_t IO_BLOCK_SIZE = 1 * 1024 * 1024;
     constexpr std::size_t IO_ALIGNMENT = 4096;
     constexpr std::string_view BENCH_FILENAME = "benchtest_file";
     constexpr std::size_t PIPE_MAX_OUTPUT_BYTES = 10 * 1024 * 1024;

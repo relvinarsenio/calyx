@@ -128,41 +128,43 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(
         return std::unexpected(get_error_message(errno, "create"));
     }
 
-    FileDescriptor fd(fd_raw);
-
     auto start = high_resolution_clock::now();
     auto deadline = start + std::chrono::seconds(Config::DISK_BENCH_MAX_SECONDS);
     size_t blocks = (static_cast<size_t>(size_mb) * 1024 * 1024) / block_size;
 
-    const std::string write_label = std::string(label) + " Write";
-    for (size_t i = 0; i < blocks; ++i) {
-        if (g_interrupted) {
-            return std::unexpected("Operation interrupted by user");
+    {
+        FileDescriptor fd(fd_raw);
+
+        const std::string write_label = std::string(label) + " Write";
+        for (size_t i = 0; i < blocks; ++i) {
+            if (g_interrupted) {
+                return std::unexpected("Operation interrupted by user");
+            }
+            
+            if (stop.stop_requested()) {
+                return std::unexpected("Operation interrupted by user request.");
+            }
+            
+            ssize_t written = ::write(fd.get(), buffer.get(), block_size);
+            
+            if (written != static_cast<ssize_t>(block_size)) {
+                return std::unexpected("Benchmark failed: " + get_error_message(errno, "write"));
+            }
+
+            if (high_resolution_clock::now() > deadline) {
+                return std::unexpected("Benchmark timed out (operation took too long)");
+            }
+
+            if (progress_cb && i % 2 == 0) progress_cb(i + 1, blocks, write_label);
         }
-        
-        if (stop.stop_requested()) {
-            return std::unexpected("Operation interrupted by user request.");
-        }
-        
-        ssize_t written = ::write(fd.get(), buffer.get(), block_size);
-        
-        if (written != static_cast<ssize_t>(block_size)) {
-            return std::unexpected("Benchmark failed: " + get_error_message(errno, "write"));
+        if (progress_cb) progress_cb(blocks, blocks, write_label);
+
+        if (::fdatasync(fd.get()) == -1) {
+            return std::unexpected("Disk sync failed: " + get_error_message(errno, "sync"));
         }
 
-        if (high_resolution_clock::now() > deadline) {
-            return std::unexpected("Benchmark timed out (operation took too long)");
-        }
-
-        if (progress_cb && i % 2 == 0) progress_cb(i + 1, blocks, write_label);
+        ::fsync(fd.get());
     }
-    if (progress_cb) progress_cb(blocks, blocks, write_label);
-
-    if (::fdatasync(fd.get()) == -1) {
-        return std::unexpected("Disk sync failed: " + get_error_message(errno, "sync"));
-    }
-
-    ::fsync(fd.get());
     int advise_fd = ::open(filename.c_str(), O_RDONLY);
     if (advise_fd >= 0) {
         ::posix_fadvise(advise_fd, 0, 0, POSIX_FADV_DONTNEED);
