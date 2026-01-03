@@ -151,7 +151,7 @@ bench/
 --------------------------------------------------------------------------------
  -> CPU & Hardware
  CPU Model            : AMD Ryzen 5 7535HS with Radeon Graphics
- CPU Cores            : 4 @ 3824.4 MHz
+ CPU Cores            : 4 @ 3280.2 MHz
  CPU Cache            : 16 MB
  AES-NI               : ✓ Enabled
  VM-x/AMD-V           : ✗ Disabled
@@ -162,14 +162,14 @@ bench/
  Kernel               : 6.12.0-106.55.4.2.el10uek.x86_64
  TCP CC               : bbr
  Virtualization       : Hyper-V
- System Uptime        : 0 days, 2 hour 22 min
- Load Average         : 0.35, 0.18, 0.13
+ System Uptime        : 0 days, 10 hour 21 min
+ Load Average         : 1.09, 1.24, 0.91
 
  -> Storage & Memory
- Total Disk           : 60.2 GB (8.4 GB Used)
- Total Mem            : 2.5 GB (1.6 GB Used)
- Total Swap           : 3.2 GB (1004.3 MB Used)
-   -> Partition        : 3.2 GB (1004.3 MB Used) (/dev/sda2)
+ Total Disk           : 60.2 GB (11.8 GB Used)
+ Total Mem            : 2.5 GB (1.5 GB Used)
+ Total Swap           : 3.2 GB (1.3 GB Used)
+   -> Partition        : 3.2 GB (1.3 GB Used) (/dev/sda2)
    -> ZSwap            : Enabled
 
  -> Network
@@ -179,22 +179,22 @@ bench/
  Region               : Lampung
 --------------------------------------------------------------------------------
 Running I/O Test (1GB File)...
-  I/O Speed (Run #1)   : Write   2178.3 MB/s   Read   4547.5 MB/s
-  I/O Speed (Run #2)   : Write   2465.7 MB/s   Read   4566.6 MB/s
-  I/O Speed (Run #3)   : Write   3206.2 MB/s   Read   4562.0 MB/s
-  I/O Speed (Average)  : Write   2616.7 MB/s   Read   4558.7 MB/s
+  I/O Speed (Run #1)   : Write   2375.6 MB/s   Read   3789.6 MB/s
+  I/O Speed (Run #2)   : Write   2458.0 MB/s   Read   3883.0 MB/s
+  I/O Speed (Run #3)   : Write   2568.0 MB/s   Read   3619.0 MB/s
+  I/O Speed (Average)  : Write   2467.2 MB/s   Read   3763.9 MB/s
 --------------------------------------------------------------------------------
 Downloading Speedtest CLI...
  Node Name              Download          Upload            Latency     Loss    
- Speedtest.net (Auto)   76.66 Mbps        21.53 Mbps        23.88 ms    6.19 %  
- Singapore, SG          69.49 Mbps        22.32 Mbps        29.71 ms    0.00 %  
- Los Angeles, US        36.35 Mbps        28.20 Mbps        197.47 ms   0.00 %  
- Montreal, CA           42.75 Mbps        21.44 Mbps        273.46 ms   0.00 %  
- Paris, FR              72.95 Mbps        22.23 Mbps        184.56 ms   0.00 %  
- Amsterdam, NL          63.13 Mbps        20.63 Mbps        260.96 ms   0.00 %  
- Melbourne, AU          78.91 Mbps        21.80 Mbps        280.85 ms   0.00 %  
+ Speedtest.net (Auto)   36.74 Mbps        22.96 Mbps        21.55 ms    0.00 %  
+ Singapore, SG          71.06 Mbps        21.83 Mbps        28.42 ms    0.00 %  
+ Los Angeles, US        23.18 Mbps        21.72 Mbps        219.95 ms   0.42 %  
+ Montreal, CA           39.62 Mbps        31.46 Mbps        291.89 ms   0.00 %  
+ Paris, FR              54.28 Mbps        20.32 Mbps        194.75 ms   0.00 %  
+ Amsterdam, NL          33.56 Mbps        18.65 Mbps        284.12 ms   0.00 %  
+ Melbourne, AU          72.43 Mbps        20.49 Mbps        306.23 ms   0.00 %  
 --------------------------------------------------------------------------------
- Finished in        : 3 min 33 sec
+ Finished in        : 4 min 1 sec
 ```
 
 ---
