@@ -1,5 +1,6 @@
 #include "include/shell_pipe.hpp"
 #include "include/interrupts.hpp"
+#include "include/config.hpp"
 
 #include <algorithm>
 #include <array>
@@ -24,6 +25,26 @@ static int pidfd_open(pid_t pid, unsigned int flags) {
     errno = ENOSYS;
     return -1;
 #endif
+}
+
+static std::string describe_signal(int sig) {
+    switch (sig) {
+        case SIGINT:  return "Interrupted by user (SIGINT)";
+        case SIGTERM: return "Terminated (SIGTERM)";
+        case SIGKILL: return "Killed (SIGKILL)";
+        case SIGQUIT: return "Quit (SIGQUIT)";
+        case SIGPIPE: return "Broken pipe (SIGPIPE)";
+        case SIGHUP:  return "Hangup (SIGHUP)";
+        case SIGABRT: return "Aborted (SIGABRT)";
+        case SIGSEGV: return "Segmentation fault (SIGSEGV)";
+        default: {
+            const char* msg = ::strsignal(sig);
+            if (msg) {
+                return std::string("Child terminated by signal ") + std::to_string(sig) + " (" + msg + ")";
+            }
+            return std::string("Child terminated by signal ") + std::to_string(sig);
+        }
+    }
 }
 
 ShellPipe::ShellPipe(const std::vector<std::string>& args) {
@@ -121,18 +142,58 @@ ShellPipe::~ShellPipe() {
     }
 }
 
-std::string ShellPipe::read_all() {
+std::string ShellPipe::read_all(std::chrono::milliseconds timeout, std::stop_token stop, bool raise_on_error) {
     std::string output;
     std::array<char, 4096> buffer;
-    ssize_t bytes_read;
     size_t total_read = 0;
-    const size_t MAX_OUTPUT_SIZE = 10 * 1024 * 1024;
+    const size_t MAX_OUTPUT_SIZE = Config::PIPE_MAX_OUTPUT_BYTES;
+
+    auto deadline = std::chrono::steady_clock::now() + timeout;
 
     while (true) {
-        if (g_interrupted) break;
+        if (g_interrupted || stop.stop_requested()) break;
 
-        bytes_read = ::read(read_fd_, buffer.data(), buffer.size());
-        
+        auto now = std::chrono::steady_clock::now();
+        int remaining_ms = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count());
+        if (remaining_ms <= 0) {
+            ::kill(pid_, SIGTERM);
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            int status;
+            if (::waitpid(pid_, &status, WNOHANG) == 0) {
+                ::kill(pid_, SIGKILL);
+            }
+
+            ::waitpid(pid_, &status, 0);
+            pid_ = -1;
+
+            if (read_fd_ != -1) {
+                ::close(read_fd_);
+                read_fd_ = -1;
+            }
+
+            throw std::runtime_error("Child process timed out while reading output");
+        }
+
+        struct pollfd pfd{};
+        pfd.fd = read_fd_;
+        pfd.events = POLLIN;
+
+        int poll_res = ::poll(&pfd, 1, remaining_ms);
+        if (poll_res == -1) {
+            if (errno == EINTR) {
+                if (g_interrupted || stop.stop_requested()) break;
+                continue;
+            }
+            throw std::system_error(errno, std::generic_category(), "poll failed on child output");
+        }
+
+        if (poll_res == 0) {
+            // timeout hit, loop will terminate on next iteration deadline check
+            continue;
+        }
+
+        ssize_t bytes_read = ::read(read_fd_, buffer.data(), buffer.size());
+
         if (bytes_read > 0) {
             if (total_read + static_cast<size_t>(bytes_read) > MAX_OUTPUT_SIZE) {
                 output += "\n[Output truncated (too large)]";
@@ -144,11 +205,56 @@ std::string ShellPipe::read_all() {
             break;
         } else {
             if (errno == EINTR) {
-                if (g_interrupted) break;
+                if (g_interrupted || stop.stop_requested()) break;
                 continue;
             }
             throw std::system_error(errno, std::generic_category(), "Failed to read from pipe");
         }
+    }
+
+    if (read_fd_ != -1) {
+        ::close(read_fd_);
+        read_fd_ = -1;
+    }
+
+    if (pid_ != -1) {
+        if (g_interrupted || stop.stop_requested()) {
+            ::kill(pid_, SIGTERM);
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+            int temp_status = 0;
+            if (::waitpid(pid_, &temp_status, WNOHANG) == 0) {
+                ::kill(pid_, SIGKILL);
+                ::waitpid(pid_, &temp_status, 0);
+            }
+            
+            pid_ = -1;
+            throw std::runtime_error("Operation interrupted by user");
+        }
+
+        int status = 0;
+        if (::waitpid(pid_, &status, 0) == -1) {
+            throw std::system_error(errno, std::generic_category(), "waitpid failed for child process");
+        }
+        
+        if (WIFSIGNALED(status)) {
+            int sig = WTERMSIG(status);
+            pid_ = -1;
+            throw std::runtime_error(describe_signal(sig));
+        }
+
+        if (WIFEXITED(status) && WEXITSTATUS(status) != 0) {
+            int code = WEXITSTATUS(status);
+            pid_ = -1;
+            if (output.empty() || raise_on_error) {
+                std::string msg = "Child exited with code " + std::to_string(code);
+                if (!output.empty()) msg += "\nOutput: " + output;
+                throw std::runtime_error(msg);
+            }
+            return output;
+        }
+
+        pid_ = -1;
     }
 
     return output;

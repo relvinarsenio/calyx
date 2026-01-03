@@ -3,14 +3,16 @@
 #include <string>
 #include <vector>
 
-struct DiskRunResult {
+struct DiskIORunResult {
     std::string label;
-    double mbps = 0.0;
+    double write_mbps = 0.0;
+    double read_mbps = 0.0;
 };
 
 struct DiskSuiteResult {
-    std::vector<DiskRunResult> runs;
-    double average_mbps = 0.0;
+    std::vector<DiskIORunResult> runs;
+    double average_write_mbps = 0.0;
+    double average_read_mbps = 0.0;
 };
 
 struct SpeedEntryResult {

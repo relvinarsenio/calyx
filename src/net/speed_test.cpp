@@ -1,6 +1,7 @@
 #include "include/speed_test.hpp"
 
 #include <cctype>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <format>
@@ -115,7 +116,7 @@ void SpeedTest::install() {
     };
     
     ShellPipe pipe(tar_args);
-    pipe.read_all();
+    pipe.read_all(std::chrono::milliseconds(60000));
 
     if (!fs::exists(cli_path_)) throw std::runtime_error("Failed to extract speedtest-cli");
     fs::permissions(cli_path_, fs::perms::owner_all, fs::perm_options::add);
@@ -155,9 +156,9 @@ SpeedTestResult SpeedTest::run(const SpinnerCallback& spinner_cb) {
         entry.server_id = node.id;
         entry.node_name = node.name;
 
-        try {
-            ShellPipe pipe(cmd_args);
-            std::string output = pipe.read_all();
+            try {
+                ShellPipe pipe(cmd_args);
+                std::string output = pipe.read_all(std::chrono::milliseconds(90000), {}, false);
             
             if (g_interrupted) {
                 entry.success = false;

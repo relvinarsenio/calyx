@@ -19,7 +19,8 @@ RUN apk add --no-cache \
     linux-headers \
     llvm-libunwind-static \
     perl \
-    xxd
+    xxd \
+    liburing-dev
 
 # Set working directory
 WORKDIR /src

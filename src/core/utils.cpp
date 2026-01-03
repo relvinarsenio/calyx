@@ -8,13 +8,24 @@
 #include <system_error>
 #include <vector>
 
+#include <sys/ioctl.h>
+#include <unistd.h>
+
 #include "include/config.hpp"
 #include "include/interrupts.hpp"
 
 namespace fs = std::filesystem;
 
 void print_line() {
-    std::println("{:-<78}", "");
+    int target_width = 80; 
+    int width = target_width;
+
+    struct winsize w;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == 0 && w.ws_col > 0) {
+        width = std::min(static_cast<int>(w.ws_col), target_width);
+    }
+
+    std::println("{}", std::string(static_cast<std::size_t>(width), '-'));
     std::cout << std::flush;
 }
 

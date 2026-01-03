@@ -48,6 +48,16 @@ public:
     LibCurlContext& operator=(const LibCurlContext&) = delete;
 };
 
+struct ProgressStyle {
+    std::string_view fill;
+    std::string_view empty;
+    int width;
+};
+
+constexpr ProgressStyle get_progress_style() {
+    return ProgressStyle{"\u2588", "\u2591", Config::PROGRESS_BAR_WIDTH};
+}
+
 void run_app(std::string_view app_path) {
     HttpClient http;
     auto start_time = high_resolution_clock::now();
@@ -58,7 +68,7 @@ void run_app(std::string_view app_path) {
     std::print("\033c");
     std::cout << std::flush;
     print_line();
-    std::println(" A Bench Script (C++ Edition v7.0.0)");
+    std::println(" A Bench Script (C++ Edition v7.1.1)");
     std::println(" Usage : ./{}", app_name);
     print_line();
 
@@ -156,25 +166,37 @@ void run_app(std::string_view app_path) {
 
     print_line();
 
-    std::vector<DiskRunResult> disk_runs;
+    constexpr int io_label_width = Config::IO_LABEL_WIDTH;
+    std::vector<DiskIORunResult> disk_runs;
     disk_runs.reserve(3);
     std::println("Running I/O Test (1GB File)...");
 
     bool disk_error = false;
-    for(int i=1; i<=3; ++i) {
-        std::string label = std::format(" I/O Speed (Run #{}) : ", i);
+    for(int i=1; i<=Config::DISK_IO_RUNS; ++i) {
+        std::string label = std::format(" I/O Speed (Run #{})", i);
         auto progress_cb = [&](std::size_t current, std::size_t total, std::string_view lbl) {
+            const auto style = get_progress_style();
             int percent = static_cast<int>((current * 100) / total);
-            std::print("\r{} [{:3}%] ", lbl, percent);
+            int filled = static_cast<int>((percent * style.width) / 100);
+
+            std::string bar;
+            bar.reserve(style.width * static_cast<int>(style.fill.size()));
+            for (int j = 0; j < style.width; ++j) {
+                bar += (j < filled) ? style.fill : style.empty;
+            }
+
+            std::print("\r\x1b[2K {:<{}} [{}] {:3}%", lbl, io_label_width, bar, percent);
             std::cout << std::flush;
         };
 
-        auto result = DiskBenchmark::run_write_test(1024, label, progress_cb);
-        std::print("\r{}\r", std::string(label.size() + 6, ' '));
+        auto result = DiskBenchmark::run_io_test(Config::DISK_TEST_SIZE_MB, label, progress_cb);
+        std::print("\r\x1b[2K");
         std::cout << std::flush;
         
         if (result) {
-            std::println("{}{}", result->label, Color::colorize(std::format("{:.1f} MB/s", result->mbps), Color::YELLOW));
+            std::println(" {:<{}}: {}   {}", result->label, io_label_width,
+                Color::colorize(std::format("Write {:>8.1f} MB/s", result->write_mbps), Color::YELLOW),
+                Color::colorize(std::format("Read {:>8.1f} MB/s", result->read_mbps), Color::CYAN));
             disk_runs.push_back(*result);
         } else {
             std::println("\r{}[!] Disk Benchmark Skipped: {}{}", Color::RED, result.error(), Color::RESET);
@@ -184,11 +206,18 @@ void run_app(std::string_view app_path) {
     }
 
     if (!disk_error) {
-        double total_speed = 0.0;
-        for (const auto& r : disk_runs) total_speed += r.mbps;
-        double avg = disk_runs.empty() ? 0.0 : total_speed / static_cast<double>(disk_runs.size());
+        double total_w = 0.0;
+        double total_r = 0.0;
+        for (const auto& r : disk_runs) {
+            total_w += r.write_mbps;
+            total_r += r.read_mbps;
+        }
+        double avg_w = disk_runs.empty() ? 0.0 : total_w / static_cast<double>(disk_runs.size());
+        double avg_r = disk_runs.empty() ? 0.0 : total_r / static_cast<double>(disk_runs.size());
         
-        std::println(" I/O Speed (Average) : {}", Color::colorize(std::format("{:.1f} MB/s", avg), Color::YELLOW));
+        std::println(" {:<{}}: {}   {}", " I/O Speed (Average)", io_label_width,
+            Color::colorize(std::format("Write {:>8.1f} MB/s", avg_w), Color::YELLOW),
+            Color::colorize(std::format("Read {:>8.1f} MB/s", avg_r), Color::CYAN));
     }
 
     print_line();
@@ -205,7 +234,14 @@ void run_app(std::string_view app_path) {
 
     print_line();
     auto end_time = high_resolution_clock::now();
-    std::println(" Finished in        : {:.0f} sec", duration<double>(end_time - start_time).count());
+    double elapsed_sec = duration<double>(end_time - start_time).count();
+    if (elapsed_sec >= 60.0) {
+        int minutes = static_cast<int>(elapsed_sec / 60.0);
+        double seconds = elapsed_sec - static_cast<double>(minutes) * 60.0;
+        std::println(" Finished in        : {} min {:.0f} sec", minutes, seconds);
+    } else {
+        std::println(" Finished in        : {:.0f} sec", elapsed_sec);
+    }
 }
 
 int main(int argc, char* argv[]) {

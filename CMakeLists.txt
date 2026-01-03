@@ -6,7 +6,7 @@ cmake_policy(SET CMP0135 NEW)
 # =============================================================================
 # Bench - Modern Linux Server Benchmark
 # =============================================================================
-project(bench VERSION 7.0.0 LANGUAGES CXX C)
+project(bench VERSION 7.1.1 LANGUAGES CXX C)
 
 # C++23 Required
 set(CMAKE_CXX_STANDARD 23)
@@ -103,6 +103,8 @@ include(DetectCompiler)
 # =============================================================================
 include(FetchContent)
 include(StaticDeps)
+
+option(USE_IO_URING "Enable io_uring for disk benchmark" ON)
 
 FetchContent_Declare(
     json
@@ -235,6 +237,22 @@ target_link_libraries(bench
     Threads::Threads
     m
 )
+
+if(USE_IO_URING)
+    find_path(LIBURING_INCLUDE_DIR liburing.h)
+    set(_OLD_SUFFIXES ${CMAKE_FIND_LIBRARY_SUFFIXES})
+    set(CMAKE_FIND_LIBRARY_SUFFIXES ".a" ".so")
+    find_library(LIBURING_LIBRARY uring)
+    set(CMAKE_FIND_LIBRARY_SUFFIXES ${_OLD_SUFFIXES})
+    if(LIBURING_INCLUDE_DIR AND LIBURING_LIBRARY)
+        message(STATUS "🌀 io_uring enabled")
+        target_compile_definitions(bench PRIVATE USE_IO_URING=1)
+        target_include_directories(bench PRIVATE ${LIBURING_INCLUDE_DIR})
+        target_link_libraries(bench PRIVATE ${LIBURING_LIBRARY})
+    else()
+        message(WARNING "io_uring requested but liburing not found; falling back to std::async path")
+    endif()
+endif()
 
 if(USE_LIBCXX AND STL_STATIC_LIBS)
     target_link_libraries(bench PRIVATE ${STL_STATIC_LIBS})

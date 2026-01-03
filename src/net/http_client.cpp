@@ -13,8 +13,6 @@
 
 namespace {
 
-constexpr auto kUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-
 struct CurlSlistDeleter {
     void operator()(struct curl_slist* list) const noexcept {
         if (list) curl_slist_free_all(list);
@@ -49,7 +47,7 @@ void setup_browser_impersonation(CURL* handle, CurlHeaders& headers) {
     headers.add("Sec-Fetch-User: ?1");
     headers.add("Upgrade-Insecure-Requests: 1");
 
-    curl_easy_setopt(handle, CURLOPT_USERAGENT, kUserAgent);
+    curl_easy_setopt(handle, CURLOPT_USERAGENT, Config::HTTP_USER_AGENT.data());
     curl_easy_setopt(handle, CURLOPT_REFERER, "https://www.google.com/");
     curl_easy_setopt(handle, CURLOPT_ACCEPT_ENCODING, "gzip, deflate, br");
 
@@ -173,7 +171,7 @@ bool HttpClient::check_connectivity(const std::string& host) {
         curl_easy_setopt(handle_.get(), CURLOPT_NOBODY, 1L);
         curl_easy_setopt(handle_.get(), CURLOPT_TIMEOUT, Config::CHECK_CONN_TIMEOUT_SEC);
         curl_easy_setopt(handle_.get(), CURLOPT_CONNECTTIMEOUT, Config::CHECK_CONN_CONNECT_TIMEOUT_SEC);
-        curl_easy_setopt(handle_.get(), CURLOPT_USERAGENT, kUserAgent);
+        curl_easy_setopt(handle_.get(), CURLOPT_USERAGENT, Config::HTTP_USER_AGENT.data());
         curl_easy_setopt(handle_.get(), CURLOPT_NOSIGNAL, 1L);
         curl_easy_setopt(handle_.get(), CURLOPT_FORBID_REUSE, 1L);
         return curl_easy_perform(handle_.get()) == CURLE_OK;

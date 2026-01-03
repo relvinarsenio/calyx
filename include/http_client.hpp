@@ -4,6 +4,7 @@
 #include <vector>
 #include <memory>
 #include <expected>
+#include <fstream>
 
 typedef void CURL;
 
