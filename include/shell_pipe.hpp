@@ -17,6 +17,6 @@ public:
     ShellPipe(const ShellPipe&) = delete;
     ShellPipe& operator=(const ShellPipe&) = delete;
 
-    std::string read_all(std::chrono::milliseconds timeout = std::chrono::seconds(60),
+    std::string read_all(std::chrono::milliseconds timeout = std::chrono::milliseconds(60000),
                          std::stop_token stop = {});
 };

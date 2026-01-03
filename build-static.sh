@@ -20,7 +20,7 @@ cleanup_on_interrupt() {
     docker rm -f bench-extract >/dev/null 2>&1 || true
     
 
-    docker rm -f $(docker ps -a -q --filter "ancestor=$IMAGE_NAME") >/dev/null 2>&1 || true
+    docker ps -a -q --filter "ancestor=$IMAGE_NAME" | xargs -r docker rm -f >/dev/null 2>&1 || true
 
     echo "⚠️  Note: Dangling images (<none>:<none>) might remain."
     echo "    Run 'docker image prune' manually if needed."
