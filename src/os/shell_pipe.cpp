@@ -142,7 +142,7 @@ ShellPipe::~ShellPipe() {
     }
 }
 
-std::string ShellPipe::read_all(std::chrono::milliseconds timeout, std::stop_token stop) {
+std::string ShellPipe::read_all(std::chrono::milliseconds timeout, std::stop_token stop, bool raise_on_error) {
     std::string output;
     std::array<char, 4096> buffer;
     size_t total_read = 0;
@@ -230,8 +230,10 @@ std::string ShellPipe::read_all(std::chrono::milliseconds timeout, std::stop_tok
         if (WIFEXITED(status) && WEXITSTATUS(status) != 0) {
             int code = WEXITSTATUS(status);
             pid_ = -1;
-            if (output.empty()) {
-                throw std::runtime_error(std::string("Child exited with code ") + std::to_string(code));
+            if (output.empty() || raise_on_error) {
+                std::string msg = "Child exited with code " + std::to_string(code);
+                if (!output.empty()) msg += "\nOutput: " + output;
+                throw std::runtime_error(msg);
             }
             return output;
         }

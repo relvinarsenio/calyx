@@ -158,7 +158,7 @@ SpeedTestResult SpeedTest::run(const SpinnerCallback& spinner_cb) {
 
             try {
                 ShellPipe pipe(cmd_args);
-                std::string output = pipe.read_all(std::chrono::milliseconds(90000));
+                std::string output = pipe.read_all(std::chrono::milliseconds(90000), {}, false);
             
             if (g_interrupted) {
                 entry.success = false;

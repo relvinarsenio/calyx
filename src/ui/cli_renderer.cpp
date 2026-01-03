@@ -8,6 +8,8 @@
 #include <memory>
 #include <print>
 #include <span>
+#include <algorithm>
+#include <chrono>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -21,6 +23,36 @@
 namespace CliRenderer {
 
 namespace {
+
+bool check_str_utf8(const char* env) {
+    if (!env || !*env) return false;
+    
+    std::string s(env);
+    std::transform(s.begin(), s.end(), s.begin(), 
+        [](unsigned char c){ return std::tolower(c); });
+    
+    return s.find("utf-8") != std::string::npos || s.find("utf8") != std::string::npos;
+}
+
+bool is_utf8_term() {
+    // 1. Cek Raja (LC_ALL) - Kalau diset, dia override semua.
+    if (const char* val = std::getenv("LC_ALL"); val && *val) {
+        return check_str_utf8(val);
+    }
+    
+    // 2. Cek Patih (LC_CTYPE) - Spesifik buat karakter.
+    if (const char* val = std::getenv("LC_CTYPE"); val && *val) {
+        return check_str_utf8(val);
+    }
+    
+    // 3. Cek Rakyat (LANG) - Fallback terakhir.
+    if (const char* val = std::getenv("LANG"); val && *val) {
+        return check_str_utf8(val);
+    }
+    
+    // Default: ASCII (Safe Mode) biar gak rusak tampilannya
+    return false;
+}
 
 class UiSpinner {
     std::jthread worker_;
@@ -40,10 +72,9 @@ public:
             };
             static constexpr std::array<const char*, 4> ascii_frames = {"|", "/", "-", "\\"};
 
-            const char* lang = std::getenv("LANG");
-            bool utf_ok = lang && std::string_view(lang).find("UTF-8") != std::string_view::npos;
-            return utf_ok ? std::span<const char* const>(utf_frames)
-                          : std::span<const char* const>(ascii_frames);
+            return is_utf8_term() ? std::span<const char* const>(utf_frames)
+                                  : std::span<const char* const>(ascii_frames);
+
         }();
 
         frames_ = selected;

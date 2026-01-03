@@ -136,6 +136,8 @@ std::expected<void, std::string> run_uring_io(
                 io_uring_prep_read(sqe, fd, buf, len, offset_bytes);
             }
 
+            io_uring_sqe_set_data64(sqe, static_cast<__u64>(len));
+
             submitted++;
         }
 
@@ -151,11 +153,20 @@ std::expected<void, std::string> run_uring_io(
         }
 
         if (cqe) {
+            auto expected_len = static_cast<int>(io_uring_cqe_get_data64(cqe));
+
             if (cqe->res < 0) {
                 std::string op = is_write ? "write" : "read";
                 io_uring_cqe_seen(&ring, cqe);
                 return std::unexpected("Benchmark failed: " + get_error_message(-cqe->res, op));
             }
+
+            if (cqe->res != expected_len) {
+                io_uring_cqe_seen(&ring, cqe);
+                std::string op = is_write ? "write" : "read";
+                return std::unexpected(std::format("Benchmark failed: Partial {} (expected {} bytes, got {})", op, expected_len, cqe->res));
+            }
+
             io_uring_cqe_seen(&ring, cqe);
             ++completed;
             if (progress_cb && completed % 2 == 0) {
@@ -334,13 +345,10 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(
             return std::unexpected("Disk sync failed: " + get_error_message(errno, "sync"));
         }
 
-        ::fsync(fd.get());
-    }
-
-    int advise_fd = ::open(filename.c_str(), O_RDONLY);
-    if (advise_fd >= 0) {
-        ::posix_fadvise(advise_fd, 0, 0, POSIX_FADV_DONTNEED);
-        ::close(advise_fd);
+        if (::posix_fadvise(fd.get(), 0, 0, POSIX_FADV_DONTNEED) != 0) {
+            // Ignore error. This is just an optimization hint.
+            // If it fails, benchmark continues anyway.
+        }
     }
 
     auto end_write = high_resolution_clock::now();
