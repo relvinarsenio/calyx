@@ -71,20 +71,6 @@ public:
 
 }
 
-void render_disk_suite(const DiskSuiteResult& suite) {
-    std::println("Running I/O Test (1GB File)...");
-    for (const auto& run : suite.runs) {
-        std::println("{}{} | {}", run.label,
-            Color::colorize(std::format("Write {:.1f} MB/s", run.write_mbps), Color::YELLOW),
-            Color::colorize(std::format("Read {:.1f} MB/s", run.read_mbps), Color::CYAN));
-    }
-    if (!suite.runs.empty()) {
-        std::println(" I/O Speed (Average) : {} | {}",
-            Color::colorize(std::format("Write {:.1f} MB/s", suite.average_write_mbps), Color::YELLOW),
-            Color::colorize(std::format("Read {:.1f} MB/s", suite.average_read_mbps), Color::CYAN));
-    }
-}
-
 std::string format_speed(double mbps) {
     if (mbps >= 1000.0) {
         return std::format("{:.2f} Gbps", mbps / 1000.0);

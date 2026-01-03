@@ -15,10 +15,16 @@ IMAGE_NAME="bench-builder"
 cleanup_on_interrupt() {
     echo ""
     echo "🛑  Build cancelled by user (Ctrl+C)!"
-    echo "🧹  Cleaning up dangling images and containers..."
-    docker image prune -f >/dev/null 2>&1 || true
-    docker container prune -f >/dev/null 2>&1 || true
-    echo "✨  Cleanup complete. No leftovers."
+    echo "🧹  Cleaning up build containers..."
+    
+    docker rm -f bench-extract >/dev/null 2>&1 || true
+    
+
+    docker rm -f $(docker ps -a -q --filter "ancestor=$IMAGE_NAME") >/dev/null 2>&1 || true
+
+    echo "⚠️  Note: Dangling images (<none>:<none>) might remain."
+    echo "    Run 'docker image prune' manually if needed."
+    echo "✨  Cleanup complete."
     exit 1
 }
 

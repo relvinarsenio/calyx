@@ -206,7 +206,7 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(
 
     std::vector<std::unique_ptr<std::byte[], AlignedDelete>> read_buffers;
     read_buffers.reserve(static_cast<size_t>(queue_depth_read));
-    for (int i = 0; i < queue_depth_read; ++i) {
+    for (int k = 0; k < queue_depth_read; ++k) {
         read_buffers.push_back(make_aligned_buffer(read_block_size, Config::IO_ALIGNMENT));
         std::ranges::generate(std::span{read_buffers.back().get(), read_block_size}, [i = 0u]() mutable { 
             return std::byte{static_cast<unsigned char>(i++ * 0x9E3779B1u)}; 
@@ -365,6 +365,8 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(
 
     FileDescriptor read_fd(rd_raw);
     auto read_start = high_resolution_clock::now();
+
+    deadline = read_start + std::chrono::seconds(Config::DISK_BENCH_MAX_SECONDS);
 
     const std::string read_label = std::string(label) + " Read";
 
