@@ -218,11 +218,25 @@ std::string ShellPipe::read_all(std::chrono::milliseconds timeout, std::stop_tok
     }
 
     if (pid_ != -1) {
+        if (g_interrupted || stop.stop_requested()) {
+            ::kill(pid_, SIGTERM);
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+            int temp_status = 0;
+            if (::waitpid(pid_, &temp_status, WNOHANG) == 0) {
+                ::kill(pid_, SIGKILL);
+                ::waitpid(pid_, &temp_status, 0);
+            }
+            
+            pid_ = -1;
+            throw std::runtime_error("Operation interrupted by user");
+        }
+
         int status = 0;
         if (::waitpid(pid_, &status, 0) == -1) {
             throw std::system_error(errno, std::generic_category(), "waitpid failed for child process");
         }
-
+        
         if (WIFSIGNALED(status)) {
             int sig = WTERMSIG(status);
             pid_ = -1;
