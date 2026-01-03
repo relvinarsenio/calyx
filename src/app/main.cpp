@@ -234,7 +234,14 @@ void run_app(std::string_view app_path) {
 
     print_line();
     auto end_time = high_resolution_clock::now();
-    std::println(" Finished in        : {:.0f} sec", duration<double>(end_time - start_time).count());
+    double elapsed_sec = duration<double>(end_time - start_time).count();
+    if (elapsed_sec >= 60.0) {
+        int minutes = static_cast<int>(elapsed_sec / 60.0);
+        double seconds = elapsed_sec - static_cast<double>(minutes) * 60.0;
+        std::println(" Finished in        : {} min {:.0f} sec", minutes, seconds);
+    } else {
+        std::println(" Finished in        : {:.0f} sec", elapsed_sec);
+    }
 }
 
 int main(int argc, char* argv[]) {
