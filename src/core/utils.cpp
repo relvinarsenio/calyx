@@ -32,7 +32,7 @@ void print_line() {
         width = std::min(static_cast<int>(w.ws_col), target_width);
     }
 
-    std::println("{}", std::string(static_cast<std::size_t>(width), '-'));
+    std::print("{:-<{}}\n", "", width);
     std::cout << std::flush;
 }
 

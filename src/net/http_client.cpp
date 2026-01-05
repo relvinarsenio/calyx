@@ -66,7 +66,6 @@ void setup_browser_impersonation(CURL* handle, CurlHeaders& headers) {
     struct curl_blob blob{};
     blob.data = const_cast<void*>(static_cast<const void*>(cacert_pem));
     blob.len = cacert_pem_len;
-    blob.flags = CURL_BLOB_COPY;
     curl_easy_setopt(handle, CURLOPT_CAINFO_BLOB, &blob);
 }
 

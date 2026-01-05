@@ -52,17 +52,19 @@ std::string capitalize(std::string_view s) {
         return "ZRAM";
     return ret;
 }
-} // namespace
 
-const std::string& SystemInfo::get_cpuinfo_cache() {
-    static const std::string cache = [] {
-        std::ifstream f("/proc/cpuinfo");
-        std::stringstream buffer;
-        buffer << f.rdbuf();
-        return buffer.str();
-    }();
-    return cache;
+bool cpu_has_flag(std::string_view flag) {
+    std::ifstream f("/proc/cpuinfo");
+    std::string line;
+    while (std::getline(f, line)) {
+        if (line.find(flag) != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
 }
+
+} // namespace
 
 std::string SystemInfo::get_model_name() {
 #if defined(__i386__) || defined(__x86_64__)
@@ -87,11 +89,11 @@ std::string SystemInfo::get_model_name() {
     }
 #endif
 
-    std::stringstream ss(get_cpuinfo_cache());
+    std::ifstream f("/proc/cpuinfo");
     std::string line;
     const std::array<std::string, 5> keys = {"model name", "hardware", "processor", "cpu", "Model"};
 
-    while (std::getline(ss, line)) {
+    while (std::getline(f, line)) {
         for (const auto& k : keys) {
             if (is_starts_with_ic(line, k)) {
                 auto colon = line.find(':');
@@ -136,8 +138,8 @@ std::string SystemInfo::get_cpu_cores_freq() {
     }
 
     if (freq_mhz == 0.0) {
-        std::stringstream ss(get_cpuinfo_cache());
-        while (std::getline(ss, line)) {
+        std::ifstream cpuinfo("/proc/cpuinfo");
+        while (std::getline(cpuinfo, line)) {
             if (line.starts_with("cpu MHz")) {
                 auto colon = line.find(':');
                 if (colon != std::string::npos) {
@@ -198,12 +200,11 @@ std::string SystemInfo::get_cpu_cache() {
 }
 
 bool SystemInfo::has_aes() {
-    return get_cpuinfo_cache().find("aes") != std::string::npos;
+    return cpu_has_flag("aes");
 }
 
 bool SystemInfo::has_vmx() {
-    const auto& content = get_cpuinfo_cache();
-    return content.find("vmx") != std::string::npos || content.find("svm") != std::string::npos;
+    return cpu_has_flag("vmx") || cpu_has_flag("svm");
 }
 
 std::string SystemInfo::get_virtualization() {

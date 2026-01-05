@@ -32,7 +32,6 @@ struct DiskInfo {
 };
 
 class SystemInfo {
-    static const std::string& get_cpuinfo_cache();
 
 public:
     static std::string get_model_name();
