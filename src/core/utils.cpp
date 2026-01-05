@@ -52,15 +52,17 @@ std::string format_bytes(std::uint64_t bytes) {
 }
 
 void cleanup_artifacts() {
-    const std::vector<std::string> paths = {std::string(Config::SPEEDTEST_TGZ), "speedtest-cli",
-                                            std::string(Config::BENCH_FILENAME)};
+
     const auto exe_dir = get_exe_dir();
-    for (const auto& p : paths) {
+
+    for (const auto& filename : {Config::SPEEDTEST_TGZ, "speedtest-cli", Config::BENCH_FILENAME}) {
         std::error_code ec;
-        if (fs::exists(p, ec)) {
-            fs::remove_all(p, ec);
+
+        if (fs::exists(filename, ec)) {
+            fs::remove_all(filename, ec);
         }
-        auto abs_path = exe_dir / p;
+
+        auto abs_path = exe_dir / filename;
         if (fs::exists(abs_path, ec)) {
             fs::remove_all(abs_path, ec);
         }
