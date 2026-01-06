@@ -175,7 +175,7 @@ void run_app(std::string_view app_path) {
     std::string dev_name = get_device_name(current_dir);
 
     auto mem = SystemInfo::get_memory_status();
-    auto disk = SystemInfo::get_disk_usage("/");
+    auto disk = SystemInfo::get_disk_usage(current_dir);
 
     std::println("\n -> {}", Color::colorize("Storage & Memory", Color::BOLD));
     std::println(" {:<20} : {} ({})", "Disk Test Path", Color::colorize(current_dir, Color::CYAN),
