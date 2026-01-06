@@ -15,7 +15,6 @@
 void print_line();
 void print_centered_header(std::string_view text);
 
-
 [[nodiscard]] constexpr std::string_view trim_sv(std::string_view str) noexcept {
     auto first = str.find_first_not_of(" \t\n\r");
     if (first == std::string_view::npos)

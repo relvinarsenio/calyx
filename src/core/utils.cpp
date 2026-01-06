@@ -48,11 +48,7 @@ void print_centered_header(std::string_view text) {
     std::size_t left_pad = remaining / 2;
     std::size_t right_pad = remaining - left_pad;
 
-    std::println("{} {} {}", 
-        std::string(left_pad, '-'), 
-        text, 
-        std::string(right_pad, '-')
-    );
+    std::println("{} {} {}", std::string(left_pad, '-'), text, std::string(right_pad, '-'));
 }
 
 std::string format_bytes(std::uint64_t bytes) {
