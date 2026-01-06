@@ -64,24 +64,45 @@ std::string get_device_name(const std::string& path) {
     std::string line;
     std::string target_dev = std::format("{}:{}", major(st.st_dev), minor(st.st_dev));
 
+    std::string best_match_info = "virtual device";
+    size_t best_match_len = 0;
+
     while (std::getline(mountinfo, line)) {
         std::stringstream ss(line);
         std::string id, parent, major_minor, root, mount_point;
 
         if (ss >> id >> parent >> major_minor >> root >> mount_point) {
-            if (major_minor == target_dev) {
-                std::string token;
-                while (ss >> token && token != "-")
-                    ;
 
-                std::string fs_type, source;
-                if (ss >> fs_type >> source) {
+            std::string token;
+            while (ss >> token && token != "-")
+                ;
+
+            std::string fs_type, source;
+            if (ss >> fs_type >> source) {
+
+                if (major_minor == target_dev) {
                     return source;
+                }
+
+                if (path.find(mount_point) == 0) {
+                    bool valid_boundary = (path.length() == mount_point.length()) ||
+                                          (mount_point == "/") ||
+                                          (path[mount_point.length()] == '/');
+
+                    if (valid_boundary && mount_point.length() > best_match_len) {
+                        best_match_len = mount_point.length();
+
+                        if (source == fs_type) {
+                            best_match_info = source;
+                        } else {
+                            best_match_info = std::format("{} ({})", source, fs_type);
+                        }
+                    }
                 }
             }
         }
     }
-    return "virtual device";
+    return best_match_info;
 }
 
 struct ProgressStyle {
@@ -148,13 +169,11 @@ void run_app(std::string_view app_path) {
     auto disk = SystemInfo::get_disk_usage("/");
 
     std::println("\n -> {}", Color::colorize("Storage & Memory", Color::BOLD));
+    std::println(" {:<20} : {} ({})", "Disk Test Path", Color::colorize(current_dir, Color::CYAN),
+                 Color::colorize(dev_name, Color::YELLOW));
     std::println(" {:<20} : {} ({} Used)", "Total Disk",
                  Color::colorize(format_bytes(disk.total), Color::YELLOW),
                  Color::colorize(format_bytes(disk.used), Color::CYAN));
-
-    std::println(" {:<20} : {} ({})", "Disk Test Path", Color::colorize(current_dir, Color::CYAN),
-                 Color::colorize(dev_name, Color::YELLOW));
-
     std::println(" {:<20} : {} ({} Used)", "Total Mem",
                  Color::colorize(format_bytes(mem.total), Color::YELLOW),
                  Color::colorize(format_bytes(mem.used), Color::CYAN));
