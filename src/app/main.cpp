@@ -56,53 +56,62 @@ public:
 };
 
 std::string get_device_name(const std::string& path) {
-    struct stat st;
+    struct stat st{};
     if (stat(path.c_str(), &st) != 0)
         return "unknown device";
 
     std::ifstream mountinfo("/proc/self/mountinfo");
+    if (!mountinfo)
+        return "unknown device";
+
+    const std::string target_dev = std::format("{}:{}", major(st.st_dev), minor(st.st_dev));
+
+    std::string best_path_match = "unknown device";
+    size_t best_path_len = 0;
+
+    std::string exact_dev_match;
+
     std::string line;
-    std::string target_dev = std::format("{}:{}", major(st.st_dev), minor(st.st_dev));
-
-    std::string best_match_info = "virtual device";
-    size_t best_match_len = 0;
-
     while (std::getline(mountinfo, line)) {
         std::stringstream ss(line);
+
         std::string id, parent, major_minor, root, mount_point;
+        if (!(ss >> id >> parent >> major_minor >> root >> mount_point))
+            continue;
 
-        if (ss >> id >> parent >> major_minor >> root >> mount_point) {
+        std::string token;
+        while (ss >> token && token != "-")
+            ;
 
-            std::string token;
-            while (ss >> token && token != "-")
-                ;
+        std::string fs_type, source;
+        if (!(ss >> fs_type >> source))
+            continue;
 
-            std::string fs_type, source;
-            if (ss >> fs_type >> source) {
+        auto format_output = [&](const std::string& src, const std::string& fs) {
+            if (src == fs)
+                return src;
+            return std::format("{} ({})", src, fs);
+        };
 
-                if (major_minor == target_dev) {
-                    return source;
-                }
+        if (major_minor == target_dev) {
+            exact_dev_match = format_output(source, fs_type);
+        }
 
-                if (path.find(mount_point) == 0) {
-                    bool valid_boundary = (path.length() == mount_point.length()) ||
-                                          (mount_point == "/") ||
-                                          (path[mount_point.length()] == '/');
+        if (path.compare(0, mount_point.size(), mount_point) == 0) {
+            bool valid_boundary = path.size() == mount_point.size() || mount_point == "/" ||
+                                  path[mount_point.size()] == '/';
 
-                    if (valid_boundary && mount_point.length() > best_match_len) {
-                        best_match_len = mount_point.length();
-
-                        if (source == fs_type) {
-                            best_match_info = source;
-                        } else {
-                            best_match_info = std::format("{} ({})", source, fs_type);
-                        }
-                    }
-                }
+            if (valid_boundary && mount_point.size() > best_path_len) {
+                best_path_len = mount_point.size();
+                best_path_match = format_output(source, fs_type);
             }
         }
     }
-    return best_match_info;
+
+    if (!exact_dev_match.empty())
+        return exact_dev_match;
+
+    return best_path_match;
 }
 
 struct ProgressStyle {
