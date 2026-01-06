@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.24)
 cmake_policy(SET CMP0135 NEW)
 
 # =============================================================================
-# Calyx - Modern Linux Server Benchmark
+# Calyx - Rapid Linux Server Profiler
 # =============================================================================
 project(calyx VERSION 7.1.2 LANGUAGES CXX C)
 
@@ -269,8 +269,8 @@ set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
 set(CPACK_PACKAGE_CONTACT "Alfie Ardinata <alfieardinata@outlook.com>")
 set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/relvinarsenio/calyx")
 set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
-set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "System Information & Network Benchmark Tool")
-set(CPACK_PACKAGE_DESCRIPTION "Calyx is a high-performance Linux server benchmarking tool written in Modern C++ (C++23).")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "System Information & Network Profiling Tool")
+set(CPACK_PACKAGE_DESCRIPTION "Calyx is a high-performance Linux server profiling tool written in Modern C++ (C++23).")
 
 set(CPACK_GENERATOR "TGZ;DEB")
 set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Alfie Ardinata <alfieardinata@outlook.com>")

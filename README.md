@@ -130,7 +130,7 @@ Downloading Speedtest CLI...
  Montreal, CA           39.62 Mbps        31.46 Mbps        291.89 ms   0.00 %  
  Paris, FR              54.28 Mbps        20.32 Mbps        194.75 ms   0.00 %  
  Amsterdam, NL          71.38 Mbps        20.90 Mbps        295.83 ms   0.00 %  
- Melbourne, AU          72.43 Mbps        20.49 Mbps        306.23 ms   0.00 % 
+ Melbourne, AU          72.43 Mbps        20.49 Mbps        306.23 ms   0.00 %  
 --------------------------------------------------------------------------------
  Finished in        : 2 min 55 sec
 

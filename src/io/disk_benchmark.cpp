@@ -88,7 +88,7 @@ std::string get_error_message(int err, std::string_view operation) {
             return "Permission denied during write operation.";
     case EINVAL:
         if (operation == "create")
-            return "FATAL: Filesystem does NOT support O_DIRECT (Direct I/O). Benchmark aborted to "
+            return "FATAL: Filesystem does NOT support O_DIRECT (Direct I/O). Test aborted to "
                    "maintain integrity.";
         else
             return "Invalid argument provided";
@@ -176,14 +176,14 @@ run_uring_io(bool is_write, io_uring& ring, int fd, std::uint64_t total_blocks,
             if (cqe->res < 0) {
                 io_uring_cq_advance(&ring, count);
                 std::string op = is_write ? "write" : "read";
-                return std::unexpected("Benchmark failed: " + get_error_message(-cqe->res, op));
+                return std::unexpected("Disk Test failed: " + get_error_message(-cqe->res, op));
             }
 
             if (cqe->res != expected_len) {
                 io_uring_cq_advance(&ring, count);
                 std::string op = is_write ? "write" : "read";
                 return std::unexpected(
-                    std::format("Benchmark failed: Partial {} (expected {} bytes, got {})", op,
+                    std::format("Disk Test failed: Partial {} (expected {} bytes, got {})", op,
                                 expected_len, cqe->res));
             }
 
@@ -197,7 +197,7 @@ run_uring_io(bool is_write, io_uring& ring, int fd, std::uint64_t total_blocks,
         io_uring_cq_advance(&ring, count);
 
         if (high_resolution_clock::now() > deadline) {
-            return std::unexpected("Benchmark timed out (operation took too long)");
+            return std::unexpected("Disk Test timed out (operation took too long)");
         }
     }
 
@@ -213,7 +213,7 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(
     const std::function<void(std::size_t, std::size_t, std::string_view)>& progress_cb,
     std::stop_token stop) {
 
-    const std::string filename(Config::BENCHMARK_FILENAME);
+    const std::string filename(Config::TEST_FILENAME);
     FileCleaner cleaner{filename};
 
     const size_t write_block_size = Config::IO_WRITE_BLOCK_SIZE;
@@ -226,7 +226,7 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(
         std::uint64_t available = static_cast<std::uint64_t>(vfs.f_bavail) * vfs.f_frsize;
         std::uint64_t required = static_cast<std::uint64_t>(size_mb) * 1024 * 1024;
         if (available < required) {
-            return std::unexpected("Insufficient free space for disk benchmark (needs " +
+            return std::unexpected("Insufficient free space for disk test (needs " +
                                    format_bytes(required) + ")");
         }
     }

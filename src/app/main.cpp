@@ -294,7 +294,7 @@ void run_app(std::string_view app_path) {
                 Color::colorize(std::format("Read {:>8.1f} MB/s", result->read_mbps), Color::CYAN));
             disk_runs.push_back(*result);
         } else {
-            std::println("\r{}[!] Disk Benchmark Aborted: {}{}", Color::RED, result.error(),
+            std::println("\r{}[!] Disk Test Aborted: {}{}", Color::RED, result.error(),
                          Color::RESET);
             disk_error = true;
             break;
