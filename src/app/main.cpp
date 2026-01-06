@@ -137,7 +137,7 @@ void run_app(std::string_view app_path) {
     std::print("\033c");
     print_centered_header("Calyx - Rapid VPS Profiler (v7.1.2)");
     std::println(" Author : Alfie Ardinata (https://calyx.pages.dev/)");
-    std::println(" GitHub : https://github.com/relviarsenio/calyx");
+    std::println(" GitHub : https://github.com/relvinarsenio/calyx");
     std::println(" Usage  : ./{}", app_name);
     print_line();
 
