@@ -154,7 +154,14 @@ run_uring_io(bool is_write, io_uring& ring, int fd, std::uint64_t total_blocks,
 
         io_uring_cqe* cqe = nullptr;
         int wait_rc = io_uring_wait_cqe(&ring, &cqe);
+        
         if (wait_rc < 0) {
+            if (wait_rc == -EINTR) {
+                if (g_interrupted || stop.stop_requested()) {
+                    return std::unexpected("Operation interrupted by user");
+                }
+                continue;
+            }
             return std::unexpected(uring_error(wait_rc, "wait"));
         }
 
