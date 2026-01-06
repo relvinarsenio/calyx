@@ -12,7 +12,6 @@
 #include <chrono>
 #include <cstdlib>
 #include <format>
-#include <iostream>
 #include <memory>
 #include <print>
 #include <span>
@@ -88,13 +87,11 @@ public:
                         .count();
                 std::print("\r {:<28} {} {:4.1f}s", text_, frames_[idx++ % frames_.size()],
                            elapsed);
-                std::cout.flush();
 
                 std::this_thread::sleep_for(std::chrono::milliseconds(Config::UI_SPINNER_DELAY_MS));
             }
 
             std::print("\r\x1b[2K");
-            std::cout.flush();
         });
     }
 

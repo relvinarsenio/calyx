@@ -8,7 +8,7 @@
 # This project requires Docker build for consistent results.
 # =============================================================================
 
-set(BENCH_MIN_CLANG_VERSION 20)
+set(CALYX_MIN_CLANG_VERSION 20)
 
 # =============================================================================
 # Verify Clang is being used
@@ -111,9 +111,9 @@ execute_process(
 string(REGEX MATCH "clang version ([0-9]+)" _ "${CLANG_VERSION_OUTPUT}")
 set(CLANG_VERSION ${CMAKE_MATCH_1})
 
-if(NOT CLANG_VERSION VERSION_GREATER_EQUAL ${BENCH_MIN_CLANG_VERSION})
+if(NOT CLANG_VERSION VERSION_GREATER_EQUAL ${CALYX_MIN_CLANG_VERSION})
     message(FATAL_ERROR 
-        "❌ Clang version ${CLANG_VERSION} detected, minimum required is ${BENCH_MIN_CLANG_VERSION}.\n"
+        "❌ Clang version ${CLANG_VERSION} detected, minimum required is ${CALYX_MIN_CLANG_VERSION}.\n"
         "\n"
         "Please use Docker to build:\n"
         "   ./build-static.sh\n"

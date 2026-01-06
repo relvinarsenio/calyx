@@ -10,11 +10,13 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
-#include <iostream>
 #include <print>
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
 
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
@@ -53,6 +55,65 @@ public:
     LibCurlContext& operator=(const LibCurlContext&) = delete;
 };
 
+std::string get_device_name(const std::string& path) {
+    struct stat st{};
+    if (stat(path.c_str(), &st) != 0)
+        return "unknown device";
+
+    std::ifstream mountinfo("/proc/self/mountinfo");
+    if (!mountinfo)
+        return "unknown device";
+
+    const std::string target_dev = std::format("{}:{}", major(st.st_dev), minor(st.st_dev));
+
+    std::string best_path_match = "unknown device";
+    size_t best_path_len = 0;
+
+    std::string exact_dev_match;
+
+    std::string line;
+    while (std::getline(mountinfo, line)) {
+        std::stringstream ss(line);
+
+        std::string id, parent, major_minor, root, mount_point;
+        if (!(ss >> id >> parent >> major_minor >> root >> mount_point))
+            continue;
+
+        std::string token;
+        while (ss >> token && token != "-")
+            ;
+
+        std::string fs_type, source;
+        if (!(ss >> fs_type >> source))
+            continue;
+
+        auto format_output = [&](const std::string& src, const std::string& fs) {
+            if (src == fs)
+                return src;
+            return std::format("{} ({})", src, fs);
+        };
+
+        if (major_minor == target_dev) {
+            exact_dev_match = format_output(source, fs_type);
+        }
+
+        if (path.compare(0, mount_point.size(), mount_point) == 0) {
+            bool valid_boundary = path.size() == mount_point.size() || mount_point == "/" ||
+                                  path[mount_point.size()] == '/';
+
+            if (valid_boundary && mount_point.size() > best_path_len) {
+                best_path_len = mount_point.size();
+                best_path_match = format_output(source, fs_type);
+            }
+        }
+    }
+
+    if (!exact_dev_match.empty())
+        return exact_dev_match;
+
+    return best_path_match;
+}
+
 struct ProgressStyle {
     std::string_view fill;
     std::string_view empty;
@@ -69,13 +130,15 @@ void run_app(std::string_view app_path) {
 
     std::string app_name = fs::path(app_path).filename().string();
     if (app_name.empty())
-        app_name = "bench";
+        app_name = "calyx";
+
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
 
     std::print("\033c");
-    std::cout << std::flush;
-    print_line();
-    std::println(" A Bench Script (C++ Edition v7.1.1)");
-    std::println(" Usage : ./{}", app_name);
+    print_centered_header("Calyx - Rapid VPS Profiler (v7.1.2)");
+    std::println(" {:<18} : {}", "Author", "Alfie Ardinata (https://calyx.pages.dev/)");
+    std::println(" {:<18} : {}", "GitHub", "https://github.com/relvinarsenio/calyx");
+    std::println(" {:<18} : ./{}", "Usage", app_name);
     print_line();
 
     std::println(" -> {}", Color::colorize("CPU & Hardware", Color::BOLD));
@@ -106,10 +169,18 @@ void run_app(std::string_view app_path) {
     std::println(" {:<20} : {}", "Load Average",
                  Color::colorize(SystemInfo::get_load_avg(), Color::YELLOW));
 
+    std::error_code ec;
+    std::string current_dir = fs::current_path(ec).string();
+    if (ec)
+        current_dir = ".";
+    std::string dev_name = get_device_name(current_dir);
+
     auto mem = SystemInfo::get_memory_status();
-    auto disk = SystemInfo::get_disk_usage("/");
+    auto disk = SystemInfo::get_disk_usage(current_dir);
 
     std::println("\n -> {}", Color::colorize("Storage & Memory", Color::BOLD));
+    std::println(" {:<20} : {} ({})", "Disk Test Path", Color::colorize(current_dir, Color::CYAN),
+                 Color::colorize(dev_name, Color::YELLOW));
     std::println(" {:<20} : {} ({} Used)", "Total Disk",
                  Color::colorize(format_bytes(disk.total), Color::YELLOW),
                  Color::colorize(format_bytes(disk.used), Color::CYAN));
@@ -210,12 +281,10 @@ void run_app(std::string_view app_path) {
             }
 
             std::print("\r\x1b[2K {:<{}} [{}] {:3}%", lbl, io_label_width, bar, percent);
-            std::cout << std::flush;
         };
 
         auto result = DiskBenchmark::run_io_test(Config::DISK_TEST_SIZE_MB, label, progress_cb);
         std::print("\r\x1b[2K");
-        std::cout << std::flush;
 
         if (result) {
             std::println(
@@ -225,7 +294,7 @@ void run_app(std::string_view app_path) {
                 Color::colorize(std::format("Read {:>8.1f} MB/s", result->read_mbps), Color::CYAN));
             disk_runs.push_back(*result);
         } else {
-            std::println("\r{}[!] Disk Benchmark Skipped: {}{}", Color::RED, result.error(),
+            std::println("\r{}[!] Disk Test Aborted: {}{}", Color::RED, result.error(),
                          Color::RESET);
             disk_error = true;
             break;
@@ -245,6 +314,12 @@ void run_app(std::string_view app_path) {
         std::println(" {:<{}}: {}   {}", " I/O Speed (Average)", io_label_width,
                      Color::colorize(std::format("Write {:>8.1f} MB/s", avg_w), Color::YELLOW),
                      Color::colorize(std::format("Read {:>8.1f} MB/s", avg_r), Color::CYAN));
+
+        std::println(
+            "{}",
+            Color::colorize(
+                "Note: Write speed reflects real disk commit speed, not temporary cache speed.",
+                Color::BOLD));
     }
 
     print_line();
@@ -276,7 +351,7 @@ int main(int argc, char* argv[]) {
         SignalGuard signal_guard;
         LibCurlContext curl_context;
 
-        std::string_view app_path = (argc > 0) ? argv[0] : "bench";
+        std::string_view app_path = (argc > 0) ? argv[0] : "calyx";
         run_app(app_path);
     } catch (const std::exception& e) {
         std::println(stderr, "\n{}Fatal Error: {}{}", Color::RED, e.what(), Color::RESET);
