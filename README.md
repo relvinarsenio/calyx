@@ -10,7 +10,7 @@ Unlike traditional bash scripts that rely on external tools (like `awk`, `sed`, 
 * **Rapid System Profiling**: Instant detection of CPU Model, Cache, Virtualization (Docker/KVM/Hyper-V), and specific RAM/Swap types (ZRAM/ZSwap).
 * **Context-Aware Storage Check**: Automatically detects the filesystem and capacity of the specific partition where the test is running (supports OverlayFS, Btrfs, Ext4, etc.).
 * **Network Speedtest**: Native integration with Ookla Speedtest CLI via JSON parsing for accurate Latency, Jitter, and Packet Loss data (impersonating a real browser to avoid blocks).
-* **Fully Static Binary**: Zero runtime dependencies (Musl-linked) - runs on any Linux distribution (Alpine, Ubuntu, CentOS, Arch, etc.).
+* **Fully Static Binary**: Zero runtime dependencies (Musl-linked) - runs on Linux Kernel 5.1+ with io_uring support distribution (Alpine, Ubuntu, CentOS, Arch, etc.).
 * **Modern Tech Stack**: Built with C++23 (`std::print`, `std::expected`) and utilizes `io_uring` for asynchronous I/O.
 
 ---
