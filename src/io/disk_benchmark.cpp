@@ -213,7 +213,7 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(
     const std::function<void(std::size_t, std::size_t, std::string_view)>& progress_cb,
     std::stop_token stop) {
 
-    const std::string filename(Config::BENCH_FILENAME);
+    const std::string filename(Config::BENCHMARK_FILENAME);
     FileCleaner cleaner{filename};
 
     const size_t write_block_size = Config::IO_WRITE_BLOCK_SIZE;
@@ -248,7 +248,7 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(
     }
 
     auto start = high_resolution_clock::now();
-    auto deadline = start + std::chrono::seconds(Config::DISK_BENCH_MAX_SECONDS);
+    auto deadline = start + std::chrono::seconds(Config::DISK_BENCHMARK_MAX_SECONDS);
     const std::uint64_t total_bytes = static_cast<std::uint64_t>(size_mb) * 1024 * 1024;
     const std::uint64_t total_write_blocks =
         (total_bytes + write_block_size - 1) / write_block_size;
@@ -330,7 +330,7 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(
     FileDescriptor read_fd(rd_raw);
     auto read_start = high_resolution_clock::now();
 
-    deadline = read_start + std::chrono::seconds(Config::DISK_BENCH_MAX_SECONDS);
+    deadline = read_start + std::chrono::seconds(Config::DISK_BENCHMARK_MAX_SECONDS);
     const std::string read_label = std::string(label) + " Read";
 
 #ifdef USE_IO_URING

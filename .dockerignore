@@ -15,7 +15,7 @@ Makefile
 compile_commands.json
 speedtest.tgz
 speedtest-cli/
-benchtest_file
+calyx_test_file
 openssl-*.tar.gz
 openssl-install/
 *.o

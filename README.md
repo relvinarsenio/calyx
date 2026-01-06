@@ -1,19 +1,17 @@
-# Bench - Modern Linux Server Benchmark
+# Calyx - Rapid VPS Profiler
 
-**Bench** is a high-performance Linux server benchmarking tool written in **Modern C++ (C++23)**. It provides accurate, detailed, and memory-safe performance metrics.
+**Calyx** is a high-performance, rapid Linux server profiling and benchmarking tool written in **Modern C++ (C++23)**. It is designed to be completely static, memory-safe, and incredibly fast.
 
-Unlike traditional bash scripts, Bench parses kernel interfaces (`/proc`, `/sys`) directly and utilizes native system calls to ensure precision and minimal overhead.
-
-Inspired by the legendary [bench.sh](https://github.com/teddysun/across/blob/master/bench.sh), rewritten in Modern C++ for maximum accuracy and zero-overhead performance.
+Unlike traditional bash scripts that rely on external tools (like `awk`, `sed`, or `grep`), Calyx parses kernel interfaces (`/proc`, `/sys`) directly using native C++ system calls for maximum precision and zero overhead.
 
 ## 🔥 Key Features
 
-* **Hardcore Disk I/O Test**: Uses `O_DIRECT` flag to bypass RAM Cache (Page Cache), measuring true raw disk speed.
-* **Detailed System Info**: Deep hardware detection (CPU Model, Cache, Virtualization Type, Swap Types) without relying on external tools.
-* **Network Speedtest**: Integrates with official Ookla Speedtest CLI via JSON parsing for accurate latency, jitter, and packet loss data.
-* **Memory Safe & Robust**: Built with RAII principles, Async-Signal-Safe handling, and optimistic error management.
-* **Fully Static Binary**: Zero runtime dependencies - runs on any Linux distribution.
-* **Modern Tech Stack**: Leverages C++23 features (`std::print`, `std::format`, `std::expected`).
+* **Hardcore Disk I/O Test**: Uses `O_DIRECT` + `io_uring` (where available) to bypass RAM Cache (Page Cache), measuring true raw disk speed / commit speed.
+* **Rapid System Profiling**: Instant detection of CPU Model, Cache, Virtualization (Docker/KVM/Hyper-V), and specific RAM/Swap types (ZRAM/ZSwap).
+* **Context-Aware Storage Check**: Automatically detects the filesystem and capacity of the specific partition where the test is running (supports OverlayFS, Btrfs, Ext4, etc.).
+* **Network Speedtest**: Native integration with Ookla Speedtest CLI via JSON parsing for accurate Latency, Jitter, and Packet Loss data (impersonating a real browser to avoid blocks).
+* **Fully Static Binary**: Zero runtime dependencies (Musl-linked) - runs on any Linux distribution (Alpine, Ubuntu, CentOS, Arch, etc.).
+* **Modern Tech Stack**: Built with C++23 (`std::print`, `std::expected`) and utilizes `io_uring` for asynchronous I/O.
 
 ---
 
@@ -22,9 +20,10 @@ Inspired by the legendary [bench.sh](https://github.com/teddysun/across/blob/mas
 Download and run the pre-built static binary - **no compilation required**:
 
 ```bash
-curl -L -o bench https://github.com/relvinarsenio/bench/releases/latest/download/bench \
-  && chmod +x bench \
-  && ./bench
+curl -L -o calyx https://github.com/relvinarsenio/calyx/releases/latest/download/calyx \
+  && chmod +x calyx \
+  && ./calyx
+
 ```
 
 ---
@@ -34,43 +33,35 @@ curl -L -o bench https://github.com/relvinarsenio/bench/releases/latest/download
 ### Requirements
 
 | Component | Requirement | Notes |
-|-----------|-------------|-------|
+| --- | --- | --- |
 | **OS** | Linux | Any distro with Docker support |
-| **Docker** | 20.10+ | Required for building |
+| **Docker** | 20.10+ | Required for building static binary |
 
-### All Dependencies Built from Source ✨
+### Dependencies (Handled Automatically)
 
-This project is **fully reproducible** - all dependencies are automatically downloaded and built from source during the Docker build:
+This project is **fully reproducible**. All dependencies are automatically downloaded and built from source during the Docker build process:
 
-| Library | Version | Purpose | Optimization |
-|---------|---------|---------|--------------|
-| **zlib** | 1.3.1 | Compression | Full LTO + -Oz |
-| **LibreSSL** | 4.2.1 | TLS/SSL (libs only) | Full LTO + -Oz |
-| **libcurl** | 8.17.0 | HTTP/HTTPS only | Full LTO + -Oz |
-| **nlohmann/json** | 3.12.0 | JSON parsing | Header-only |
-
-> **Build Optimizations**:
-> - All libraries compiled with **Full LTO** and **-Oz** for maximum performance
-> - Final binary compiled with **-Oz** for size optimization
-> - libcurl built with **ultra-minimal features** (HTTP/HTTPS only, no FTP/LDAP/SMTP/etc.)
-> - LibreSSL built without apps/tests/netcat
-> - ICF (Identical Code Folding) enabled for the final binary
+* **zlib** (v1.3.1) - Full LTO + -Oz
+* **LibreSSL** (v4.2.1) - Full LTO + -Oz
+* **libcurl** (v8.17.0) - Ultra-minimal (HTTP/HTTPS only)
+* **nlohmann/json** (v3.12.0)
 
 ### Build with Docker 🐳
 
-The Docker build creates a fully static musl binary (~2.6MB):
+The build script will create a fully static binary (~2.6 MB) inside the `dist/` folder:
 
 ```bash
 # Clone the repo
-git clone https://github.com/relvinarsenio/bench.git
-cd bench
+git clone https://github.com/relvinarsenio/calyx.git
+cd calyx
 
-# Build with Docker
+# Build using Docker
 chmod +x build-static.sh
 ./build-static.sh
 
-# Run
-./dist/bench
+# Run the result
+./dist/calyx
+
 ```
 
 #### Build Options
@@ -79,79 +70,24 @@ chmod +x build-static.sh
 # Normal build (uses cached Docker image if available)
 ./build-static.sh
 
-# Fresh build (removes existing Docker image and rebuilds from scratch)
+# Fresh build (force rebuild dependencies)
 ./build-static.sh --fresh-build
 
-# Show help
-./build-static.sh --help
 ```
-
-#### Manual Docker Commands
-
-If you prefer to run Docker commands manually:
-
-```bash
-docker build -t bench-builder .
-docker create --name extract bench-builder
-docker cp extract:/src/build/bench ./bench
-docker rm extract
-./bench
-```
-
----
-
-## 📁 Project Structure
-
-```text
-bench/
-├── CMakeLists.txt          # Main build configuration
-├── Dockerfile              # Docker build for musl static binary
-├── build-static.sh         # Helper script for Docker builds
-├── cmake/
-│   ├── DetectCompiler.cmake # Clang + libc++ detection
-│   └── StaticDeps.cmake    # Builds ALL deps from source with Full LTO
-├── include/                # Header files
-│   ├── cli_renderer.hpp
-│   ├── config.hpp
-│   ├── disk_benchmark.hpp
-│   ├── http_client.hpp
-│   ├── speed_test.hpp
-│   ├── system_info.hpp
-│   └── ...
-└── src/                    # Source files
-    ├── app/main.cpp
-    ├── core/
-    ├── io/
-    ├── net/
-    ├── os/
-    ├── system/
-    └── ui/
-```
-
-### Build Process
-
-1. **Docker Build** (~5-6 min first time):
-   - Uses Alpine Linux with **Clang + libc++ (Full LLVM Stack)**
-   - Downloads zlib, LibreSSL, libcurl, nlohmann/json
-   - Builds all libraries with **Full LTO + -Oz** for maximum performance
-   - Final binary compiled with **-Oz** for size optimization
-   - ICF (Identical Code Folding) enabled for further size reduction
-   - Compiles and links everything statically
-
-2. **Result**: Single static executable (~2.6 MB with musl, stripped)
 
 ---
 
 ## 📊 Example Output
 
-```
---------------------------------------------------------------------------------
- A Bench Script (C++ Edition v7.1.2)
- Usage : ./bench
+```text
+--------------------- Calyx - Rapid VPS Profiler (v7.1.2) ----------------------
+ Author : Alfie Ardinata (https://calyx.pages.dev/)
+ GitHub : https://github.com/relvinarsenio/calyx
+ Usage  : ./calyx
 --------------------------------------------------------------------------------
  -> CPU & Hardware
  CPU Model            : AMD Ryzen 5 7535HS with Radeon Graphics
- CPU Cores            : 4 @ 3280.2 MHz
+ CPU Cores            : 4 @ 4587.8 MHz
  CPU Cache            : 16 MB
  AES-NI               : ✓ Enabled
  VM-x/AMD-V           : ✗ Disabled
@@ -162,14 +98,15 @@ bench/
  Kernel               : 6.12.0-106.55.4.2.el10uek.x86_64
  TCP CC               : bbr
  Virtualization       : Hyper-V
- System Uptime        : 0 days, 10 hour 21 min
- Load Average         : 1.09, 1.24, 0.91
+ System Uptime        : 0 days, 4 hour 40 min
+ Load Average         : 1.72, 0.87, 0.55
 
  -> Storage & Memory
- Total Disk           : 60.2 GB (11.8 GB Used)
- Total Mem            : 2.5 GB (1.5 GB Used)
- Total Swap           : 3.2 GB (1.3 GB Used)
-   -> Partition        : 3.2 GB (1.3 GB Used) (/dev/sda2)
+ Disk Test Path       : /home/user/calyx (/dev/sda3 (btrfs))
+ Total Disk           : 60.2 GB (12.1 GB Used)
+ Total Mem            : 2.5 GB (1.6 GB Used)
+ Total Swap           : 3.2 GB (1.1 GB Used)
+   -> Partition        : 3.2 GB (1.1 GB Used) (/dev/sda2)
    -> ZSwap            : Enabled
 
  -> Network
@@ -179,10 +116,11 @@ bench/
  Region               : Lampung
 --------------------------------------------------------------------------------
 Running I/O Test (1GB File)...
-  I/O Speed (Run #1)   : Write   2375.6 MB/s   Read   3789.6 MB/s
-  I/O Speed (Run #2)   : Write   2458.0 MB/s   Read   3883.0 MB/s
-  I/O Speed (Run #3)   : Write   2568.0 MB/s   Read   3619.0 MB/s
-  I/O Speed (Average)  : Write   2467.2 MB/s   Read   3763.9 MB/s
+  I/O Speed (Run #1)   : Write    952.2 MB/s   Read   4206.5 MB/s
+  I/O Speed (Run #2)   : Write    194.4 MB/s   Read   4207.1 MB/s
+  I/O Speed (Run #3)   : Write   1168.6 MB/s   Read   4195.1 MB/s
+  I/O Speed (Average)  : Write    771.7 MB/s   Read   4202.9 MB/s
+Note: Write speed reflects real disk commit speed, not temporary cache speed.
 --------------------------------------------------------------------------------
 Downloading Speedtest CLI...
  Node Name              Download          Upload            Latency     Loss    
@@ -191,10 +129,11 @@ Downloading Speedtest CLI...
  Los Angeles, US        23.18 Mbps        21.72 Mbps        219.95 ms   0.42 %  
  Montreal, CA           39.62 Mbps        31.46 Mbps        291.89 ms   0.00 %  
  Paris, FR              54.28 Mbps        20.32 Mbps        194.75 ms   0.00 %  
- Amsterdam, NL          33.56 Mbps        18.65 Mbps        284.12 ms   0.00 %  
- Melbourne, AU          72.43 Mbps        20.49 Mbps        306.23 ms   0.00 %  
+ Amsterdam, NL          71.38 Mbps        20.90 Mbps        295.83 ms   0.00 %  
+ Melbourne, AU          72.43 Mbps        20.49 Mbps        306.23 ms   0.00 % 
 --------------------------------------------------------------------------------
- Finished in        : 4 min 1 sec
+ Finished in        : 2 min 55 sec
+
 ```
 
 ---
@@ -202,3 +141,4 @@ Downloading Speedtest CLI...
 ## ⚖️ License
 
 This project is licensed under the **Mozilla Public License 2.0**.
+

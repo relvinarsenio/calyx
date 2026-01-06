@@ -4,9 +4,9 @@ cmake_minimum_required(VERSION 3.24)
 cmake_policy(SET CMP0135 NEW)
 
 # =============================================================================
-# Bench - Modern Linux Server Benchmark
+# Calyx - Modern Linux Server Benchmark
 # =============================================================================
-project(bench VERSION 7.1.2 LANGUAGES CXX C)
+project(calyx VERSION 7.1.2 LANGUAGES CXX C)
 
 # C++23 Required
 set(CMAKE_CXX_STANDARD 23)
@@ -196,7 +196,7 @@ add_custom_target(generate_cert DEPENDS "${EMBEDDED_CERT_PATH}")
 # =============================================================================
 # 6. Build Target
 # =============================================================================
-add_executable(bench
+add_executable(calyx
     src/app/main.cpp
     src/core/interrupts.cpp
     src/core/utils.cpp
@@ -211,14 +211,14 @@ add_executable(bench
 )
 
 # Apply ICF optimization
-set_target_properties(bench PROPERTIES
+set_target_properties(calyx PROPERTIES
     LINK_FLAGS "-Wl,--icf=all"
 )
 
 # Explicit dependency
-add_dependencies(bench generate_cert)
+add_dependencies(calyx generate_cert)
 
-target_include_directories(bench PRIVATE
+target_include_directories(calyx PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     "${GEN_INC_DIR}"
@@ -227,7 +227,7 @@ target_include_directories(bench PRIVATE
 # =============================================================================
 # 7. Linking
 # =============================================================================
-target_link_libraries(bench 
+target_link_libraries(calyx 
     PRIVATE 
     CURL::libcurl
     nlohmann_json::nlohmann_json
@@ -246,31 +246,31 @@ if(USE_IO_URING)
     set(CMAKE_FIND_LIBRARY_SUFFIXES ${_OLD_SUFFIXES})
     if(LIBURING_INCLUDE_DIR AND LIBURING_LIBRARY)
         message(STATUS "🌀 io_uring enabled")
-        target_compile_definitions(bench PRIVATE USE_IO_URING=1)
-        target_include_directories(bench PRIVATE ${LIBURING_INCLUDE_DIR})
-        target_link_libraries(bench PRIVATE ${LIBURING_LIBRARY})
+        target_compile_definitions(calyx PRIVATE USE_IO_URING=1)
+        target_include_directories(calyx PRIVATE ${LIBURING_INCLUDE_DIR})
+        target_link_libraries(calyx PRIVATE ${LIBURING_LIBRARY})
     else()
         message(WARNING "io_uring requested but liburing not found; falling back to std::async path")
     endif()
 endif()
 
 if(USE_LIBCXX AND STL_STATIC_LIBS)
-    target_link_libraries(bench PRIVATE ${STL_STATIC_LIBS})
+    target_link_libraries(calyx PRIVATE ${STL_STATIC_LIBS})
 endif()
 
 # =============================================================================
 # 8. Install & Packaging (CPack)
 # =============================================================================
-install(TARGETS bench DESTINATION bin)
+install(TARGETS calyx DESTINATION bin)
 
-set(CPACK_PACKAGE_NAME "bench")
+set(CPACK_PACKAGE_NAME "calyx")
 set(CPACK_PACKAGE_VENDOR "Alfie Ardinata")
 set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
 set(CPACK_PACKAGE_CONTACT "Alfie Ardinata <alfieardinata@outlook.com>")
-set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/relvinarsenio/bench")
+set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/relvinarsenio/calyx")
 set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "System Information & Network Benchmark Tool")
-set(CPACK_PACKAGE_DESCRIPTION "Bench is a high-performance Linux server benchmarking tool written in Modern C++ (C++23).")
+set(CPACK_PACKAGE_DESCRIPTION "Calyx is a high-performance Linux server benchmarking tool written in Modern C++ (C++23).")
 
 set(CPACK_GENERATOR "TGZ;DEB")
 set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Alfie Ardinata <alfieardinata@outlook.com>")

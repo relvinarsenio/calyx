@@ -22,7 +22,7 @@ constexpr std::size_t IO_WRITE_BLOCK_SIZE = 1 * 1024 * 1024;
 constexpr std::size_t IO_READ_BLOCK_SIZE = 1 * 1024 * 1024;
 constexpr std::size_t IO_ALIGNMENT = 4096;
 constexpr std::size_t TERM_WIDTH = 80;
-constexpr std::string_view BENCH_FILENAME = "benchtest_file";
+constexpr std::string_view BENCHMARK_FILENAME = "calyx_test_file";
 
 constexpr bool IO_URING_ENABLED = true;
 constexpr std::size_t PIPE_MAX_OUTPUT_BYTES = 10 * 1024 * 1024;
@@ -36,7 +36,7 @@ constexpr long HTTP_TIMEOUT_SEC = 10;
 constexpr long HTTP_CONNECT_TIMEOUT_SEC = 10;
 constexpr long SPEEDTEST_DL_TIMEOUT_SEC = 60;
 
-constexpr long DISK_BENCH_MAX_SECONDS = 600;
+constexpr long DISK_BENCHMARK_MAX_SECONDS = 600;
 
 constexpr long CHECK_CONN_TIMEOUT_SEC = 5;
 constexpr long CHECK_CONN_CONNECT_TIMEOUT_SEC = 3;

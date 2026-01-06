@@ -7,7 +7,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-IMAGE_NAME="bench-builder"
+IMAGE_NAME="calyx-builder"
 
 # =============================================================================
 # 0. Trap / Auto-Cleanup on Interrupt
@@ -17,7 +17,7 @@ cleanup_on_interrupt() {
     echo "🛑  Build cancelled by user (Ctrl+C)!"
     echo "🧹  Cleaning up build containers..."
     
-    docker rm -f bench-extract >/dev/null 2>&1 || true
+    docker rm -f calyx-extract >/dev/null 2>&1 || true
     
 
     docker ps -a -q --filter "ancestor=$IMAGE_NAME" | xargs -r docker rm -f >/dev/null 2>&1 || true
@@ -105,21 +105,21 @@ echo "📦 Extracting binary..."
 # FIX: Create directory RIGHT HERE to guarantee it exists
 mkdir -p "$SCRIPT_DIR/dist"
 
-docker rm -f bench-extract 2>/dev/null || true
-docker create --name bench-extract "$IMAGE_NAME" /bin/true
+docker rm -f calyx-extract 2>/dev/null || true
+docker create --name calyx-extract "$IMAGE_NAME" /bin/true
 
 # Copy to explicit path
-docker cp bench-extract:/src/build/bench "$SCRIPT_DIR/dist/bench"
+docker cp calyx-extract:/src/build/calyx "$SCRIPT_DIR/dist/calyx"
 
-docker rm bench-extract
+docker rm calyx-extract
 
 # Show results
 echo ""
 echo "✅ Build complete!"
 echo "=============================================="
-file "$SCRIPT_DIR/dist/bench"
-ls -lh "$SCRIPT_DIR/dist/bench"
+file "$SCRIPT_DIR/dist/calyx"
+ls -lh "$SCRIPT_DIR/dist/calyx"
 echo ""
-echo "Binary location: ./dist/bench"
+echo "Binary location: ./dist/calyx"
 echo ""
-echo "Test with: ./dist/bench"
+echo "Test with: ./dist/calyx"

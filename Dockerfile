@@ -1,5 +1,5 @@
 # =============================================================================
-# Dockerfile - Musl Static Build for Bench
+# Dockerfile - Musl Static Build for Calyx
 # =============================================================================
 # Optimized for: Maximum performance + Security hardening
 # =============================================================================
@@ -46,7 +46,7 @@ RUN mkdir build && cd build && \
     make -j$(nproc)
 
 # Strip binary (remove debug symbols for smaller size)
-RUN strip build/bench
+RUN strip build/calyx
 
 # =============================================================================
 # Runtime Stage - PURE SCRATCH (Kosong melompong)
@@ -55,6 +55,6 @@ FROM scratch AS runtime
 
 # Copy binary doang.
 # GAK PERLU copy ca-certificates.crt lagi (karena udah embedded)
-COPY --from=builder /src/build/bench /bench
+COPY --from=builder /src/build/calyx /calyx
 
-ENTRYPOINT ["/bench"]
+ENTRYPOINT ["/calyx"]

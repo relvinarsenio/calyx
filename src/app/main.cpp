@@ -130,15 +130,15 @@ void run_app(std::string_view app_path) {
 
     std::string app_name = fs::path(app_path).filename().string();
     if (app_name.empty())
-        app_name = "bench";
+        app_name = "calyx";
 
     std::setvbuf(stdout, nullptr, _IONBF, 0);
 
     std::print("\033c");
     print_centered_header("Calyx - Rapid VPS Profiler (v7.1.2)");
-    std::println(" Author : Alfie Ardinata (https://calyx.pages.dev/)");
-    std::println(" GitHub : https://github.com/relvinarsenio/calyx");
-    std::println(" Usage  : ./{}", app_name);
+    std::println(" {:<18} : {}", "Author", "Alfie Ardinata (https://calyx.pages.dev/)");
+    std::println(" {:<18} : {}", "GitHub", "https://github.com/relvinarsenio/calyx");
+    std::println(" {:<18} : ./{}", "Usage", app_name);
     print_line();
 
     std::println(" -> {}", Color::colorize("CPU & Hardware", Color::BOLD));
@@ -351,7 +351,7 @@ int main(int argc, char* argv[]) {
         SignalGuard signal_guard;
         LibCurlContext curl_context;
 
-        std::string_view app_path = (argc > 0) ? argv[0] : "bench";
+        std::string_view app_path = (argc > 0) ? argv[0] : "calyx";
         run_app(app_path);
     } catch (const std::exception& e) {
         std::println(stderr, "\n{}Fatal Error: {}{}", Color::RED, e.what(), Color::RESET);

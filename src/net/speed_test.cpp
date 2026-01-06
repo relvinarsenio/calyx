@@ -46,7 +46,7 @@ constexpr std::array<Node, 7> SERVERS = {{{"", "Speedtest.net (Auto)"},
                                           {"59219", "Montreal, CA"},
                                           {"41840", "Paris, FR"},
                                           {"3386", "Amsterdam, NL"},
-                                          {"46114", "Melbourne, AU"}}};
+                                          {"44471", "Melbourne, AU"}}};
 
 class SpinnerScope {
     const SpinnerCallback& cb_;

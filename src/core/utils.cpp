@@ -75,7 +75,7 @@ void cleanup_artifacts() {
     const auto exe_dir = get_exe_dir();
 
     for (const auto& filename :
-         {Config::SPEEDTEST_TGZ, std::string_view("speedtest-cli"), Config::BENCH_FILENAME}) {
+         {Config::SPEEDTEST_TGZ, std::string_view("speedtest-cli"), Config::BENCHMARK_FILENAME}) {
         std::error_code ec;
 
         if (fs::exists(filename, ec)) {
