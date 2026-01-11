@@ -131,31 +131,15 @@ bool is_safe_filename(std::string_view filename) {
 
 class SecureFileHandle {
    private:
-    std::unique_ptr<FileDescriptor> fd_;
+    FileDescriptor fd_;
     std::filesystem::path file_path_;
     bool committed_ = false;
 
    public:
-    explicit SecureFileHandle(const std::filesystem::path& path) : file_path_(path) {
-        int fd = ::open(
-            path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR);
-
-        if (fd == -1) {
-            if (errno == EEXIST || errno == ELOOP) {
-                throw std::system_error(
-                    EEXIST, std::generic_category(), "File exists or symlink detected");
-            }
-            throw std::system_error(errno, std::generic_category(), "Failed to create secure file");
-        }
-
-        fd_ = std::make_unique<FileDescriptor>(fd);
-    }
+    explicit SecureFileHandle(const std::filesystem::path& path) : fd_(create_fd(path)), file_path_(path) {}
 
     bool write(const void* data, size_t size) {
-        if (!fd_)
-            return false;
-
-        ssize_t written = ::write(fd_->get(), data, size);
+        ssize_t written = ::write(fd_.get(), data, size);
         return written == static_cast<ssize_t>(size);
     }
 
@@ -171,7 +155,23 @@ class SecureFileHandle {
     }
 
     FileDescriptor& get_fd() {
-        return *fd_;
+        return fd_;
+    }
+
+   private:
+    static int create_fd(const std::filesystem::path& path) {
+        int fd = ::open(
+            path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR);
+
+        if (fd == -1) {
+            if (errno == EEXIST || errno == ELOOP) {
+                throw std::system_error(
+                    EEXIST, std::generic_category(), "File exists or symlink detected");
+            }
+            throw std::system_error(errno, std::generic_category(), "Failed to create secure file");
+        }
+
+        return fd;
     }
 };
 
