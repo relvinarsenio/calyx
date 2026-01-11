@@ -110,13 +110,13 @@ bool cpu_has_flag(std::string_view flag) {
     
     size_t pos = 0;
     while (pos < flags_line.size()) {
-        while (pos < flags_line.size() && std::isspace(flags_line[pos])) {
+        while (pos < flags_line.size() && std::isspace(static_cast<unsigned char>(flags_line[pos]))) {
             ++pos;
         }
         if (pos >= flags_line.size()) break;
         
         size_t token_start = pos;
-        while (pos < flags_line.size() && !std::isspace(flags_line[pos])) {
+        while (pos < flags_line.size() && !std::isspace(static_cast<unsigned char>(flags_line[pos]))) {
             ++pos;
         }
         
@@ -638,8 +638,13 @@ std::string SystemInfo::get_device_name(const std::string& path) {
         }
     }
 
-    if (!exact_dev_match.empty())
+    if (best_path_len > 0 && best_path_match != "unknown device") {
+        return best_path_match;
+    }
+
+    if (!exact_dev_match.empty()) {
         return exact_dev_match;
+    }
 
     return best_path_match;
 }

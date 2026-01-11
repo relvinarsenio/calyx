@@ -28,6 +28,7 @@ HttpContext::HttpContext() {
         }
 
         if (curl_global_init(CURL_GLOBAL_DEFAULT) != 0) {
+            OPENSSL_cleanup();
             throw std::runtime_error("Failed to initialize libcurl globally");
         }
         
@@ -45,6 +46,7 @@ HttpContext::~HttpContext() {
     if (reference_count == 0 && libraries_initialized) {
         // Last instance - cleanup global libraries
         curl_global_cleanup();
+        OPENSSL_cleanup();
         libraries_initialized = false;
     }
 }
