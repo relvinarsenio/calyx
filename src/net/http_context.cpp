@@ -8,20 +8,43 @@
 #include "include/http_context.hpp"
 
 #include <stdexcept>
+#include <mutex>
 
 #include <curl/curl.h>
 #include <openssl/crypto.h>
 
-HttpContext::HttpContext() {
-    if (OPENSSL_init_crypto(OPENSSL_INIT_NO_LOAD_CONFIG, nullptr) == 0) {
-        throw std::runtime_error("Failed to initialize OpenSSL crypto library");
-    }
+namespace {
+    static std::mutex init_mutex;
+    static int reference_count = 0;
+    static bool libraries_initialized = false;
+}
 
-    if (curl_global_init(CURL_GLOBAL_DEFAULT) != 0) {
-        throw std::runtime_error("Failed to initialize libcurl globally");
+HttpContext::HttpContext() {
+    std::lock_guard<std::mutex> lock(init_mutex);
+    
+    if (reference_count == 0) {
+        if (OPENSSL_init_crypto(OPENSSL_INIT_NO_LOAD_CONFIG, nullptr) == 0) {
+            throw std::runtime_error("Failed to initialize OpenSSL crypto library");
+        }
+
+        if (curl_global_init(CURL_GLOBAL_DEFAULT) != 0) {
+            throw std::runtime_error("Failed to initialize libcurl globally");
+        }
+        
+        libraries_initialized = true;
     }
+    
+    ++reference_count;
 }
 
 HttpContext::~HttpContext() {
-    curl_global_cleanup();
+    std::lock_guard<std::mutex> lock(init_mutex);
+    
+    --reference_count;
+    
+    if (reference_count == 0 && libraries_initialized) {
+        // Last instance - cleanup global libraries
+        curl_global_cleanup();
+        libraries_initialized = false;
+    }
 }

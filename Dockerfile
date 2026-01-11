@@ -53,8 +53,8 @@ RUN strip build/calyx
 # =============================================================================
 FROM scratch AS runtime
 
-# Copy binary doang.
-# GAK PERLU copy ca-certificates.crt lagi (karena udah embedded)
+# Copy binary only.
+# No need to copy ca-certificates.crt again (already embedded)
 COPY --from=builder /src/build/calyx /calyx
 
 ENTRYPOINT ["/calyx"]

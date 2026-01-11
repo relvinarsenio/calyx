@@ -136,20 +136,20 @@ void SpeedTest::install() {
 
     auto dl_res = http_.download(url, tgz_path_.string());
     if (!dl_res) {
-        throw std::runtime_error("Gagal download: " + dl_res.error());
+        throw std::runtime_error("Download failed: " + dl_res.error());
     }
 
     std::error_code ec;
     fs::create_directories(cli_dir_, ec);
     if (ec) {
-        throw std::runtime_error("Gagal bikin folder instalasi: " + ec.message());
+        throw std::runtime_error("Failed to create installation directory: " + ec.message());
     }
 
     auto result = calyx::core::TgzExtractor::extract(tgz_path_, cli_dir_);
 
     if (!result) {
         std::string msg = calyx::core::TgzExtractor::error_string(result.error());
-        throw std::runtime_error("Gagal ekstrak Speedtest: " + msg);
+        throw std::runtime_error("Failed to extract Speedtest: " + msg);
     }
 
     if (!fs::exists(cli_path_)) {

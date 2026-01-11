@@ -185,7 +185,11 @@ std::string create_progress_bar(int percent) {
 std::function<void(std::size_t, std::size_t, std::string_view)> make_progress_callback(
     int label_width) {
     return [label_width](std::size_t current, std::size_t total, std::string_view lbl) {
-        const int percent = static_cast<int>((current * 100) / total);
+        int percent = 0;
+        if (total > 0) {
+            percent = static_cast<int>((current * 100) / total);
+            percent = std::max(0, std::min(100, percent));
+        }
         render_progress_line(lbl, percent, label_width);
     };
 }
