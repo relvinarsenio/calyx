@@ -42,6 +42,7 @@ constexpr long CHECK_CONN_TIMEOUT_SEC = 5;
 constexpr long CHECK_CONN_CONNECT_TIMEOUT_SEC = 3;
 
 constexpr int UI_SPINNER_DELAY_MS = 150;
+constexpr bool UI_FORCE_ASCII = false;
 
 // TGZ Extractor Security Limits
 constexpr std::uint64_t TGZ_MAX_FILE_SIZE = 100 * 1024 * 1024;   // 100MB per file

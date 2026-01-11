@@ -88,7 +88,8 @@ int Application::run(int argc, char* argv[]) {
         std::println(" {:<{}} : {} ({})",
                      "Author",
                      Config::APP_AUTHOR_LABEL_WIDTH,
-                     "Alfie Ardinata", "https://calyx.pages.dev/");
+                     "Alfie Ardinata",
+                     "https://calyx.pages.dev/");
         std::println(" {:<{}} : {}",
                      "GitHub",
                      Config::APP_AUTHOR_LABEL_WIDTH,

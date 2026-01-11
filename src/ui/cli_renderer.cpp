@@ -80,8 +80,9 @@ class UiSpinner {
                                                                        "\u280F"};
             static constexpr std::array<const char*, 4> ascii_frames = {"|", "/", "-", "\\"};
 
-            return is_utf8_term() ? std::span<const char* const>(utf_frames)
-                                  : std::span<const char* const>(ascii_frames);
+            return (Config::UI_FORCE_ASCII || !is_utf8_term())
+                       ? std::span<const char* const>(ascii_frames)
+                       : std::span<const char* const>(utf_frames);
         }();
 
         frames_ = selected;
@@ -171,8 +172,11 @@ std::string create_progress_bar(int percent) {
     std::string bar;
     bar.reserve(Config::PROGRESS_BAR_WIDTH * 3);  // Unicode chars can be 3 bytes
 
+    const char* fill_char = (Config::UI_FORCE_ASCII || !is_utf8_term()) ? "#" : "\u2588";
+    const char* empty_char = (Config::UI_FORCE_ASCII || !is_utf8_term()) ? "-" : "\u2591";
+
     for (int j = 0; j < Config::PROGRESS_BAR_WIDTH; ++j) {
-        bar += (j < filled) ? "\u2588" : "\u2591";
+        bar += (j < filled) ? fill_char : empty_char;
     }
 
     return bar;
@@ -182,8 +186,7 @@ std::function<void(std::size_t, std::size_t, std::string_view)> make_progress_ca
     int label_width) {
     return [label_width](std::size_t current, std::size_t total, std::string_view lbl) {
         const int percent = static_cast<int>((current * 100) / total);
-        const std::string bar = create_progress_bar(percent);
-        std::print("\r\x1b[2K {:<{}} [{}] {:3}%", lbl, label_width, bar, percent);
+        render_progress_line(lbl, percent, label_width);
     };
 }
 

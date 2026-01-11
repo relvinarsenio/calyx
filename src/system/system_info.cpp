@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -36,6 +37,26 @@
 namespace fs = std::filesystem;
 
 namespace {
+#if !defined(__i386__) && !defined(__x86_64__)
+static std::string cached_cpuinfo;
+static std::mutex cpuinfo_mutex;
+static bool cpuinfo_loaded = false;
+
+const std::string& get_cached_cpuinfo() {
+    std::lock_guard<std::mutex> lock(cpuinfo_mutex);
+    if (!cpuinfo_loaded) {
+        std::ifstream f("/proc/cpuinfo");
+        if (f.is_open()) {
+            std::ostringstream oss;
+            oss << f.rdbuf();
+            cached_cpuinfo = oss.str();
+        }
+        cpuinfo_loaded = true;
+    }
+    return cached_cpuinfo;
+}
+#endif
+
 bool is_starts_with_ic(std::string_view str, std::string_view prefix) {
     if (str.size() < prefix.size())
         return false;
@@ -55,16 +76,35 @@ std::string capitalize(std::string_view s) {
     return ret;
 }
 
+#if !defined(__i386__) && !defined(__x86_64__)
 bool cpu_has_flag(std::string_view flag) {
-    std::ifstream f("/proc/cpuinfo");
-    std::string line;
-    while (std::getline(f, line)) {
-        if (line.find(flag) != std::string::npos) {
-            return true;
-        }
+    const auto& cpuinfo = get_cached_cpuinfo();
+    if (cpuinfo.empty())
+        return false;
+
+    size_t field_pos = cpuinfo.find("\nflags");
+    if (field_pos == std::string::npos) {
+        field_pos = cpuinfo.find("\nFeatures");
     }
-    return false;
+
+    if (field_pos == std::string::npos) {
+        if (cpuinfo.starts_with("flags"))
+            field_pos = 0;
+        else if (cpuinfo.starts_with("Features"))
+            field_pos = 0;
+    }
+
+    if (field_pos == std::string::npos)
+        return false;
+
+    size_t line_end = cpuinfo.find('\n', field_pos);
+    if (line_end == std::string::npos)
+        line_end = cpuinfo.length();
+
+    std::string_view flags_line(cpuinfo.data() + field_pos, line_end - field_pos);
+    return flags_line.find(flag) != std::string_view::npos;
 }
+#endif
 
 }  // namespace
 
@@ -202,11 +242,35 @@ std::string SystemInfo::get_cpu_cache() {
 }
 
 bool SystemInfo::has_aes() {
+#if defined(__i386__) || defined(__x86_64__)
+    unsigned int eax, ebx, ecx, edx;
+    __cpuid(1, eax, ebx, ecx, edx);
+    return (ecx & (1U << 25)) != 0;  // AES-NI: ECX bit 25
+#else
     return cpu_has_flag("aes");
+#endif
 }
 
 bool SystemInfo::has_vmx() {
+#if defined(__i386__) || defined(__x86_64__)
+    unsigned int eax, ebx, ecx, edx;
+    __cpuid(1, eax, ebx, ecx, edx);
+
+    // Intel VMX: ECX bit 5
+    bool intel_vmx = (ecx & (1U << 5)) != 0;
+
+    // AMD SVM: CPUID leaf 0x80000001, ECX bit 2
+    bool amd_svm = false;
+    unsigned int max_ext = __get_cpuid_max(0x80000000, nullptr);
+    if (max_ext >= 0x80000001) {
+        __cpuid(0x80000001, eax, ebx, ecx, edx);
+        amd_svm = (ecx & (1U << 2)) != 0;
+    }
+
+    return intel_vmx || amd_svm;
+#else
     return cpu_has_flag("vmx") || cpu_has_flag("svm");
+#endif
 }
 
 std::string SystemInfo::get_virtualization() {
@@ -231,6 +295,29 @@ std::string SystemInfo::get_virtualization() {
         if (release.find("Microsoft") != std::string::npos ||
             release.find("WSL") != std::string::npos)
             return "WSL";
+    }
+
+    if (fs::exists("/proc/1/environ")) {
+        std::ifstream f("/proc/1/environ");
+        std::string env;
+        while (std::getline(f, env, '\0')) {
+            if (env.find("WSL_DISTRO_NAME=") != std::string::npos ||
+                env.find("WSL_INTEROP=") != std::string::npos ||
+                env.find("WSLENV=") != std::string::npos) {
+                return "WSL";
+            }
+        }
+    }
+
+    if (fs::exists("/dev/dxg")) {
+        return "WSL";
+    }
+    if (fs::exists("/dev/lxss")) {
+        return "WSL";
+    }
+
+    if (fs::exists("/usr/lib/wsl") || fs::exists("/mnt/wsl")) {
+        return "WSL";
     }
 
     bool hv_bit = false;
@@ -472,19 +559,39 @@ std::string SystemInfo::get_device_name(const std::string& path) {
 
     std::string line;
     while (std::getline(mountinfo, line)) {
-        std::stringstream ss(line);
+        std::string_view line_view(line);
+        std::vector<std::string_view> tokens;
 
-        std::string id, parent, major_minor, root, mount_point;
-        if (!(ss >> id >> parent >> major_minor >> root >> mount_point))
+        size_t start = 0;
+        while (start < line_view.length()) {
+            while (start < line_view.length() &&
+                   (line_view[start] == ' ' || line_view[start] == '\t'))
+                start++;
+            if (start >= line_view.length())
+                break;
+
+            size_t end = start;
+            while (end < line_view.length() && line_view[end] != ' ' && line_view[end] != '\t')
+                end++;
+
+            tokens.push_back(line_view.substr(start, end - start));
+            start = end;
+        }
+
+        if (tokens.size() < 5)
             continue;
 
-        std::string token;
-        while (ss >> token && token != "-")
-            ;
+        std::string id(tokens[0]), parent(tokens[1]), major_minor(tokens[2]), root(tokens[3]),
+            mount_point(tokens[4]);
 
-        std::string fs_type, source;
-        if (!(ss >> fs_type >> source))
+        size_t dash_pos = 5;
+        while (dash_pos < tokens.size() && tokens[dash_pos] != "-")
+            dash_pos++;
+
+        if (dash_pos + 2 >= tokens.size())
             continue;
+
+        std::string fs_type(tokens[dash_pos + 1]), source(tokens[dash_pos + 2]);
 
         auto format_output = [&](const std::string& src, const std::string& fs) {
             if (src == fs)
