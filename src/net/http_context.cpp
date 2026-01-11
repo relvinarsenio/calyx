@@ -14,14 +14,14 @@
 #include <openssl/crypto.h>
 
 namespace {
-    static std::mutex init_mutex;
-    static int reference_count = 0;
-    static bool libraries_initialized = false;
-}
+static std::mutex init_mutex;
+static int reference_count = 0;
+static bool libraries_initialized = false;
+}  // namespace
 
 HttpContext::HttpContext() {
     std::lock_guard<std::mutex> lock(init_mutex);
-    
+
     if (reference_count == 0) {
         if (OPENSSL_init_crypto(OPENSSL_INIT_NO_LOAD_CONFIG, nullptr) == 0) {
             throw std::runtime_error("Failed to initialize OpenSSL crypto library");
@@ -31,18 +31,18 @@ HttpContext::HttpContext() {
             OPENSSL_cleanup();
             throw std::runtime_error("Failed to initialize libcurl globally");
         }
-        
+
         libraries_initialized = true;
     }
-    
+
     ++reference_count;
 }
 
 HttpContext::~HttpContext() {
     std::lock_guard<std::mutex> lock(init_mutex);
-    
+
     --reference_count;
-    
+
     if (reference_count == 0 && libraries_initialized) {
         // Last instance - cleanup global libraries
         curl_global_cleanup();

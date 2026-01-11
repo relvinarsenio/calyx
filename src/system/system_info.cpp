@@ -92,6 +92,8 @@ bool cpu_has_flag(std::string_view flag) {
             field_pos = 0;
         else if (cpuinfo.starts_with("Features"))
             field_pos = 0;
+    } else {
+        ++field_pos;
     }
 
     if (field_pos == std::string::npos)
@@ -102,30 +104,33 @@ bool cpu_has_flag(std::string_view flag) {
         line_end = cpuinfo.length();
 
     std::string_view flags_line(cpuinfo.data() + field_pos, line_end - field_pos);
-    
+
     size_t colon_pos = flags_line.find(':');
     if (colon_pos != std::string_view::npos) {
         flags_line = flags_line.substr(colon_pos + 1);
     }
-    
+
     size_t pos = 0;
     while (pos < flags_line.size()) {
-        while (pos < flags_line.size() && std::isspace(static_cast<unsigned char>(flags_line[pos]))) {
+        while (pos < flags_line.size() &&
+               std::isspace(static_cast<unsigned char>(flags_line[pos]))) {
             ++pos;
         }
-        if (pos >= flags_line.size()) break;
-        
+        if (pos >= flags_line.size())
+            break;
+
         size_t token_start = pos;
-        while (pos < flags_line.size() && !std::isspace(static_cast<unsigned char>(flags_line[pos]))) {
+        while (pos < flags_line.size() &&
+               !std::isspace(static_cast<unsigned char>(flags_line[pos]))) {
             ++pos;
         }
-        
+
         std::string_view token = flags_line.substr(token_start, pos - token_start);
         if (token == flag) {
             return true;
         }
     }
-    
+
     return false;
 }
 #endif
