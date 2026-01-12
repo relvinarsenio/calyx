@@ -161,13 +161,22 @@ class SecureFileHandle {
 
    private:
     static int create_fd(const std::filesystem::path& path) {
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+
+        if (ec && ec != std::errc::no_such_file_or_directory) {
+            throw std::system_error(
+                ec.value(), std::generic_category(), "Failed to remove existing file");
+        }
+
         int fd = ::open(
             path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR);
 
         if (fd == -1) {
             if (errno == EEXIST || errno == ELOOP) {
-                throw std::system_error(
-                    EEXIST, std::generic_category(), "File exists or symlink detected");
+                throw std::system_error(EEXIST,
+                                        std::generic_category(),
+                                        "Unable to create file: Target exists or is blocked");
             }
             throw std::system_error(errno, std::generic_category(), "Failed to create secure file");
         }

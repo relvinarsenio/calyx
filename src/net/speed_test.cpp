@@ -153,7 +153,7 @@ void SpeedTest::install() {
     }
 
     if (!fs::exists(cli_path_)) {
-        throw std::runtime_error("Binary speedtest tidak ditemukan setelah ekstraksi!");
+        throw std::runtime_error("Speedtest binary not found after extraction!");
     }
 
     fs::permissions(cli_path_, fs::perms::owner_all, fs::perm_options::add);
