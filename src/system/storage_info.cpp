@@ -92,7 +92,9 @@ DiskInfo SystemInfo::get_disk_usage(const std::string& mountpoint) {
     if (statvfs(mountpoint.c_str(), &disk) == 0) {
         info.total = static_cast<uint64_t>(disk.f_blocks) * disk.f_frsize;
         info.free = static_cast<uint64_t>(disk.f_bfree) * disk.f_frsize;
-        info.used = static_cast<uint64_t>(disk.f_blocks - disk.f_bfree) * disk.f_frsize;
+        
+        auto used_blocks = (disk.f_blocks > disk.f_bfree ? disk.f_blocks - disk.f_bfree : 0);
+        info.used = static_cast<uint64_t>(used_blocks) * disk.f_frsize;
     }
 
     return info;
