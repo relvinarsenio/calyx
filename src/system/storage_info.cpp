@@ -40,7 +40,8 @@ MemInfo SystemInfo::get_memory_status() {
     MemInfo info{};
     struct sysinfo si;
 
-    if (sysinfo(&si) == 0) {
+    bool sysinfo_ok = (sysinfo(&si) == 0);
+    if (sysinfo_ok) {
         info.total = si.totalram * si.mem_unit;
     }
 
@@ -69,8 +70,10 @@ MemInfo SystemInfo::get_memory_status() {
 
     if (mem_available > 0) {
         info.available = mem_available;
-    } else {
+    } else if (sysinfo_ok) {
         info.available = si.freeram * si.mem_unit;
+    } else {
+        info.available = 0;
     }
 
     if (info.total >= info.available) {
