@@ -42,7 +42,7 @@ MemInfo SystemInfo::get_memory_status() {
 
     bool sysinfo_ok = (sysinfo(&si) == 0);
     if (sysinfo_ok) {
-        info.total = si.totalram * si.mem_unit;
+        info.total = static_cast<uint64_t>(si.totalram) * si.mem_unit;
     }
 
     std::ifstream meminfo("/proc/meminfo");
@@ -71,7 +71,7 @@ MemInfo SystemInfo::get_memory_status() {
     if (mem_available > 0) {
         info.available = mem_available;
     } else if (sysinfo_ok) {
-        info.available = si.freeram * si.mem_unit;
+        info.available = static_cast<uint64_t>(si.freeram) * si.mem_unit;
     } else {
         info.available = 0;
     }
@@ -90,9 +90,9 @@ DiskInfo SystemInfo::get_disk_usage(const std::string& mountpoint) {
     struct statvfs disk;
 
     if (statvfs(mountpoint.c_str(), &disk) == 0) {
-        info.total = disk.f_blocks * disk.f_frsize;
-        info.free = disk.f_bfree * disk.f_frsize;
-        info.used = (disk.f_blocks - disk.f_bfree) * disk.f_frsize;
+        info.total = static_cast<uint64_t>(disk.f_blocks) * disk.f_frsize;
+        info.free = static_cast<uint64_t>(disk.f_bfree) * disk.f_frsize;
+        info.used = static_cast<uint64_t>(disk.f_blocks - disk.f_bfree) * disk.f_frsize;
     }
 
     return info;
