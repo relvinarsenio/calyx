@@ -214,8 +214,8 @@ SpeedTestResult SpeedTest::run(const SpinnerCallback& spinner_cb) {
                     auto j = json::parse(line);
 
                     if (j.contains("error")) {
-                        if (j["error"].is_string()) {
-                            entry.error = sanitize_error(j["error"].get<std::string>());
+                        if (j.at("error").is_string()) {
+                            entry.error = sanitize_error(j.at("error").get<std::string>());
                         } else {
                             entry.error = "Unknown CLI Error";
                         }
@@ -230,14 +230,14 @@ SpeedTestResult SpeedTest::run(const SpinnerCallback& spinner_cb) {
                             continue;
                         }
 
-                        double dl_bytes = j["download"].value("bandwidth", 0.0);
-                        double ul_bytes = j["upload"].value("bandwidth", 0.0);
+                        double dl_bytes = j.at("download").value("bandwidth", 0.0);
+                        double ul_bytes = j.at("upload").value("bandwidth", 0.0);
 
                         entry.download_mbps = (dl_bytes * 8.0) / 1000000.0;
                         entry.upload_mbps = (ul_bytes * 8.0) / 1000000.0;
 
                         if (j.contains("ping")) {
-                            entry.latency_ms = j["ping"].value("latency", 0.0);
+                            entry.latency_ms = j.at("ping").value("latency", 0.0);
                         } else {
                             entry.latency_ms = 0.0;
                         }
