@@ -204,7 +204,9 @@ add_executable(calyx
     src/core/tgz_extractor.cpp
     src/os/file_descriptor.cpp
     src/os/shell_pipe.cpp
-    src/system/system_info.cpp
+    src/system/cpu_info.cpp
+    src/system/os_info.cpp
+    src/system/storage_info.cpp
     src/net/http_client.cpp
     src/net/http_context.cpp
     src/io/disk_benchmark.cpp
