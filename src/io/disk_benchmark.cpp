@@ -19,6 +19,7 @@
 #include <memory>
 #include <new>
 #include <numeric>
+#include <print>
 #include <ranges>
 #include <span>
 #include <stdexcept>
@@ -30,6 +31,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include "include/color.hpp"
 #include "include/config.hpp"
 #include "include/file_descriptor.hpp"
 #include "include/interrupts.hpp"
@@ -275,14 +277,45 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(
     {
         const std::string write_label = std::string(label) + " Write";
 
-        int flags = O_WRONLY | O_CREAT | O_TRUNC | O_EXCL;
+        std::error_code ec;
+        std::filesystem::remove(filename, ec);
+
+        const int base_flags = O_WRONLY | O_CREAT | O_TRUNC | O_EXCL;
+        int fd_raw = -1;
+
 #ifdef O_DIRECT
-        flags |= O_DIRECT | O_DSYNC;
+        fd_raw = ::open(filename.c_str(), base_flags | O_DIRECT | O_DSYNC, 0644);
+        if (fd_raw < 0 && errno == EINVAL) {
+            fd_raw = ::open(filename.c_str(), base_flags | O_DIRECT, 0644);
+            if (fd_raw >= 0) {
+                std::print(stderr,
+                           "{}Warning: O_DSYNC not supported. Results may be influenced by RAM "
+                           "cache.{}\n",
+                           Color::YELLOW,
+                           Color::RESET);
+            } else if (errno == EINVAL) {
+                fd_raw = ::open(filename.c_str(), base_flags | O_DSYNC, 0644);
+                if (fd_raw >= 0) {
+                    std::print(stderr,
+                               "{}Warning: O_DIRECT not supported. Results may be influenced by "
+                               "RAM cache.{}\n",
+                               Color::YELLOW,
+                               Color::RESET);
+                } else if (errno == EINVAL) {
+                    fd_raw = ::open(filename.c_str(), base_flags, 0644);
+                    if (fd_raw >= 0) {
+                        std::print(stderr,
+                                   "{}Warning: O_DIRECT/O_DSYNC not supported. Results WILL be "
+                                   "influenced by RAM cache.{}\n",
+                                   Color::YELLOW,
+                                   Color::RESET);
+                    }
+                }
+            }
+        }
 #else
         return std::unexpected("FATAL: O_DIRECT is not available on this platform compilation.");
 #endif
-
-        int fd_raw = ::open(filename.c_str(), flags, 0644);
 
         if (fd_raw < 0) {
             return std::unexpected(get_error_message(errno, "create"));
@@ -348,10 +381,22 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(
 
     int rd_flags = O_RDONLY;
 #ifdef O_DIRECT
-    rd_flags |= O_DIRECT;
+    int rd_raw = ::open(filename.c_str(), rd_flags | O_DIRECT);
+    if (rd_raw < 0 && errno == EINVAL) {
+        rd_raw = ::open(filename.c_str(), rd_flags);
+        if (rd_raw >= 0) {
+            std::print(
+                stderr,
+                "{}Warning: O_DIRECT not supported for read. Results may be influenced by RAM "
+                "cache.{}\n",
+                Color::YELLOW,
+                Color::RESET);
+        }
+    }
+#else
+    int rd_raw = ::open(filename.c_str(), rd_flags);
 #endif
 
-    int rd_raw = ::open(filename.c_str(), rd_flags);
     if (rd_raw < 0) {
         return std::unexpected(get_error_message(errno, "open/read"));
     }
