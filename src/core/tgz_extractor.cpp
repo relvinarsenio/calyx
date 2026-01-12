@@ -88,21 +88,26 @@ bool validate_checksum(std::span<const std::byte> header) {
 
 std::expected<void, ExtractError> create_secure_directory(const std::filesystem::path& dir_path) {
     if (auto parent = dir_path.parent_path(); !parent.empty() && parent != dir_path) {
-        std::error_code ec;
-        if (!std::filesystem::exists(parent, ec)) {
-            if (auto result = create_secure_directory(parent); !result) {
-                return result;
+        if (auto result = create_secure_directory(parent); !result) {
+            return result;
+        }
+    }
+
+    if (::mkdir(dir_path.c_str(), S_IRWXU | S_IRGRP | S_IXGRP) == 0) {
+        return {};
+    }
+
+    if (errno == EEXIST) {
+        struct stat st;
+        if (::lstat(dir_path.c_str(), &st) == 0) {
+            if (S_ISDIR(st.st_mode) && !S_ISLNK(st.st_mode)) {
+                return {};
             }
+            return std::unexpected(ExtractError::SymlinkDetected);
         }
     }
 
-    if (::mkdir(dir_path.c_str(), S_IRWXU | S_IRGRP | S_IXGRP) != 0) {
-        if (errno != EEXIST) {
-            return std::unexpected(ExtractError::CreateDirFailed);
-        }
-    }
-
-    return {};
+    return std::unexpected(ExtractError::CreateDirFailed);
 }
 
 bool is_safe_filename_char(char c) {
@@ -293,8 +298,13 @@ std::expected<void, ExtractError> TgzExtractor::extract(const std::filesystem::p
         int bytes_read =
             gzread(gz.get(), header_block.data(), static_cast<unsigned>(header_block.size()));
 
-        if (bytes_read <= 0)
+        if (bytes_read < 0) {
+            return std::unexpected(ExtractError::ReadFailed);
+        }
+
+        if (bytes_read == 0)
             break;
+
         if (bytes_read < static_cast<int>(Config::TAR_BLOCK_SIZE)) {
             return std::unexpected(ExtractError::InvalidHeader);
         }
@@ -342,7 +352,7 @@ std::expected<void, ExtractError> TgzExtractor::extract(const std::filesystem::p
             return std::unexpected(ExtractError::FileTooLarge);
         }
 
-        if (total_extracted_size + file_size > Config::TGZ_MAX_TOTAL_SIZE) {
+        if (file_size > Config::TGZ_MAX_TOTAL_SIZE - total_extracted_size) {
             return std::unexpected(ExtractError::ArchiveTooLarge);
         }
 
