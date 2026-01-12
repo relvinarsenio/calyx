@@ -121,12 +121,14 @@ std::expected<void, std::string> run_uring_io(
     std::stop_token stop) {
     std::uint64_t submitted = 0;
     std::uint64_t completed = 0;
+    bool interrupt_requested = false;
 
     while (completed < total_blocks) {
         while (submitted < total_blocks &&
                (submitted - completed) < static_cast<std::uint64_t>(queue_depth)) {
             if (g_interrupted || stop.stop_requested()) {
-                return std::unexpected("Operation interrupted by user");
+                interrupt_requested = true;
+                break;
             }
 
             io_uring_sqe* sqe = io_uring_get_sqe(&ring);
@@ -164,7 +166,7 @@ std::expected<void, std::string> run_uring_io(
         if (wait_rc < 0) {
             if (wait_rc == -EINTR) {
                 if (g_interrupted || stop.stop_requested()) {
-                    return std::unexpected("Operation interrupted by user");
+                    interrupt_requested = true;
                 }
                 continue;
             }
@@ -205,8 +207,15 @@ std::expected<void, std::string> run_uring_io(
 
         io_uring_cq_advance(&ring, count);
 
+        if (interrupt_requested && completed >= submitted) {
+            return std::unexpected("Operation interrupted by user");
+        }
+
         if (high_resolution_clock::now() > deadline) {
-            return std::unexpected("Disk Test timed out (operation took too long)");
+            interrupt_requested = true;
+            if (completed >= submitted) {
+                return std::unexpected("Disk Test timed out (operation took too long)");
+            }
         }
     }
 
