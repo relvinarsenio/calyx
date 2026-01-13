@@ -150,9 +150,9 @@ std::string SystemInfo::get_model_name() {
             if (is_starts_with_ic(line, k)) {
                 auto colon = line.find(':');
                 if (colon != std::string::npos) {
-                    auto model = trim(line.substr(colon + 1));
-                    if (!model.empty())
-                        return model;
+                    std::string_view val = trim_sv(std::string_view(line).substr(colon + 1));
+                    if (!val.empty())
+                        return std::string(val);
                 }
             }
         }
@@ -210,27 +210,27 @@ std::string SystemInfo::get_cpu_cores_freq() {
 }
 
 std::string SystemInfo::get_cpu_cache() {
-    auto parse_cache = [](std::string s) -> std::string {
-        s = trim(s);
-        if (s.empty())
+    auto parse_cache = [](std::string_view s) -> std::string {
+        std::string_view sv = trim_sv(s);
+        if (sv.empty())
             return "Unknown";
 
         uint64_t size = 0;
-        auto [ptr, ec] = std::from_chars(s.data(), s.data() + s.size(), size);
+        auto [ptr, ec] = std::from_chars(sv.data(), sv.data() + sv.size(), size);
 
         if (ec != std::errc())
-            return s;
+            return std::string(sv);
 
-        if (ptr < s.data() + s.size()) {
+        if (ptr < sv.data() + sv.size()) {
             char suffix = static_cast<char>(std::toupper(static_cast<unsigned char>(*ptr)));
             if (suffix == 'K')
                 size *= 1024;
             else if (suffix == 'M')
                 size *= 1024 * 1024;
         } else {
-            if (static_cast<char>(std::toupper(static_cast<unsigned char>(s.back()))) == 'K')
+            if (static_cast<char>(std::toupper(static_cast<unsigned char>(sv.back()))) == 'K')
                 size *= 1024;
-            else if (std::isdigit(static_cast<unsigned char>(s.back())))
+            else if (std::isdigit(static_cast<unsigned char>(sv.back())))
                 size *= 1024;
         }
 

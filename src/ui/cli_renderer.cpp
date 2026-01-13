@@ -171,6 +171,7 @@ SpinnerCallback make_spinner_callback() {
     };
 }
 std::string create_progress_bar(int percent) {
+    percent = std::clamp(percent, 0, 100);
     const int filled = (percent * Config::PROGRESS_BAR_WIDTH) / 100;
 
     std::string bar;
@@ -191,7 +192,8 @@ std::function<void(std::size_t, std::size_t, std::string_view)> make_progress_ca
     return [label_width](std::size_t current, std::size_t total, std::string_view lbl) {
         int percent = 0;
         if (total > 0) {
-            percent = static_cast<int>((static_cast<double>(current) / static_cast<double>(total)) * 100.0);
+            percent = static_cast<int>((static_cast<double>(current) / static_cast<double>(total)) *
+                                       100.0);
         }
         render_progress_line(lbl, percent, label_width);
     };
