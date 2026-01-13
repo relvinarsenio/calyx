@@ -69,6 +69,7 @@ constexpr std::size_t TAR_PREFIX_LENGTH = 155;
 // Application Display Constants
 constexpr std::string_view APP_NAME = "calyx";
 constexpr std::string_view APP_VERSION = "7.2.1";
+constexpr std::string_view SPEEDTEST_CLI_VERSION = "1.2.0";
 
 // Display Constants
 constexpr int APP_AUTHOR_LABEL_WIDTH = 18;

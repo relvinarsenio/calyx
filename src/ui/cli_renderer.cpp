@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <format>
 #include <functional>
+#include <cctype>
 #include <memory>
 #include <print>
 #include <span>
@@ -30,30 +31,33 @@ namespace CliRenderer {
 
 namespace {
 
-bool check_str_utf8(const char* env) {
-    if (!env || !*env)
-        return false;
-
-    std::string s(env);
-    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return std::tolower(c); });
-
-    return s.find("utf-8") != std::string::npos || s.find("utf8") != std::string::npos;
-}
-
 bool is_utf8_term() {
-    if (const char* val = std::getenv("LC_ALL"); val && *val) {
-        return check_str_utf8(val);
-    }
+    static const bool result = []() {
+        auto check = [](const char* env) -> bool {
+            if (!env || !*env)
+                return false;
+            std::string_view s(env);
+            auto to_lower_check = [&](std::string_view keyword) {
+                auto it = std::search(
+                    s.begin(), s.end(), keyword.begin(), keyword.end(), [](char a, char b) {
+                        return std::tolower(static_cast<unsigned char>(a)) == b;
+                    });
+                return it != s.end();
+            };
+            return to_lower_check("utf-8") || to_lower_check("utf8");
+        };
 
-    if (const char* val = std::getenv("LC_CTYPE"); val && *val) {
-        return check_str_utf8(val);
-    }
+        if (const char* val = std::getenv("LC_ALL"); val && *val)
+            return check(val);
+        if (const char* val = std::getenv("LC_CTYPE"); val && *val)
+            return check(val);
+        if (const char* val = std::getenv("LANG"); val && *val)
+            return check(val);
 
-    if (const char* val = std::getenv("LANG"); val && *val) {
-        return check_str_utf8(val);
-    }
+        return false;
+    }();
 
-    return false;
+    return result;
 }
 
 class UiSpinner {
