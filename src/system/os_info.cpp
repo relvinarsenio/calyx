@@ -13,6 +13,8 @@
 #include <fstream>
 #include <format>
 #include <string>
+#include <system_error>
+#include <cstdlib>
 
 #if defined(__i386__) || defined(__x86_64__)
 #include <cpuid.h>
@@ -20,15 +22,15 @@
 
 #include <sys/sysinfo.h>
 #include <sys/utsname.h>
-#include <stdlib.h>
 
 namespace fs = std::filesystem;
 
 std::string SystemInfo::get_virtualization() {
-    if (fs::exists("/.dockerenv") || fs::exists("/run/.containerenv"))
+    std::error_code ec;
+    if (fs::exists("/.dockerenv", ec) || fs::exists("/run/.containerenv", ec))
         return "Docker";
 
-    if (fs::exists("/proc/1/environ")) {
+    if (fs::exists("/proc/1/environ", ec)) {
         std::ifstream f("/proc/1/environ");
         std::string env;
         while (std::getline(f, env, '\0')) {
@@ -143,6 +145,11 @@ std::string SystemInfo::get_arch() {
         return "Unknown";
 
     int bits = static_cast<int>(sizeof(void*) * 8);
+    if (arch.find("64") != std::string::npos || arch == "s390x") {
+        bits = 64;
+    } else if (arch.find("86") != std::string::npos || arch.starts_with("arm")) {
+        bits = 32;
+    }
     return std::format("{} ({} Bit)", arch, bits);
 }
 
