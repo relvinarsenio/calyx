@@ -31,20 +31,22 @@ std::string SystemInfo::get_virtualization() {
         return "Docker";
 
     if (fs::exists("/proc/1/environ", ec)) {
-        std::ifstream f("/proc/1/environ");
-        std::string env;
-        while (std::getline(f, env, '\0')) {
-            if (env.find("container=lxc") != std::string::npos)
-                return "LXC";
-            if (env.find("WSL_DISTRO_NAME=") != std::string::npos ||
-                env.find("WSL_INTEROP=") != std::string::npos ||
-                env.find("WSLENV=") != std::string::npos) {
-                return "WSL";
+        std::ifstream env_file("/proc/1/environ");
+        if (env_file) {
+            std::string env_line;
+            while (std::getline(env_file, env_line, '\0')) {
+                if (env_line.find("container=lxc") != std::string::npos)
+                    return "LXC";
+                if (env_line.find("WSL_DISTRO_NAME=") != std::string::npos ||
+                    env_line.find("WSL_INTEROP=") != std::string::npos ||
+                    env_line.find("WSLENV=") != std::string::npos) {
+                    return "WSL";
+                }
             }
         }
     }
 
-    if (fs::exists("/proc/user_beancounters"))
+    if (fs::exists("/proc/user_beancounters", ec))
         return "OpenVZ";
 
     std::string release = get_kernel();
@@ -53,8 +55,8 @@ std::string SystemInfo::get_virtualization() {
         return "WSL";
     }
 
-    if (fs::exists("/dev/dxg") || fs::exists("/dev/lxss") || fs::exists("/usr/lib/wsl") ||
-        fs::exists("/mnt/wsl")) {
+    if (fs::exists("/dev/dxg", ec) || fs::exists("/dev/lxss", ec) ||
+        fs::exists("/usr/lib/wsl", ec) || fs::exists("/mnt/wsl", ec)) {
         return "WSL";
     }
 
@@ -71,61 +73,67 @@ std::string SystemInfo::get_virtualization() {
         unsigned int leaf = 0x40000000;
         __cpuid(leaf, eax, ebx, ecx, edx);
 
-        std::array<char, 13> vendor{};
-        std::memcpy(vendor.data(), &ebx, 4);
-        std::memcpy(vendor.data() + 4, &ecx, 4);
-        std::memcpy(vendor.data() + 8, &edx, 4);
-        vendor[12] = '\0';
+        std::array<char, 13> hv_vendor{};
+        std::memcpy(hv_vendor.data(), &ebx, 4);
+        std::memcpy(hv_vendor.data() + 4, &ecx, 4);
+        std::memcpy(hv_vendor.data() + 8, &edx, 4);
+        hv_vendor[12] = '\0';
 
-        std::string sig(vendor.data());
+        std::string hv_sig(hv_vendor.data());
 
-        if (sig == "KVMKVMKVM")
+        if (hv_sig == "KVMKVMKVM")
             return "KVM";
-        if (sig == "Microsoft Hv")
+        if (hv_sig == "Microsoft Hv")
             return "Hyper-V";
-        if (sig == "VMwareVMware")
+        if (hv_sig == "VMwareVMware")
             return "VMware";
-        if (sig == "XenVMMXenVMM")
+        if (hv_sig == "XenVMMXenVMM")
             return "Xen";
-        if (sig == "VBoxVBoxVBox")
+        if (hv_sig == "VBoxVBoxVBox")
             return "VirtualBox";
-        if (sig == "prl hyperv  ")
+        if (hv_sig == "prl hyperv  ")
             return "Parallels";
-        if (sig == "TCGTCGTCGTCG")
+        if (hv_sig == "TCGTCGTCGTCG")
             return "QEMU";
 #endif
     }
 
-    std::ifstream dmi("/sys/class/dmi/id/product_name");
-    std::string product;
-    if (std::getline(dmi, product)) {
-        if (product.find("KVM") != std::string::npos)
-            return "KVM";
-        if (product.find("QEMU") != std::string::npos)
-            return "QEMU";
-        if (product.find("VirtualBox") != std::string::npos)
-            return "VirtualBox";
+    std::ifstream dmi_file("/sys/class/dmi/id/product_name");
+    if (dmi_file) {
+        std::string product_name;
+        if (std::getline(dmi_file, product_name)) {
+            if (product_name.find("KVM") != std::string::npos)
+                return "KVM";
+            if (product_name.find("QEMU") != std::string::npos)
+                return "QEMU";
+            if (product_name.find("VirtualBox") != std::string::npos)
+                return "VirtualBox";
+        }
     }
 
     return hv_bit ? "Dedicated (Virtual)" : "Dedicated";
 }
 
 std::string SystemInfo::get_os() {
-    std::ifstream f("/etc/os-release");
-    std::string line;
-    while (std::getline(f, line)) {
-        if (line.starts_with("PRETTY_NAME=")) {
-            auto val = line.substr(12);
+    std::ifstream os_file("/etc/os-release");
+    if (os_file) {
+        std::string line;
+        while (std::getline(os_file, line)) {
+            if (line.starts_with("PRETTY_NAME=")) {
+                auto pretty_name = line.substr(12);
 
-            if (!val.empty() && (val.front() == '"' || val.front() == '\'')) {
-                val = val.substr(1);
+                if (!pretty_name.empty() &&
+                    (pretty_name.front() == '"' || pretty_name.front() == '\'')) {
+                    pretty_name = pretty_name.substr(1);
+                }
+
+                if (!pretty_name.empty() &&
+                    (pretty_name.back() == '"' || pretty_name.back() == '\'')) {
+                    pretty_name.pop_back();
+                }
+
+                return pretty_name;
             }
-
-            if (!val.empty() && (val.back() == '"' || val.back() == '\'')) {
-                val.pop_back();
-            }
-
-            return val;
         }
     }
     return "Linux";
@@ -161,27 +169,28 @@ std::string SystemInfo::get_kernel() {
 }
 
 std::string SystemInfo::get_tcp_cc() {
-    std::ifstream f("/proc/sys/net/ipv4/tcp_congestion_control");
-    std::string s;
-    if (f >> s)
-        return s;
+    std::ifstream tcp_file("/proc/sys/net/ipv4/tcp_congestion_control");
+    if (tcp_file) {
+        std::string cc_algo;
+        if (tcp_file >> cc_algo)
+            return cc_algo;
+    }
     return "Unknown";
 }
 
 std::string SystemInfo::get_uptime() {
-    struct sysinfo si;
-    if (sysinfo(&si) == 0) {
-        auto up = si.uptime;
-        int days = static_cast<int>(up / 86400);
-        int hours = static_cast<int>((up % 86400) / 3600);
-        int mins = static_cast<int>((up % 3600) / 60);
+    struct sysinfo sys_info;
+    if (sysinfo(&sys_info) == 0) {
+        auto uptime_sec = sys_info.uptime;
+        int days = static_cast<int>(uptime_sec / 86400);
+        int hours = static_cast<int>((uptime_sec % 86400) / 3600);
+        int mins = static_cast<int>((uptime_sec % 3600) / 60);
         std::string uptime_str;
         if (days)
             uptime_str += std::format("{} {}, ", days, days == 1 ? "day" : "days");
         if (days || hours)
             uptime_str += std::format("{} {}, ", hours, hours == 1 ? "hour" : "hours");
         uptime_str += std::format("{} {}", mins, mins == 1 ? "min" : "mins");
-
         return uptime_str;
     }
     return "Unknown";
