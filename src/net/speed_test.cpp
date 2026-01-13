@@ -128,8 +128,10 @@ void SpeedTest::install() {
         throw std::runtime_error("Unsupported architecture: " + arch);
     }
 
-    std::string url = std::format(
-        "https://install.speedtest.net/app/cli/ookla-speedtest-{}-linux-{}.tgz", Config::SPEEDTEST_CLI_VERSION, url_arch);
+    std::string url =
+        std::format("https://install.speedtest.net/app/cli/ookla-speedtest-{}-linux-{}.tgz",
+                    Config::SPEEDTEST_CLI_VERSION,
+                    url_arch);
 
     auto dl_res = http_.download(url, tgz_path_.string());
     if (!dl_res) {
