@@ -199,6 +199,7 @@ std::function<void(std::size_t, std::size_t, std::string_view)> make_progress_ca
 }
 
 void render_progress_line(std::string_view label, int percent, int label_width) {
+    percent = std::clamp(percent, 0, 100);
     const std::string bar = create_progress_bar(percent);
     std::print("\r\x1b[2K {:<{}} [{}] {:3}%", label, label_width, bar, percent);
 }

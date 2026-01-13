@@ -15,7 +15,7 @@ RUN apk add --no-cache \
     libc++-dev \
     compiler-rt \
     cmake \
-    make \
+    ninja \
     linux-headers \
     llvm-libunwind-static \
     perl \
@@ -38,12 +38,13 @@ COPY src/ ./src/
 # - Security hardening flags applied via CMakeLists.txt
 RUN mkdir build && cd build && \
     CC=clang CXX=clang++ cmake .. \
+        -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_AR=/usr/bin/llvm-ar \
         -DCMAKE_RANLIB=/usr/bin/llvm-ranlib \
         -DCMAKE_EXE_LINKER_FLAGS="-static -fuse-ld=lld -rtlib=compiler-rt" \
         -DCMAKE_CXX_FLAGS="-stdlib=libc++" && \
-    make -j$(nproc)
+    ninja -j$(nproc)
 
 # Strip binary (remove debug symbols for smaller size)
 RUN strip build/calyx
