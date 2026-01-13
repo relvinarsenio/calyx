@@ -27,6 +27,10 @@ namespace calyx::core {
 
 namespace {
 
+static_assert(Config::TAR_BLOCK_SIZE == 512, "POSIX ustar block size must be 512 bytes");
+static_assert(Config::TAR_PREFIX_OFFSET + Config::TAR_PREFIX_LENGTH <= Config::TAR_BLOCK_SIZE,
+              "TAR header layout exceeds block size (Buffer Overflow Risk)");
+
 std::uint64_t parse_octal(std::span<const std::byte> data) {
     const char* begin = reinterpret_cast<const char*>(data.data());
     const char* end = begin + data.size();

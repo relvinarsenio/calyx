@@ -191,8 +191,7 @@ std::function<void(std::size_t, std::size_t, std::string_view)> make_progress_ca
     return [label_width](std::size_t current, std::size_t total, std::string_view lbl) {
         int percent = 0;
         if (total > 0) {
-            percent = static_cast<int>((current * 100) / total);
-            percent = std::max(0, std::min(100, percent));
+            percent = static_cast<int>((static_cast<double>(current) / static_cast<double>(total)) * 100.0);
         }
         render_progress_line(lbl, percent, label_width);
     };
