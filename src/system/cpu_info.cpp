@@ -168,9 +168,10 @@ std::string SystemInfo::get_model_name() {
         }
     }
 
-    struct utsname buf{};
-    if (::uname(&buf) == 0)
-        return std::string(buf.machine);
+    std::string arch = SystemInfo::get_raw_arch();
+    if (arch != "unknown") {
+        return arch;
+    }
     return "Unknown CPU";
 }
 

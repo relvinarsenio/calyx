@@ -40,12 +40,10 @@ std::string SystemInfo::get_virtualization() {
     if (fs::exists("/proc/user_beancounters"))
         return "OpenVZ";
 
-    struct utsname buffer;
-    if (uname(&buffer) == 0) {
-        std::string release = buffer.release;
-        if (release.find("Microsoft") != std::string::npos ||
-            release.find("WSL") != std::string::npos)
-            return "WSL";
+    std::string release = get_kernel();
+    if (release.find("Microsoft") != std::string::npos ||
+        release.find("WSL") != std::string::npos) {
+        return "WSL";
     }
 
     if (fs::exists("/proc/1/environ")) {
