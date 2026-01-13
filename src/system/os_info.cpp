@@ -127,8 +127,11 @@ std::string SystemInfo::get_os() {
     while (std::getline(f, line)) {
         if (line.starts_with("PRETTY_NAME=")) {
             auto val = line.substr(12);
-            if (val.size() >= 2 && val.front() == '"')
+            if (val.size() >= 2 && val.front() == '"' && val.back() == '"') {
                 val = val.substr(1, val.size() - 2);
+            } else if (!val.empty() && val.front() == '"') {
+                val = val.substr(1);
+            }
             return val;
         }
     }
