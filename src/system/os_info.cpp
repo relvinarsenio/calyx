@@ -168,7 +168,14 @@ std::string SystemInfo::get_uptime() {
         int days = static_cast<int>(up / 86400);
         int hours = static_cast<int>((up % 86400) / 3600);
         int mins = static_cast<int>((up % 3600) / 60);
-        return std::format("{} days, {} hour {} min", days, hours, mins);
+        std::string uptime_str;
+        if (days)
+            uptime_str += std::format("{} {}, ", days, days == 1 ? "day" : "days");
+        if (days || hours)
+            uptime_str += std::format("{} {}, ", hours, hours == 1 ? "hour" : "hours");
+        uptime_str += std::format("{} {}", mins, mins == 1 ? "min" : "mins");
+
+        return uptime_str;
     }
     return "Unknown";
 }
