@@ -30,6 +30,7 @@
 #include "include/shell_pipe.hpp"
 #include "include/utils.hpp"
 #include "include/tgz_extractor.hpp"
+#include "include/system_info.hpp"
 
 using json = nlohmann::json;
 namespace fs = std::filesystem;
@@ -114,25 +115,27 @@ SpeedTest::~SpeedTest() {
     }
 }
 
-std::string SpeedTest::get_arch() {
-    struct utsname buf;
-    uname(&buf);
-    std::string m(buf.machine);
-    if (m == "x86_64")
-        return "x86_64";
-    if (m == "aarch64" || m == "arm64")
-        return "aarch64";
-    if (m == "i386" || m == "i686")
-        return "i386";
-    if (m == "armv7l")
-        return "armhf";
-    throw std::runtime_error("Unsupported architecture: " + m);
-}
-
 void SpeedTest::install() {
     std::println("Downloading Speedtest CLI...");
+    std::string arch = SystemInfo::get_raw_arch();
+    std::string url_arch;
+
+    if (arch == "x86_64") {
+        url_arch = "x86_64";
+    } else if (arch == "i386" || arch == "i686" || arch == "i586") {
+        url_arch = "i386";
+    } else if (arch == "aarch64" || arch == "arm64") {
+        url_arch = "aarch64";
+    } else if (arch.starts_with("armv7")) {
+        url_arch = "armhf";
+    } else if (arch.starts_with("armv6") || arch.starts_with("armv5")) {
+        url_arch = "armel";
+    } else {
+        throw std::runtime_error("Unsupported architecture: " + arch);
+    }
+
     std::string url = std::format(
-        "https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-linux-{}.tgz", get_arch());
+        "https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-linux-{}.tgz", url_arch);
 
     auto dl_res = http_.download(url, tgz_path_.string());
     if (!dl_res) {

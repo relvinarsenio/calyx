@@ -27,8 +27,6 @@ class SpeedTest {
     std::filesystem::path cli_path_;
     std::filesystem::path tgz_path_;
 
-    std::string get_arch();
-
    public:
     explicit SpeedTest(HttpClient& h);
 

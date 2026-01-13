@@ -42,6 +42,7 @@ class SystemInfo {
     static std::string get_virtualization();
     static std::string get_os();
     static std::string get_arch();
+    static std::string get_raw_arch();
     static std::string get_kernel();
     static std::string get_tcp_cc();
     static std::string get_uptime();

@@ -137,14 +137,21 @@ std::string SystemInfo::get_os() {
     return "Linux";
 }
 
-std::string SystemInfo::get_arch() {
+std::string SystemInfo::get_raw_arch() {
     struct utsname buffer;
     if (uname(&buffer) == 0) {
-        std::string arch = buffer.machine;
-        int bits = static_cast<int>(sizeof(void*) * 8);
-        return std::format("{} ({} Bit)", arch, bits);
+        return buffer.machine;
     }
-    return "Unknown";
+    return "unknown";
+}
+
+std::string SystemInfo::get_arch() {
+    std::string arch = get_raw_arch();
+    if (arch == "unknown")
+        return "Unknown";
+
+    int bits = static_cast<int>(sizeof(void*) * 8);
+    return std::format("{} ({} Bit)", arch, bits);
 }
 
 std::string SystemInfo::get_kernel() {
