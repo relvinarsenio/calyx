@@ -176,7 +176,7 @@ std::string SystemInfo::get_model_name() {
 }
 
 std::string SystemInfo::get_cpu_cores_freq() {
-    long cores = sysconf(_SC_NPROCESSORS_ONLN);
+    long cores = std::max(1L, sysconf(_SC_NPROCESSORS_ONLN));
     double freq_mhz = 0.0;
 
     std::ifstream f("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq");
