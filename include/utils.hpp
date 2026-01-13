@@ -16,10 +16,10 @@ void print_line();
 void print_centered_header(std::string_view text);
 
 [[nodiscard]] constexpr std::string_view trim_sv(std::string_view str) noexcept {
-    auto first = str.find_first_not_of(" \t\n\r");
+    auto first = str.find_first_not_of(" \t\n\r\v\f");
     if (first == std::string_view::npos)
         return {};
-    auto last = str.find_last_not_of(" \t\n\r");
+    auto last = str.find_last_not_of(" \t\n\r\v\f");
     return str.substr(first, last - first + 1);
 }
 

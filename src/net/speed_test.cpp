@@ -74,13 +74,7 @@ std::string sanitize_error(std::string_view msg) {
         msg = msg.substr(0, nl);
     }
 
-    while (!msg.empty() && std::isspace(static_cast<unsigned char>(msg.back()))) {
-        msg.remove_suffix(1);
-    }
-
-    while (!msg.empty() && std::isspace(static_cast<unsigned char>(msg.front()))) {
-        msg.remove_prefix(1);
-    }
+    msg = trim_sv(msg);
 
     if (msg.starts_with("Error: ")) {
         msg.remove_prefix(7);
