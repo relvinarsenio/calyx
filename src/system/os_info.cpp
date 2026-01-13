@@ -9,12 +9,12 @@
 
 #include <array>
 #include <cstring>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <format>
 #include <string>
 #include <system_error>
-#include <cstdlib>
 
 #if defined(__i386__) || defined(__x86_64__)
 #include <cpuid.h>
@@ -130,6 +130,10 @@ std::string SystemInfo::get_os() {
                 if (!pretty_name.empty() &&
                     (pretty_name.back() == '"' || pretty_name.back() == '\'')) {
                     pretty_name.pop_back();
+                }
+
+                if (pretty_name.empty()) {
+                    return "Linux";
                 }
 
                 return pretty_name;

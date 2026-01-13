@@ -82,7 +82,7 @@ set(ENABLE_NC OFF CACHE INTERNAL "Disable netcat utility")
 
 FetchContent_Declare(
     libressl
-    URL https://ftp.openbsd.org/pub/OpenBSD/LibreSSL/libressl-4.2.1.tar.gz
+    URL https://cloudflare.cdn.openbsd.org/pub/OpenBSD/LibreSSL/libressl-4.2.1.tar.gz
     URL_HASH SHA256=6d5c2f58583588ea791f4c8645004071d00dfa554a5bf788a006ca1eb5abd70b
 )
 
