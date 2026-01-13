@@ -270,9 +270,8 @@ SpeedTestResult SpeedTest::run(const SpinnerCallback& spinner_cb) {
                 }
             }
 
-            if (!found_result && !entry.success && entry.error.empty()) {
-                if (result.rate_limited) {
-                } else if (!last_raw_output.empty()) {
+            if (!found_result && !entry.success && entry.error.empty() && !result.rate_limited) {
+                if (!last_raw_output.empty()) {
                     std::string clean_msg = trim(last_raw_output);
                     if (clean_msg.length() > 50)
                         clean_msg = clean_msg.substr(0, 47) + "...";
