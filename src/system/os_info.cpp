@@ -34,6 +34,11 @@ std::string SystemInfo::get_virtualization() {
         while (std::getline(f, env, '\0')) {
             if (env.find("container=lxc") != std::string::npos)
                 return "LXC";
+            if (env.find("WSL_DISTRO_NAME=") != std::string::npos ||
+                env.find("WSL_INTEROP=") != std::string::npos ||
+                env.find("WSLENV=") != std::string::npos) {
+                return "WSL";
+            }
         }
     }
 
@@ -46,26 +51,8 @@ std::string SystemInfo::get_virtualization() {
         return "WSL";
     }
 
-    if (fs::exists("/proc/1/environ")) {
-        std::ifstream f("/proc/1/environ");
-        std::string env;
-        while (std::getline(f, env, '\0')) {
-            if (env.find("WSL_DISTRO_NAME=") != std::string::npos ||
-                env.find("WSL_INTEROP=") != std::string::npos ||
-                env.find("WSLENV=") != std::string::npos) {
-                return "WSL";
-            }
-        }
-    }
-
-    if (fs::exists("/dev/dxg")) {
-        return "WSL";
-    }
-    if (fs::exists("/dev/lxss")) {
-        return "WSL";
-    }
-
-    if (fs::exists("/usr/lib/wsl") || fs::exists("/mnt/wsl")) {
+    if (fs::exists("/dev/dxg") || fs::exists("/dev/lxss") || fs::exists("/usr/lib/wsl") ||
+        fs::exists("/mnt/wsl")) {
         return "WSL";
     }
 
@@ -127,11 +114,15 @@ std::string SystemInfo::get_os() {
     while (std::getline(f, line)) {
         if (line.starts_with("PRETTY_NAME=")) {
             auto val = line.substr(12);
-            if (val.size() >= 2 && val.front() == '"' && val.back() == '"') {
-                val = val.substr(1, val.size() - 2);
-            } else if (!val.empty() && val.front() == '"') {
+
+            if (!val.empty() && (val.front() == '"' || val.front() == '\'')) {
                 val = val.substr(1);
             }
+
+            if (!val.empty() && (val.back() == '"' || val.back() == '\'')) {
+                val.pop_back();
+            }
+
             return val;
         }
     }
