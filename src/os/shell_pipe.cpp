@@ -196,7 +196,7 @@ std::string ShellPipe::read_all(std::chrono::milliseconds timeout,
             throw std::runtime_error("Child process timed out while reading output");
         }
 
-        struct pollfd pfd {};
+        struct pollfd pfd{};
         pfd.fd = read_fd_;
         pfd.events = POLLIN;
 

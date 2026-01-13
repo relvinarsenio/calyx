@@ -66,7 +66,7 @@ void setup_browser_impersonation(CURL* handle, CurlHeaders& headers) {
     curl_easy_setopt(handle, CURLOPT_REFERER, "https://www.google.com/");
     curl_easy_setopt(handle, CURLOPT_ACCEPT_ENCODING, "gzip, deflate, br");
 
-    struct curl_blob blob {};
+    struct curl_blob blob{};
     blob.data = const_cast<void*>(static_cast<const void*>(cacert_pem));
     blob.len = cacert_pem_len;
     curl_easy_setopt(handle, CURLOPT_CAINFO_BLOB, &blob);

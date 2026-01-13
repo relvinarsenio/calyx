@@ -168,7 +168,7 @@ std::string SystemInfo::get_model_name() {
         }
     }
 
-    struct utsname buf {};
+    struct utsname buf{};
     if (::uname(&buf) == 0)
         return std::string(buf.machine);
     return "Unknown CPU";

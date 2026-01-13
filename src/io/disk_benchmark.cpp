@@ -37,6 +37,7 @@
 #include "include/interrupts.hpp"
 #include "include/results.hpp"
 #include "include/utils.hpp"
+#include "include/system_info.hpp"
 
 #ifdef USE_IO_URING
 #include <liburing.h>
@@ -241,14 +242,12 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(
     const int queue_depth_write = std::max(1, Config::IO_WRITE_QUEUE_DEPTH);
     const int queue_depth_read = std::max(1, Config::IO_READ_QUEUE_DEPTH);
 
-    struct statvfs vfs {};
-    if (::statvfs(".", &vfs) == 0) {
-        std::uint64_t available = static_cast<std::uint64_t>(vfs.f_bavail) * vfs.f_frsize;
-        std::uint64_t required = static_cast<std::uint64_t>(size_mb) * 1024 * 1024;
-        if (available < required) {
-            return std::unexpected("Insufficient free space for disk test (needs " +
-                                   format_bytes(required) + ")");
-        }
+    auto current_path = std::filesystem::current_path();
+    auto disk_info = SystemInfo::get_disk_usage(current_path.string());
+    std::uint64_t required = static_cast<std::uint64_t>(size_mb) * 1024 * 1024;
+    if (disk_info.available < required) {
+        return std::unexpected("Insufficient free space for disk test (needs " +
+                               format_bytes(required) + ")");
     }
 
     auto buffer = make_aligned_buffer(write_block_size, Config::IO_ALIGNMENT);
