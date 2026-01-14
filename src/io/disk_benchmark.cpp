@@ -360,11 +360,12 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(
 
         // Security: Use 0600 (S_IRUSR | S_IWUSR) so only owner can read/write the benchmark file
         const int base_flags = O_WRONLY | O_CREAT | O_TRUNC | O_EXCL;
-        auto [fd_raw, success_mode] = open_benchmark_file(filename, base_flags, 0600);
 
 #ifndef O_DIRECT
         return std::unexpected("FATAL: O_DIRECT is not available on this platform compilation.");
 #endif
+
+        auto [fd_raw, success_mode] = open_benchmark_file(filename, base_flags, 0600);
 
         if (fd_raw < 0) {
             return std::unexpected(get_error_message(errno, "create"));
