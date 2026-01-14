@@ -160,7 +160,7 @@ class SecureFileHandle {
     }
 
     ~SecureFileHandle() {
-        if (std::error_code ec; !committed_ && std::filesystem::exists(file_path_, ec) && !ec) {
+        if (std::error_code ec; !committed_ && std::filesystem::exists(file_path_, ec)) {
             std::filesystem::remove(file_path_, ec);
         }
     }
