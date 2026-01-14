@@ -17,6 +17,7 @@
 #include <numeric>
 #include <optional>
 #include <limits>
+#include <ranges>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
@@ -73,15 +74,16 @@ std::optional<std::string> get_safe_string(std::span<const std::byte> data) {
 }
 
 bool validate_checksum(std::span<const std::byte> header) {
-    std::uint64_t calculated = 0;
-    for (std::size_t i = 0; i < Config::TAR_BLOCK_SIZE; ++i) {
-        if (i >= Config::TAR_CHECKSUM_OFFSET &&
-            i < Config::TAR_CHECKSUM_OFFSET + Config::TAR_CHECKSUM_LENGTH) {
-            calculated += static_cast<std::uint64_t>(' ');
-        } else {
-            calculated += static_cast<std::uint64_t>(header[i]);
-        }
-    }
+    auto checksum_view = std::views::iota(std::size_t{0}, Config::TAR_BLOCK_SIZE) |
+                         std::views::transform([&](std::size_t i) -> std::uint64_t {
+                             if (i >= Config::TAR_CHECKSUM_OFFSET &&
+                                 i < Config::TAR_CHECKSUM_OFFSET + Config::TAR_CHECKSUM_LENGTH) {
+                                 return static_cast<std::uint64_t>(' ');
+                             }
+                             return static_cast<std::uint64_t>(header[i]);
+                         });
+
+    std::uint64_t calculated = std::ranges::fold_left(checksum_view, 0ULL, std::plus<>{});
 
     auto checksum_span = header.subspan(Config::TAR_CHECKSUM_OFFSET, Config::TAR_CHECKSUM_LENGTH);
     std::uint64_t stored = parse_octal(checksum_span);
@@ -130,13 +132,7 @@ bool is_safe_filename(std::string_view filename) {
         return false;
     }
 
-    for (char c : filename) {
-        if (!is_safe_filename_char(c)) {
-            return false;
-        }
-    }
-
-    return true;
+    return std::ranges::all_of(filename, is_safe_filename_char);
 }
 
 class SecureFileHandle {
@@ -218,21 +214,19 @@ std::optional<std::filesystem::path> sanitize_path(const std::filesystem::path& 
         return std::nullopt;
     }
 
-    for (char c : path_str) {
-        unsigned char uc = static_cast<unsigned char>(c);
-
-        if (uc > 127 || (uc < 32 && uc != '\t')) {
-            return std::nullopt;
-        }
+    if (std::ranges::any_of(path_str, [](char c) {
+            unsigned char uc = static_cast<unsigned char>(c);
+            return uc > 127 || (uc < 32 && uc != '\t');
+        })) {
+        return std::nullopt;
     }
 
-    if (path_str.find("../") != std::string_view::npos ||
-        path_str.find("..\\") != std::string_view::npos ||
-        path_str.find("//") != std::string_view::npos ||
-        path_str.find("\\\\") != std::string_view::npos ||
-        path_str.find(":\\") != std::string_view::npos || path_str.starts_with("/") ||
-        path_str.starts_with("\\") || path_str.starts_with("~") || path_str.contains(";") ||
-        path_str.contains("&") || path_str.contains("$") || path_str.contains("`") ||
+    if (path_str.contains("../") || path_str.contains("..\\") ||
+        path_str.contains("//") || path_str.contains("\\\\") ||
+        path_str.contains(":\\") || path_str.starts_with("/") ||
+        path_str.starts_with("\\") || path_str.starts_with("~") ||
+        path_str.contains(";") || path_str.contains("&") ||
+        path_str.contains("$") || path_str.contains("`") ||
         path_str.contains("|")) {
         return std::nullopt;
     }
@@ -333,7 +327,7 @@ std::expected<void, ExtractError> TgzExtractor::extract(const std::filesystem::p
             return std::unexpected(ExtractError::InvalidHeader);
         }
 
-        bool is_empty = std::all_of(header_block.begin(), header_block.end(), [](std::byte b) {
+        bool is_empty = std::ranges::all_of(header_block, [](std::byte b) {
             return b == std::byte{0};
         });
 
