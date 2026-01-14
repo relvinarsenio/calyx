@@ -45,6 +45,7 @@ constexpr int UI_SPINNER_DELAY_MS = 150;
 constexpr bool UI_FORCE_ASCII = false;
 
 // TGZ Extractor Security Limits
+constexpr std::uint64_t MIN_BUFFER_BYTES = 1048576;              // 1 MB buffer safety
 constexpr std::uint64_t TGZ_MAX_FILE_SIZE = 100 * 1024 * 1024;   // 100MB per file
 constexpr std::uint64_t TGZ_MAX_TOTAL_SIZE = 500 * 1024 * 1024;  // 500MB total
 constexpr std::uint32_t TGZ_MAX_FILES = 10000;                   // Max files in archive

@@ -345,9 +345,9 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(
     const int queue_depth_read = std::max(1, Config::IO_READ_QUEUE_DEPTH);
 
     auto current_path = std::filesystem::current_path();
-    auto disk_info = SystemInfo::get_disk_usage(current_path.string());
     std::uint64_t required = static_cast<std::uint64_t>(size_mb) * 1024 * 1024;
-    if (disk_info.available < required) {
+
+    if (!is_disk_space_available(current_path, required)) {
         return std::unexpected("Insufficient free space for disk test (needs " +
                                format_bytes(required) + ")");
     }

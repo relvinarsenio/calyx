@@ -76,6 +76,20 @@ std::filesystem::path get_exe_dir() {
     return std::filesystem::current_path();
 }
 
+bool is_disk_space_available(const std::filesystem::path& path, std::uint64_t required_bytes) {
+    std::error_code ec;
+    auto space_info = fs::space(path, ec);
+    if (ec) {
+        return false;
+    }
+
+    if (space_info.available < Config::MIN_BUFFER_BYTES) {
+        return false;
+    }
+
+    return (space_info.available - Config::MIN_BUFFER_BYTES) >= required_bytes;
+}
+
 void cleanup_artifacts() {
     const auto exe_dir = get_exe_dir();
 

@@ -7,6 +7,8 @@
  */
 #include "include/tgz_extractor.hpp"
 #include "include/file_descriptor.hpp"
+#include "include/utils.hpp"
+#include "include/config.hpp"
 
 #include <array>
 #include <charconv>
@@ -388,12 +390,7 @@ std::expected<void, ExtractError> TgzExtractor::extract(const std::filesystem::p
         }
         std::filesystem::path file_path = safe_path.value();
 
-        auto space_info = std::filesystem::space(dest_dir, ec);
-        if (ec) {
-            return std::unexpected(ExtractError::DiskFull);
-        }
-
-        if (space_info.available < 1048576 || (space_info.available - 1048576) < file_size) {
+        if (!is_disk_space_available(dest_dir, file_size)) {
             return std::unexpected(ExtractError::DiskFull);
         }
 
