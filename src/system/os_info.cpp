@@ -35,11 +35,10 @@ std::string SystemInfo::get_virtualization() {
         if (env_file) {
             std::string env_line;
             while (std::getline(env_file, env_line, '\0')) {
-                if (env_line.find("container=lxc") != std::string::npos)
+                if (env_line.contains("container=lxc"))
                     return "LXC";
-                if (env_line.find("WSL_DISTRO_NAME=") != std::string::npos ||
-                    env_line.find("WSL_INTEROP=") != std::string::npos ||
-                    env_line.find("WSLENV=") != std::string::npos) {
+                if (env_line.contains("WSL_DISTRO_NAME=") || env_line.contains("WSL_INTEROP=") ||
+                    env_line.contains("WSLENV=")) {
                     return "WSL";
                 }
             }
@@ -50,8 +49,7 @@ std::string SystemInfo::get_virtualization() {
         return "OpenVZ";
 
     std::string release = get_kernel();
-    if (release.find("Microsoft") != std::string::npos ||
-        release.find("WSL") != std::string::npos) {
+    if (release.contains("Microsoft") || release.contains("WSL")) {
         return "WSL";
     }
 
@@ -102,11 +100,11 @@ std::string SystemInfo::get_virtualization() {
     if (dmi_file) {
         std::string product_name;
         if (std::getline(dmi_file, product_name)) {
-            if (product_name.find("KVM") != std::string::npos)
+            if (product_name.contains("KVM"))
                 return "KVM";
-            if (product_name.find("QEMU") != std::string::npos)
+            if (product_name.contains("QEMU"))
                 return "QEMU";
-            if (product_name.find("VirtualBox") != std::string::npos)
+            if (product_name.contains("VirtualBox"))
                 return "VirtualBox";
         }
     }
@@ -157,9 +155,9 @@ std::string SystemInfo::get_arch() {
         return "Unknown";
 
     int bits = static_cast<int>(sizeof(void*) * 8);
-    if (arch.find("64") != std::string::npos || arch == "s390x") {
+    if (arch.contains("64") || arch == "s390x") {
         bits = 64;
-    } else if (arch.find("86") != std::string::npos || arch.starts_with("arm")) {
+    } else if (arch.contains("86") || arch.starts_with("arm")) {
         bits = 32;
     }
     return std::format("{} ({} Bit)", arch, bits);
@@ -201,8 +199,8 @@ std::string SystemInfo::get_uptime() {
 }
 
 std::string SystemInfo::get_load_avg() {
-    double loads[3];
-    if (getloadavg(loads, 3) != -1) {
+    std::array<double, 3> loads{};
+    if (getloadavg(loads.data(), 3) != -1) {
         return std::format("{:.2f}, {:.2f}, {:.2f}", loads[0], loads[1], loads[2]);
     }
     return "Unknown";

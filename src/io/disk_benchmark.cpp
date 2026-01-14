@@ -36,8 +36,8 @@
 #include "include/file_descriptor.hpp"
 #include "include/interrupts.hpp"
 #include "include/results.hpp"
-#include "include/utils.hpp"
 #include "include/system_info.hpp"
+#include "include/utils.hpp"
 
 #ifdef USE_IO_URING
 #include <liburing.h>
@@ -66,14 +66,14 @@ struct FileCleaner {
     }
 };
 
-std::unique_ptr<std::byte[], AlignedDelete> make_aligned_buffer(std::size_t size,
-                                                                std::size_t alignment) {
+[[nodiscard]] std::unique_ptr<std::byte[], AlignedDelete> make_aligned_buffer(
+    std::size_t size, std::size_t alignment) {
     void* ptr = ::operator new(size, std::align_val_t(alignment));
     return std::unique_ptr<std::byte[], AlignedDelete>(static_cast<std::byte*>(ptr),
                                                        AlignedDelete{alignment});
 }
 
-std::string get_error_message(int err, std::string_view operation) {
+[[nodiscard]] std::string get_error_message(int err, std::string_view operation) {
     switch (err) {
         case ENOSPC:
             return "Storage capacity limit reached (Disk Full)";
@@ -103,20 +103,20 @@ std::string get_error_message(int err, std::string_view operation) {
 
 #ifdef USE_IO_URING
 
-std::string uring_error(int rc, std::string_view op) {
+[[nodiscard]] std::string uring_error(int rc, std::string_view op) {
     int err = -rc;
     return std::format("io_uring {} failed: {}", op, std::system_category().message(err));
 }
 
-std::expected<void, std::string> run_uring_io(
+[[nodiscard]] std::expected<void, std::string> run_uring_io(
     bool is_write,
     io_uring& ring,
     int fd,
     std::uint64_t total_blocks,
     std::uint64_t total_bytes,
     std::size_t block_size,
-    std::byte* write_buffer,
-    const std::vector<std::unique_ptr<std::byte[], AlignedDelete>>& read_buffers,
+    std::span<std::byte> write_buffer,
+    std::span<const std::unique_ptr<std::byte[], AlignedDelete>> read_buffers,
     int queue_depth,
     high_resolution_clock::time_point deadline,
     const std::function<void(std::size_t, std::size_t, std::string_view)>& progress_cb,
@@ -142,19 +142,24 @@ std::expected<void, std::string> run_uring_io(
             std::uint64_t remaining = total_bytes - offset_bytes;
             std::size_t chunk =
                 static_cast<std::size_t>(std::min<std::uint64_t>(remaining, block_size));
-
             unsigned int len = static_cast<unsigned int>(chunk);
+
             if (is_write) {
-                io_uring_prep_write(sqe, fd, write_buffer, len, offset_bytes);
+                // Bounds check for safety strictly
+                if (chunk > write_buffer.size()) {
+                    return std::unexpected("Buffer overflow detected in write preparation");
+                }
+                io_uring_prep_write(sqe, fd, write_buffer.data(), len, offset_bytes);
             } else {
-                auto* buf = read_buffers[static_cast<std::size_t>(
-                                             submitted % static_cast<std::uint64_t>(queue_depth))]
-                                .get();
-                io_uring_prep_read(sqe, fd, buf, len, offset_bytes);
+                size_t buf_idx =
+                    static_cast<size_t>(submitted % static_cast<uint64_t>(queue_depth));
+                if (buf_idx >= read_buffers.size()) {
+                    return std::unexpected("Read buffer index out of range");
+                }
+                io_uring_prep_read(sqe, fd, read_buffers[buf_idx].get(), len, offset_bytes);
             }
 
             io_uring_sqe_set_data64(sqe, static_cast<__u64>(len));
-
             submitted++;
         }
 
@@ -181,7 +186,6 @@ std::expected<void, std::string> run_uring_io(
 
         io_uring_for_each_cqe(&ring, head, cqe) {
             count++;
-
             auto expected_len = static_cast<int>(io_uring_cqe_get_data64(cqe));
 
             if (cqe->res < 0) {
@@ -227,6 +231,73 @@ std::expected<void, std::string> run_uring_io(
 
 #endif
 
+// Helper to attempt opening file with increasingly relaxed consistency flags
+[[nodiscard]] std::pair<int, int> open_benchmark_file(const std::string& path,
+                                                      int flags,
+                                                      mode_t mode) {
+    int fd = -1;
+    // 0=none, 1=DIRECT+DSYNC, 2=DIRECT, 3=DSYNC, 4=Buffered
+
+#ifdef O_DIRECT
+    // Try 1: O_DIRECT | O_DSYNC (Best)
+    fd = ::open(path.c_str(), flags | O_DIRECT | O_DSYNC, mode);
+    if (fd >= 0)
+        return {fd, 1};
+
+    if (errno == EINVAL) {
+        // Try 2: O_DIRECT (Good)
+        fd = ::open(path.c_str(), flags | O_DIRECT, mode);
+        if (fd >= 0)
+            return {fd, 2};
+    }
+#endif
+
+    // Try 3: O_DSYNC (Reliable but maybe cached read)
+    if (errno == EINVAL) {
+        fd = ::open(path.c_str(), flags | O_DSYNC, mode);
+        if (fd >= 0)
+            return {fd, 3};
+    }
+
+    // Try 4: Buffered (Fallback)
+    if (errno == EINVAL) {
+        fd = ::open(path.c_str(), flags, mode);
+        if (fd >= 0)
+            return {fd, 4};
+    }
+
+    return {-1, 0};
+}
+
+void print_storage_warning(int mode, bool is_read) {
+    if (mode == 1)
+        return;  // Best case
+
+    const char* op_type = is_read ? "read" : "write";
+    const char* reason = "";
+
+    switch (mode) {
+        case 2:
+            reason = "O_DSYNC not supported";
+            break;
+        case 3:
+            reason = "O_DIRECT not supported";
+            break;
+        case 4:
+            reason = "O_DIRECT/O_DSYNC not supported";
+            break;
+        default:
+            return;
+    }
+
+    std::print(stderr,
+               "{}Warning: {}. Benchmark {} results may be influenced by RAM cache.{}\n",
+               Color::YELLOW,
+               reason,
+               op_type,
+               Color::RESET);
+}
+
 }  // namespace
 
 std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(
@@ -252,18 +323,20 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(
 
     auto buffer = make_aligned_buffer(write_block_size, Config::IO_ALIGNMENT);
 
+    // Modern C++20 range generation
+    constexpr unsigned int RNG_MULTIPLIER = 0x9E3779B1u;
     std::ranges::generate(std::span{buffer.get(), write_block_size}, [i = 0u]() mutable {
-        return std::byte{static_cast<unsigned char>(i++ * 0x9E3779B1u)};
+        return std::byte{static_cast<unsigned char>(i++ * RNG_MULTIPLIER)};
     });
 
     std::vector<std::unique_ptr<std::byte[], AlignedDelete>> read_buffers;
     read_buffers.reserve(static_cast<size_t>(queue_depth_read));
     for (int k = 0; k < queue_depth_read; ++k) {
         read_buffers.push_back(make_aligned_buffer(read_block_size, Config::IO_ALIGNMENT));
-        std::ranges::generate(std::span{read_buffers.back().get(), read_block_size},
-                              [i = 0u]() mutable {
-                                  return std::byte{static_cast<unsigned char>(i++ * 0x9E3779B1u)};
-                              });
+        std::ranges::generate(
+            std::span{read_buffers.back().get(), read_block_size}, [i = 0u]() mutable {
+                return std::byte{static_cast<unsigned char>(i++ * RNG_MULTIPLIER)};
+            });
     }
 
     auto start = high_resolution_clock::now();
@@ -279,46 +352,19 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(
         std::error_code ec;
         std::filesystem::remove(filename, ec);
 
+        // Security: Use 0600 (S_IRUSR | S_IWUSR) so only owner can read/write the benchmark file
         const int base_flags = O_WRONLY | O_CREAT | O_TRUNC | O_EXCL;
-        int fd_raw = -1;
+        auto [fd_raw, success_mode] = open_benchmark_file(filename, base_flags, 0600);
 
-#ifdef O_DIRECT
-        fd_raw = ::open(filename.c_str(), base_flags | O_DIRECT | O_DSYNC, 0644);
-        if (fd_raw < 0 && errno == EINVAL) {
-            fd_raw = ::open(filename.c_str(), base_flags | O_DIRECT, 0644);
-            if (fd_raw >= 0) {
-                std::print(stderr,
-                           "{}Warning: O_DSYNC not supported. Results may be influenced by RAM "
-                           "cache.{}\n",
-                           Color::YELLOW,
-                           Color::RESET);
-            } else if (errno == EINVAL) {
-                fd_raw = ::open(filename.c_str(), base_flags | O_DSYNC, 0644);
-                if (fd_raw >= 0) {
-                    std::print(stderr,
-                               "{}Warning: O_DIRECT not supported. Results may be influenced by "
-                               "RAM cache.{}\n",
-                               Color::YELLOW,
-                               Color::RESET);
-                } else if (errno == EINVAL) {
-                    fd_raw = ::open(filename.c_str(), base_flags, 0644);
-                    if (fd_raw >= 0) {
-                        std::print(stderr,
-                                   "{}Warning: O_DIRECT/O_DSYNC not supported. Results WILL be "
-                                   "influenced by RAM cache.{}\n",
-                                   Color::YELLOW,
-                                   Color::RESET);
-                    }
-                }
-            }
-        }
-#else
+#ifndef O_DIRECT
         return std::unexpected("FATAL: O_DIRECT is not available on this platform compilation.");
 #endif
 
         if (fd_raw < 0) {
             return std::unexpected(get_error_message(errno, "create"));
         }
+
+        print_storage_warning(success_mode, false);
 
         {
             off_t prealloc_bytes = static_cast<off_t>(total_bytes);
@@ -346,7 +392,7 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(
                                 total_write_blocks,
                                 total_bytes,
                                 write_block_size,
-                                buffer.get(),
+                                std::span{buffer.get(), write_block_size},
                                 {},
                                 queue_depth_write,
                                 deadline,
@@ -378,27 +424,16 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(
     double write_speed =
         diff_write.count() <= 0 ? 0.0 : static_cast<double>(size_mb) / diff_write.count();
 
+    // Read Test
     int rd_flags = O_RDONLY;
-#ifdef O_DIRECT
-    int rd_raw = ::open(filename.c_str(), rd_flags | O_DIRECT);
-    if (rd_raw < 0 && errno == EINVAL) {
-        rd_raw = ::open(filename.c_str(), rd_flags);
-        if (rd_raw >= 0) {
-            std::print(
-                stderr,
-                "{}Warning: O_DIRECT not supported for read. Results may be influenced by RAM "
-                "cache.{}\n",
-                Color::YELLOW,
-                Color::RESET);
-        }
-    }
-#else
-    int rd_raw = ::open(filename.c_str(), rd_flags);
-#endif
+    auto [rd_raw, success_mode] =
+        open_benchmark_file(filename, rd_flags, 0);  // Mode ignored for O_RDONLY
 
     if (rd_raw < 0) {
         return std::unexpected(get_error_message(errno, "open/read"));
     }
+
+    print_storage_warning(success_mode, true);
 
     FileDescriptor read_fd(rd_raw);
     auto read_start = high_resolution_clock::now();
@@ -420,7 +455,7 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(
                             total_read_blocks,
                             total_bytes,
                             read_block_size,
-                            nullptr,
+                            std::span<std::byte>{},
                             read_buffers,
                             queue_depth_read,
                             deadline,

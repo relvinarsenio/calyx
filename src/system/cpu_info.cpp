@@ -26,6 +26,7 @@
 
 #include <sys/utsname.h>
 #include <unistd.h>
+#include <ranges>
 
 namespace {
 #if !defined(__i386__) && !defined(__x86_64__)
@@ -88,23 +89,9 @@ bool cpu_has_flag(std::string_view flag) {
         flags_line = flags_line.substr(colon_pos + 1);
     }
 
-    size_t pos = 0;
-    while (pos < flags_line.size()) {
-        while (pos < flags_line.size() &&
-               std::isspace(static_cast<unsigned char>(flags_line[pos]))) {
-            ++pos;
-        }
-        if (pos >= flags_line.size())
-            break;
-
-        size_t token_start = pos;
-        while (pos < flags_line.size() &&
-               !std::isspace(static_cast<unsigned char>(flags_line[pos]))) {
-            ++pos;
-        }
-
-        std::string_view token = flags_line.substr(token_start, pos - token_start);
-        if (token == flag) {
+    for (auto word_range : std::views::split(flags_line, ' ')) {
+        std::string_view token(word_range.begin(), word_range.end());
+        if (!token.empty() && token == flag) {
             return true;
         }
     }

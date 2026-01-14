@@ -22,6 +22,7 @@
 
 namespace fs = std::filesystem;
 
+// Helper to get terminal width, clamped to config
 std::size_t get_term_width() {
     struct winsize w;
     if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == 0 && w.ws_col > 0) {
@@ -48,28 +49,38 @@ void print_centered_header(std::string_view text) {
     std::size_t left_pad = remaining / 2;
     std::size_t right_pad = remaining - left_pad;
 
-    std::println("{} {} {}", std::string(left_pad, '-'), text, std::string(right_pad, '-'));
+    // Optimized C++23 formatting: Center text with dashes
+    std::println("{0:-<{1}} {2} {0:-<{3}}", "", left_pad, text, right_pad);
 }
 
 std::string format_bytes(std::uint64_t bytes) {
     if (bytes == 0)
-        return "0";
+        return "0 B";
 
     static constexpr std::array units = {"B", "KB", "MB", "GB", "TB"};
 
-    int i = 0;
+    std::size_t i = 0;
     double d = static_cast<double>(bytes);
-    while (d >= 1024 && i < 4) {
+    while (d >= 1024 && i < units.size() - 1) {
         d /= 1024;
         i++;
     }
-    return std::format("{:.1f} {}", d, units[static_cast<size_t>(i)]);
+    return std::format("{:.1f} {}", d, units[i]);
+}
+
+std::filesystem::path get_exe_dir() {
+    std::error_code ec;
+    auto exe = std::filesystem::read_symlink("/proc/self/exe", ec);
+    if (!ec && exe.has_parent_path())
+        return exe.parent_path();
+    return std::filesystem::current_path();
 }
 
 void cleanup_artifacts() {
     const auto exe_dir = get_exe_dir();
 
-    for (const auto& filename :
+    // C++23: Initializer list of string_views
+    for (std::string_view filename :
          {Config::SPEEDTEST_TGZ, std::string_view("speedtest-cli"), Config::TEST_FILENAME}) {
         std::error_code ec;
 
@@ -82,12 +93,4 @@ void cleanup_artifacts() {
             fs::remove_all(abs_path, ec);
         }
     }
-}
-
-std::filesystem::path get_exe_dir() {
-    std::error_code ec;
-    auto exe = std::filesystem::read_symlink("/proc/self/exe", ec);
-    if (!ec && exe.has_parent_path())
-        return exe.parent_path();
-    return std::filesystem::current_path();
 }

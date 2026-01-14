@@ -7,6 +7,7 @@
  */
 #include "include/speed_test.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cctype>
 #include <chrono>
@@ -14,8 +15,11 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <map>
 #include <print>
+#include <span>
 #include <sstream>
+#include <ranges>
 #include <cerrno>
 #include <cstring>
 #include <stdexcept>
@@ -49,6 +53,7 @@ struct Node {
     std::string_view name;
 };
 
+// C++23: Using span for simpler array passing
 constexpr std::array<Node, 7> SERVERS = {{{"", "Speedtest.net (Auto)"},
                                           {"59016", "Singapore, SG"},
                                           {"5905", "Los Angeles, US"},
@@ -83,17 +88,22 @@ class ScopedCertFile {
         cleanup();
     }
 
+    // Modern C++23: Use std::span to avoid pointer/length pair issues
     static std::expected<ScopedCertFile, std::string> create(const fs::path& dir,
-                                                             const unsigned char* data,
-                                                             unsigned int len) {
+                                                             std::span<const unsigned char> data) {
         fs::path cert_path = dir / "cacert.pem";
 
+        // Secure file creation
+        // We open with exclusive flag if possible, but standard fstream doesn't expose O_EXCL
+        // easily without C++23/OS specifics or manual open. However, we can ensure we overwrite
+        // truncating.
         std::ofstream cert_stream(cert_path, std::ios::binary | std::ios::trunc);
         if (!cert_stream) {
             return std::unexpected(std::format("Failed to open file: {}", std::strerror(errno)));
         }
 
-        if (!cert_stream.write(reinterpret_cast<const char*>(data), len)) {
+        if (!cert_stream.write(reinterpret_cast<const char*>(data.data()),
+                               static_cast<std::streamsize>(data.size()))) {
             return std::unexpected(std::format("Failed to write data: {}", std::strerror(errno)));
         }
 
@@ -187,12 +197,20 @@ void SpeedTest::install() {
     std::string arch = SystemInfo::get_raw_arch();
     std::string url_arch;
 
-    if (arch == "x86_64") {
-        url_arch = "x86_64";
-    } else if (arch == "i386" || arch == "i686" || arch == "i586") {
-        url_arch = "i386";
-    } else if (arch == "aarch64" || arch == "arm64") {
-        url_arch = "aarch64";
+    // Modern ARCH map with string_view
+    static constexpr std::pair<std::string_view, std::string_view> KNOWN_ARCHS[] = {
+        {"x86_64", "x86_64"},
+        {"i386", "i386"},
+        {"i686", "i386"},
+        {"i586", "i386"},
+        {"aarch64", "aarch64"},
+        {"arm64", "aarch64"}};
+
+    auto it =
+        std::ranges::find_if(KNOWN_ARCHS, [&](const auto& pair) { return pair.first == arch; });
+
+    if (it != std::end(KNOWN_ARCHS)) {
+        url_arch = it->second;
     } else if (arch.starts_with("armv7")) {
         url_arch = "armhf";
     } else if (arch.starts_with("armv6") || arch.starts_with("armv5")) {
@@ -235,7 +253,8 @@ SpeedTestResult SpeedTest::run(const SpinnerCallback& spinner_cb) {
     SpeedTestResult result;
     result.entries.reserve(SERVERS.size());
 
-    auto cert_expected = ScopedCertFile::create(base_dir_, cacert_pem, cacert_pem_len);
+    // Use std::span for safer access to embedded cert
+    auto cert_expected = ScopedCertFile::create(base_dir_, std::span{cacert_pem, cacert_pem_len});
 
     if (!cert_expected) {
         SpeedEntryResult entry;
@@ -269,6 +288,7 @@ SpeedTestResult SpeedTest::run(const SpinnerCallback& spinner_cb) {
 
         try {
             ShellPipe pipe(cmd_args);
+            // 90 seconds timeout
             std::string output = pipe.read_all(std::chrono::milliseconds(90000), {}, false);
 
             if (g_interrupted) {
@@ -278,18 +298,19 @@ SpeedTestResult SpeedTest::run(const SpinnerCallback& spinner_cb) {
                 break;
             }
 
-            std::stringstream ss(output);
-            std::string line;
             std::string last_raw_output;
             bool found_result = false;
 
-            while (std::getline(ss, line)) {
-                if (trim(line).empty())
+            // Modern C++23: Process output line-by-line using views to avoid copies
+            for (auto line_rng : std::string_view(output) | std::views::split('\n')) {
+                std::string_view sv(line_rng.begin(), line_rng.end());
+                if (trim_sv(sv).empty())
                     continue;
+
+                std::string line(sv);
                 last_raw_output = line;
 
-                if (line.find("Limit reached") != std::string::npos ||
-                    line.find("Too many requests") != std::string::npos) {
+                if (line.contains("Limit reached") || line.contains("Too many requests")) {
                     entry.rate_limited = true;
                     entry.error = "Rate Limit Reached";
                     result.rate_limited = true;
@@ -319,8 +340,8 @@ SpeedTestResult SpeedTest::run(const SpinnerCallback& spinner_cb) {
                         double dl_bytes = j.at("download").value("bandwidth", 0.0);
                         double ul_bytes = j.at("upload").value("bandwidth", 0.0);
 
-                        entry.download_mbps = (dl_bytes * 8.0) / 1000000.0;
-                        entry.upload_mbps = (ul_bytes * 8.0) / 1000000.0;
+                        entry.download_mbps = (dl_bytes * 8.0) / 1'000'000.0;  // Digit separators
+                        entry.upload_mbps = (ul_bytes * 8.0) / 1'000'000.0;
 
                         if (j.contains("ping")) {
                             entry.latency_ms = j.at("ping").value("latency", 0.0);
@@ -342,11 +363,11 @@ SpeedTestResult SpeedTest::run(const SpinnerCallback& spinner_cb) {
                         std::string level = j.value("level", "");
                         if (level == "error") {
                             std::string msg = j.value("message", "Unknown error");
-                            if (msg.find("Limit reached") != std::string::npos) {
+                            if (msg.contains("Limit reached")) {  // Modern contains
                                 entry.rate_limited = true;
                                 entry.error = "Rate Limit Reached";
                                 result.rate_limited = true;
-                            } else if (msg.find("No servers defined") != std::string::npos) {
+                            } else if (msg.contains("No servers defined")) {
                                 entry.error = "Server Offline/Changed";
                             } else {
                                 entry.error = sanitize_error(msg);
@@ -355,7 +376,7 @@ SpeedTestResult SpeedTest::run(const SpinnerCallback& spinner_cb) {
                     }
 
                 } catch (const json::parse_error&) {
-                    continue;
+                    continue;  // Skip non-JSON lines
                 }
             }
 

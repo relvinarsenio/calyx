@@ -8,11 +8,13 @@
 #include "include/system_info.hpp"
 #include "include/utils.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <charconv>
+#include <expected>
 #include <fstream>
 #include <format>
-#include <sstream>
+#include <ranges>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -24,14 +26,31 @@
 
 namespace {
 
+// C++23: Helper to capitalize using ranges/views if complex, but simple version is fine.
+// Improved to be safe and use string views where possible, returning a string.
 std::string capitalize(std::string_view text) {
     if (text.empty())
         return {};
+
     std::string ret(text);
-    ret[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(ret[0])));
+    if (!ret.empty()) {
+        ret[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(ret[0])));
+    }
+
     if (ret == "Zram")
         return "ZRAM";
     return ret;
+}
+
+// C++23: Robust number parsing helper
+template <typename T>
+std::expected<T, std::errc> parse_number(std::string_view sv) {
+    T value;
+    auto [ptr, ec] = std::from_chars(sv.data(), sv.data() + sv.size(), value);
+    if (ec == std::errc()) {
+        return value;
+    }
+    return std::unexpected(ec);
 }
 
 }  // namespace
@@ -43,37 +62,41 @@ MemInfo SystemInfo::get_memory_status() {
     bool sysinfo_ok = (sysinfo(&si) == 0);
     if (sysinfo_ok) {
         info.total = static_cast<uint64_t>(si.totalram) * si.mem_unit;
+        // Fallback available memory from sysinfo (usually freeram + buffers + cached)
+        // But MemAvailable from /proc/meminfo is more accurate for "allocatable" memory.
+        info.available = static_cast<uint64_t>(si.freeram) * si.mem_unit;
     }
 
+    // Modern C++23 file reading with views
     std::ifstream meminfo("/proc/meminfo");
     std::string line;
-    uint64_t mem_available = 0;
 
     while (std::getline(meminfo, line)) {
-        if (line.starts_with("MemAvailable:")) {
-            std::string_view sv = line;
+        std::string_view sv = line;
+
+        // Check for MemAvailable
+        if (sv.starts_with("MemAvailable:")) {
             auto colon = sv.find(':');
             if (colon != std::string_view::npos) {
+                // Drop prefix and colon
                 sv = sv.substr(colon + 1);
+                // Trim leading whitespace
                 sv = trim_sv(sv);
 
-                auto [ptr, ec] = std::from_chars(sv.data(), sv.data() + sv.size(), mem_available);
-                if (ec == std::errc()) {
-                    mem_available *= 1024;
-                } else {
-                    mem_available = 0;
+                // Parse the number (usually in kB)
+                // MemAvailable:    8056220 kB
+                auto parts = sv | std::views::split(' ') | std::views::take(1);
+                if (!parts.empty()) {
+                    auto rng = *parts.begin();
+                    std::string_view num_sv(rng.begin(), rng.end());
+
+                    if (auto val = parse_number<uint64_t>(num_sv)) {
+                        info.available = *val * 1024;  // Check if unit is kB, usually is.
+                    }
                 }
-                break;
+                break;  // Found it
             }
         }
-    }
-
-    if (mem_available > 0) {
-        info.available = mem_available;
-    } else if (sysinfo_ok) {
-        info.available = static_cast<uint64_t>(si.freeram) * si.mem_unit;
-    } else {
-        info.available = 0;
     }
 
     if (info.total >= info.available) {
@@ -104,39 +127,59 @@ DiskInfo SystemInfo::get_disk_usage(const std::string& mountpoint) {
 std::vector<SwapEntry> SystemInfo::get_swaps() {
     std::vector<SwapEntry> swaps;
 
+    // Use C++ streams but process lines with ranges
     std::ifstream swaps_file("/proc/swaps");
     std::string line;
 
+    // Skip header line
     if (std::getline(swaps_file, line)) {
         while (std::getline(swaps_file, line)) {
-            std::stringstream ss(line);
-            std::string path, type, size_str, used_str;
+            // /proc/swaps format:
+            // Filename Type Size Used Priority
+            // Tokenize by whitespace
 
-            if (ss >> path >> type >> size_str >> used_str) {
-                SwapEntry entry;
-                entry.path = path;
+            // C++23 range-based tokenization
+            auto tokens = line | std::views::split(' ') |
+                          std::views::filter([](auto&& rng) { return !std::ranges::empty(rng); }) |
+                          std::views::transform(
+                              [](auto&& rng) { return std::string_view(rng.begin(), rng.end()); });
 
-                if (path.find("zram") != std::string::npos) {
-                    entry.type = "ZRAM";
-                } else {
-                    entry.type = capitalize(type);
-                }
+            auto it = tokens.begin();
+            auto end = tokens.end();
 
-                uint64_t val_size = 0, val_used = 0;
-                auto [p1, ec1] =
-                    std::from_chars(size_str.data(), size_str.data() + size_str.size(), val_size);
-                auto [p2, ec2] =
-                    std::from_chars(used_str.data(), used_str.data() + used_str.size(), val_used);
+            if (it == end)
+                continue;
+            std::string_view path(*it++);
+            if (it == end)
+                continue;
+            std::string_view type(*it++);
+            if (it == end)
+                continue;
+            std::string_view size_str(*it++);
+            if (it == end)
+                continue;
+            std::string_view used_str(*it++);
+            // We ignore priority usually
 
-                if (ec1 == std::errc() && ec2 == std::errc()) {
-                    entry.size = val_size * 1024;
-                    entry.used = val_used * 1024;
-                    swaps.push_back(entry);
-                }
+            SwapEntry entry;
+            entry.path = std::string(path);
+
+            if (path.find("zram") != std::string_view::npos) {
+                entry.type = "ZRAM";
+            } else {
+                entry.type = capitalize(type);
             }
+
+            if (auto val = parse_number<uint64_t>(size_str))
+                entry.size = *val * 1024;
+            if (auto val = parse_number<uint64_t>(used_str))
+                entry.used = *val * 1024;
+
+            swaps.push_back(std::move(entry));
         }
     }
 
+    // Check ZSwap
     std::ifstream zswap_file("/sys/module/zswap/parameters/enabled");
     char c;
     if (zswap_file >> c && (c == 'Y' || c == 'y' || c == '1')) {
@@ -170,43 +213,42 @@ std::string SystemInfo::get_device_name(const std::string& path) {
 
     std::string line;
     while (std::getline(mountinfo, line)) {
-        std::string_view line_view(line);
+        // C++23: Clean tokenization
+        auto tokens_view = line | std::views::split(' ') |
+                           std::views::filter([](auto&& rng) { return !std::ranges::empty(rng); }) |
+                           std::views::transform([](auto&& rng) {
+                               return std::string_view(
+                                   &*rng.begin(), static_cast<size_t>(std::ranges::distance(rng)));
+                           });
+
+        // Convert to vector for indexed access (parsing the mountinfo structure)
+        // mountinfo structure is slightly variable but fields 0-4 are fixed
+        // 36 35 98:0 /mnt1 /mnt2 rw,noatime master:1 - ext3 /dev/root rw,errors=continue
+        // (0)ID (1)Parent (2)Maj:Min (3)Root (4)MountPoint ... - (N)FSType (N+1)Source
+
         std::vector<std::string_view> tokens;
+        for (auto t : tokens_view)
+            tokens.push_back(t);
 
-        size_t start = 0;
-        while (start < line_view.length()) {
-            while (start < line_view.length() &&
-                   (line_view[start] == ' ' || line_view[start] == '\t'))
-                start++;
-            if (start >= line_view.length())
-                break;
-
-            size_t end = start;
-            while (end < line_view.length() && line_view[end] != ' ' && line_view[end] != '\t')
-                end++;
-
-            tokens.push_back(line_view.substr(start, end - start));
-            start = end;
-        }
-
-        if (tokens.size() < 5)
+        if (tokens.size() < 7)  // Min required to even reach the separator
             continue;
 
-        std::string id(tokens[0]), parent(tokens[1]), major_minor(tokens[2]), root(tokens[3]),
-            mount_point(tokens[4]);
+        std::string_view major_minor = tokens[2];
+        std::string_view mount_point = tokens[4];
 
-        size_t dash_pos = 5;
-        while (dash_pos < tokens.size() && tokens[dash_pos] != "-")
-            dash_pos++;
-
-        if (dash_pos + 2 >= tokens.size())
+        // Find separator "-"
+        // It's optional fields between MountPoint and separator
+        auto separator_it = std::ranges::find(tokens, "-");
+        if (separator_it == tokens.end() || std::distance(separator_it, tokens.end()) < 3)
             continue;
 
-        std::string fs_type(tokens[dash_pos + 1]), source(tokens[dash_pos + 2]);
+        // FSType is after separator, Source is after FSType
+        std::string_view fs_type = *(separator_it + 1);
+        std::string_view source = *(separator_it + 2);
 
-        auto format_output = [&](const std::string& src, const std::string& fs) {
+        auto format_output = [&](std::string_view src, std::string_view fs) {
             if (src == fs)
-                return src;
+                return std::string(src);
             return std::format("{} ({})", src, fs);
         };
 
@@ -214,9 +256,9 @@ std::string SystemInfo::get_device_name(const std::string& path) {
             exact_dev_match = format_output(source, fs_type);
         }
 
-        if (path.compare(0, mount_point.size(), mount_point) == 0) {
-            bool valid_boundary = path.size() == mount_point.size() || mount_point == "/" ||
-                                  path[mount_point.size()] == '/';
+        if (path.starts_with(mount_point)) {  // C++20 starts_with
+            bool valid_boundary = (path.size() == mount_point.size()) || (mount_point == "/") ||
+                                  (path[mount_point.size()] == '/');
 
             if (valid_boundary && mount_point.size() > best_path_len) {
                 best_path_len = mount_point.size();

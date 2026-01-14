@@ -221,12 +221,10 @@ std::optional<std::filesystem::path> sanitize_path(const std::filesystem::path& 
         return std::nullopt;
     }
 
-    if (path_str.contains("../") || path_str.contains("..\\") ||
-        path_str.contains("//") || path_str.contains("\\\\") ||
-        path_str.contains(":\\") || path_str.starts_with("/") ||
-        path_str.starts_with("\\") || path_str.starts_with("~") ||
-        path_str.contains(";") || path_str.contains("&") ||
-        path_str.contains("$") || path_str.contains("`") ||
+    if (path_str.contains("../") || path_str.contains("..\\") || path_str.contains("//") ||
+        path_str.contains("\\\\") || path_str.contains(":\\") || path_str.starts_with("/") ||
+        path_str.starts_with("\\") || path_str.starts_with("~") || path_str.contains(";") ||
+        path_str.contains("&") || path_str.contains("$") || path_str.contains("`") ||
         path_str.contains("|")) {
         return std::nullopt;
     }
@@ -327,9 +325,8 @@ std::expected<void, ExtractError> TgzExtractor::extract(const std::filesystem::p
             return std::unexpected(ExtractError::InvalidHeader);
         }
 
-        bool is_empty = std::ranges::all_of(header_block, [](std::byte b) {
-            return b == std::byte{0};
-        });
+        bool is_empty =
+            std::ranges::all_of(header_block, [](std::byte b) { return b == std::byte{0}; });
 
         if (is_empty)
             break;
@@ -427,7 +424,8 @@ std::expected<void, ExtractError> TgzExtractor::extract(const std::filesystem::p
                         return std::unexpected(ExtractError::ReadFailed);
                     }
 
-                    if (auto result = secure_file.write(buffer.data(), static_cast<std::size_t>(chunk_read));
+                    if (auto result =
+                            secure_file.write(buffer.data(), static_cast<std::size_t>(chunk_read));
                         !result) {
                         int err = result.error();
                         if (err == ENOSPC || err == EDQUOT) {
