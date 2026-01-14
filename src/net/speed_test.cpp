@@ -115,6 +115,10 @@ class ScopedCertFile {
                 return std::unexpected(std::format("Write failed: {} (Code: {})",
                                                    std::system_category().message(errno), errno));
             }
+            if (written == 0) {
+                return std::unexpected(std::format("Write failed: {} (Code: {})",
+                                                   std::system_category().message(ENOSPC), ENOSPC));
+            }
             ptr += written;
             remaining -= static_cast<size_t>(written);
         }

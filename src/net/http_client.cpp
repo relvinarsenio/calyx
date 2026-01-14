@@ -118,6 +118,11 @@ size_t HttpClient::write_file(void* ptr,
             }
             return 0;
         }
+
+        if (written == 0) {
+            return 0;
+        }
+
         data_ptr += written;
         remaining -= static_cast<size_t>(written);
     }
@@ -201,12 +206,13 @@ std::expected<void, std::string> HttpClient::download(const std::string& url,
     }
 
     if (::fsync(fd.get()) == -1) {
+        int saved_errno  = errno;
         std::filesystem::remove(filepath);
         
         return std::unexpected(std::format("Failed to sync file '{}': {} (Code: {})", 
                                            filepath, 
-                                           std::system_category().message(errno), 
-                                           errno));
+                                           std::system_category().message(saved_errno), 
+                                           saved_errno));
     }
 
     return {};
