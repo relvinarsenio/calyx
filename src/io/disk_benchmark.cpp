@@ -244,27 +244,33 @@ struct FileCleaner {
     if (fd >= 0)
         return {fd, 1};
 
-    if (errno == EINVAL) {
-        // Try 2: O_DIRECT (Good)
-        fd = ::open(path.c_str(), flags | O_DIRECT, mode);
-        if (fd >= 0)
-            return {fd, 2};
-    }
+    // If verification fails for reasons other than "Invalid Argument" (which implies
+    // flags not supported), we should stop and report that specific error.
+    if (errno != EINVAL)
+        return {-1, 0};
+
+    // Try 2: O_DIRECT (Good)
+    fd = ::open(path.c_str(), flags | O_DIRECT, mode);
+    if (fd >= 0)
+        return {fd, 2};
+
+    if (errno != EINVAL)
+        return {-1, 0};
 #endif
 
     // Try 3: O_DSYNC (Reliable but maybe cached read)
-    if (errno == EINVAL) {
-        fd = ::open(path.c_str(), flags | O_DSYNC, mode);
-        if (fd >= 0)
-            return {fd, 3};
-    }
+    // We reach here if O_DIRECT is undefined OR if previous attempts failed with EINVAL.
+    fd = ::open(path.c_str(), flags | O_DSYNC, mode);
+    if (fd >= 0)
+        return {fd, 3};
+
+    if (errno != EINVAL)
+        return {-1, 0};
 
     // Try 4: Buffered (Fallback)
-    if (errno == EINVAL) {
-        fd = ::open(path.c_str(), flags, mode);
-        if (fd >= 0)
-            return {fd, 4};
-    }
+    fd = ::open(path.c_str(), flags, mode);
+    if (fd >= 0)
+        return {fd, 4};
 
     return {-1, 0};
 }
