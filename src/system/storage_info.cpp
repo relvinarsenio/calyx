@@ -104,11 +104,11 @@ DiskInfo SystemInfo::get_disk_usage(const std::string& mountpoint) {
 std::vector<SwapEntry> SystemInfo::get_swaps() {
     std::vector<SwapEntry> swaps;
 
-    std::ifstream f("/proc/swaps");
+    std::ifstream swaps_file("/proc/swaps");
     std::string line;
 
-    if (std::getline(f, line)) {
-        while (std::getline(f, line)) {
+    if (std::getline(swaps_file, line)) {
+        while (std::getline(swaps_file, line)) {
             std::stringstream ss(line);
             std::string path, type, size_str, used_str;
 
@@ -137,9 +137,9 @@ std::vector<SwapEntry> SystemInfo::get_swaps() {
         }
     }
 
-    std::ifstream z("/sys/module/zswap/parameters/enabled");
+    std::ifstream zswap_file("/sys/module/zswap/parameters/enabled");
     char c;
-    if (z >> c && (c == 'Y' || c == 'y' || c == '1')) {
+    if (zswap_file >> c && (c == 'Y' || c == 'y' || c == '1')) {
         SwapEntry zswap;
         zswap.type = "ZSwap";
         zswap.path = "Enabled";

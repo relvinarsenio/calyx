@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <format>
+#include <fstream>
 #include <print>
 #include <sstream>
 #include <stdexcept>
@@ -32,6 +33,9 @@
 #include "include/tgz_extractor.hpp"
 #include "include/system_info.hpp"
 
+extern unsigned char cacert_pem[];
+extern unsigned int cacert_pem_len;
+
 using json = nlohmann::json;
 namespace fs = std::filesystem;
 
@@ -46,9 +50,42 @@ constexpr std::array<Node, 7> SERVERS = {{{"", "Speedtest.net (Auto)"},
                                           {"59016", "Singapore, SG"},
                                           {"5905", "Los Angeles, US"},
                                           {"59219", "Montreal, CA"},
-                                          {"41840", "Paris, FR"},
+                                          {"62493", "Paris, FR"},
                                           {"3386", "Amsterdam, NL"},
-                                          {"44471", "Melbourne, AU"}}};
+                                          {"12492", "Sydney, AU"}}};
+
+class ScopedCertFile {
+    fs::path path_;
+
+   public:
+    ScopedCertFile(const fs::path& dir, const unsigned char* data, unsigned int len) {
+        path_ = dir / "cacert.pem";
+
+        {
+            std::ofstream cert_stream(path_, std::ios::binary | std::ios::trunc);
+            if (cert_stream) {
+                cert_stream.write(reinterpret_cast<const char*>(data), len);
+            }
+        }
+
+        std::error_code ec;
+        fs::permissions(path_, fs::perms::owner_read, fs::perm_options::replace, ec);
+    }
+
+    ~ScopedCertFile() {
+        std::error_code ec;
+        if (fs::exists(path_, ec)) {
+            fs::remove(path_, ec);
+        }
+    }
+
+    ScopedCertFile(const ScopedCertFile&) = delete;
+    ScopedCertFile& operator=(const ScopedCertFile&) = delete;
+
+    std::string get_path() const {
+        return path_.string();
+    }
+};
 
 class SpinnerScope {
     const SpinnerCallback& cb_;
@@ -87,7 +124,6 @@ std::string sanitize_error(std::string_view msg) {
 
 SpeedTest::SpeedTest(HttpClient& h) : http_(h) {
     std::string temp_template = (fs::temp_directory_path() / "calyx_XXXXXX").string();
-
     char* path_ptr = mkdtemp(temp_template.data());
 
     if (!path_ptr) {
@@ -160,8 +196,9 @@ void SpeedTest::install() {
 
 SpeedTestResult SpeedTest::run(const SpinnerCallback& spinner_cb) {
     SpeedTestResult result;
-
     result.entries.reserve(SERVERS.size());
+
+    ScopedCertFile cert(base_dir_, cacert_pem, cacert_pem_len);
 
     for (const auto& node : SERVERS) {
         if (g_interrupted)
@@ -171,6 +208,8 @@ SpeedTestResult SpeedTest::run(const SpinnerCallback& spinner_cb) {
 
         std::vector<std::string> cmd_args = {
             cli_path_.string(), "-f", "json", "--accept-license", "--accept-gdpr"};
+
+        cmd_args.push_back(std::format("--ca-certificate={}", cert.get_path()));
 
         if (!node.id.empty()) {
             cmd_args.push_back(std::format("--server-id={}", node.id));

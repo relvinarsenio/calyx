@@ -250,9 +250,9 @@ std::optional<std::filesystem::path> sanitize_path(const std::filesystem::path& 
 }
 
 struct GzFileDeleter {
-    void operator()(gzFile f) const {
-        if (f)
-            gzclose(f);
+    void operator()(gzFile file_handle) const {
+        if (file_handle)
+            gzclose(file_handle);
     }
 };
 using UniqueGzFile = std::unique_ptr<std::remove_pointer_t<gzFile>, GzFileDeleter>;

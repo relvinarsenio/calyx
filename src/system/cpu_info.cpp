@@ -34,10 +34,10 @@ static std::once_flag cpuinfo_flag;
 
 const std::string& get_cached_cpuinfo() {
     std::call_once(cpuinfo_flag, []() {
-        std::ifstream f("/proc/cpuinfo");
-        if (f.is_open()) {
+        std::ifstream cpu_info_file("/proc/cpuinfo");
+        if (cpu_info_file.is_open()) {
             std::ostringstream oss;
-            oss << f.rdbuf();
+            oss << cpu_info_file.rdbuf();
             cached_cpuinfo = oss.str();
         }
     });
@@ -138,11 +138,11 @@ std::string SystemInfo::get_model_name() {
     }
 #endif
 
-    std::ifstream f("/proc/cpuinfo");
+    std::ifstream cpu_info_file("/proc/cpuinfo");
     std::string line;
     const std::array<std::string, 5> keys = {"model name", "hardware", "processor", "cpu", "Model"};
 
-    while (std::getline(f, line)) {
+    while (std::getline(cpu_info_file, line)) {
         for (const auto& k : keys) {
             if (is_starts_with_ic(line, k)) {
                 auto colon = line.find(':');
@@ -155,10 +155,10 @@ std::string SystemInfo::get_model_name() {
         }
     }
 
-    std::ifstream dt("/sys/firmware/devicetree/base/model");
-    if (dt) {
+    std::ifstream device_tree("/sys/firmware/devicetree/base/model");
+    if (device_tree) {
         std::string model;
-        if (std::getline(dt, model)) {
+        if (std::getline(device_tree, model)) {
             model = trim(model);
             if (!model.empty())
                 return model;
@@ -176,10 +176,10 @@ std::string SystemInfo::get_cpu_cores_freq() {
     long cores = std::max(1L, sysconf(_SC_NPROCESSORS_ONLN));
     double freq_mhz = 0.0;
 
-    std::ifstream f("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq");
+    std::ifstream freq_file("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq");
 
     std::string line;
-    if (f >> line) {
+    if (freq_file >> line) {
         uint64_t val = 0;
         auto [ptr, ec] = std::from_chars(line.data(), line.data() + line.size(), val);
         if (ec == std::errc()) {
@@ -241,9 +241,9 @@ std::string SystemInfo::get_cpu_cache() {
     constexpr std::array<std::string_view, 4> caches = {"3", "2", "1", "0"};
     for (const auto& idx : caches) {
         std::string path = std::format("/sys/devices/system/cpu/cpu0/cache/index{}/size", idx);
-        std::ifstream f(path);
+        std::ifstream cache_file(path);
         std::string size;
-        if (f >> size)
+        if (cache_file >> size)
             return parse_cache(size);
     }
     return "Unknown";
