@@ -126,6 +126,16 @@ struct FileCleaner {
     std::uint64_t completed = 0;
     bool interrupt_requested = false;
 
+    // Fix for race condition in circular buffer usage:
+    // Track explicitly which read buffers are currently free.
+    std::vector<std::size_t> free_read_indices;
+    if (!is_write) {
+        free_read_indices.reserve(read_buffers.size());
+        for (std::size_t i = 0; i < read_buffers.size(); ++i) {
+            free_read_indices.push_back(i);
+        }
+    }
+
     while (completed < total_blocks) {
         while (submitted < total_blocks &&
                (submitted - completed) < static_cast<std::uint64_t>(queue_depth)) {
@@ -150,16 +160,25 @@ struct FileCleaner {
                     return std::unexpected("Buffer overflow detected in write preparation");
                 }
                 io_uring_prep_write(sqe, fd, write_buffer.data(), len, offset_bytes);
+                io_uring_sqe_set_data64(sqe, static_cast<__u64>(len));
             } else {
-                size_t buf_idx =
-                    static_cast<size_t>(submitted % static_cast<uint64_t>(queue_depth));
+                if (free_read_indices.empty()) {
+                    // Should theoretically not happen if queue_depth matches buffer count
+                    return std::unexpected("Logic Error: No free read buffers available");
+                }
+                size_t buf_idx = free_read_indices.back();
+                free_read_indices.pop_back();
+
                 if (buf_idx >= read_buffers.size()) {
                     return std::unexpected("Read buffer index out of range");
                 }
                 io_uring_prep_read(sqe, fd, read_buffers[buf_idx].get(), len, offset_bytes);
+                
+                // Pack index (High 32) and length (Low 32) to track buffer usage across async completions
+                std::uint64_t user_data = (static_cast<std::uint64_t>(buf_idx) << 32) | static_cast<std::uint32_t>(len);
+                io_uring_sqe_set_data64(sqe, user_data);
             }
 
-            io_uring_sqe_set_data64(sqe, static_cast<__u64>(len));
             submitted++;
         }
 
@@ -186,7 +205,13 @@ struct FileCleaner {
 
         io_uring_for_each_cqe(&ring, head, cqe) {
             count++;
-            auto expected_len = static_cast<int>(io_uring_cqe_get_data64(cqe));
+            uint64_t user_data = io_uring_cqe_get_data64(cqe);
+            int expected_len = static_cast<int>(user_data & 0xFFFFFFFF);
+
+            if (!is_write) {
+                size_t buf_idx = static_cast<size_t>(user_data >> 32);
+                free_read_indices.push_back(buf_idx);
+            }
 
             if (cqe->res < 0) {
                 io_uring_cq_advance(&ring, count);
@@ -311,7 +336,7 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(
     std::string_view label,
     const std::function<void(std::size_t, std::size_t, std::string_view)>& progress_cb,
     std::stop_token stop) {
-    const std::string filename(Config::TEST_FILENAME);
+    const std::string filename = std::format("{}.{}", Config::TEST_FILENAME, getpid());
     FileCleaner cleaner{filename};
 
     const size_t write_block_size = Config::IO_WRITE_BLOCK_SIZE;
