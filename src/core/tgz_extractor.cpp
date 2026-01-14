@@ -10,7 +10,6 @@
 
 #include <array>
 #include <charconv>
-#include <fstream>
 #include <memory>
 #include <span>
 #include <vector>
@@ -147,6 +146,9 @@ class SecureFileHandle {
    public:
     explicit SecureFileHandle(const std::filesystem::path& path)
         : fd_(create_fd(path)), file_path_(path) {}
+
+        SecureFileHandle(const SecureFileHandle&) = delete;
+        SecureFileHandle& operator=(const SecureFileHandle&) = delete;
 
     bool write(const void* data, size_t size) {
         ssize_t written = ::write(fd_.get(), data, size);
@@ -441,6 +443,7 @@ std::expected<void, ExtractError> TgzExtractor::extract(const std::filesystem::p
             if (gzseek(gz.get(), skip_bytes, SEEK_CUR) == -1) {
                 return std::unexpected(ExtractError::ReadFailed);
             }
+            total_extracted_size += file_size;
         }
     }
 

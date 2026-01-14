@@ -30,20 +30,17 @@
 namespace {
 #if !defined(__i386__) && !defined(__x86_64__)
 static std::string cached_cpuinfo;
-static std::mutex cpuinfo_mutex;
-static bool cpuinfo_loaded = false;
+static std::once_flag cpuinfo_flag;
 
 const std::string& get_cached_cpuinfo() {
-    std::lock_guard<std::mutex> lock(cpuinfo_mutex);
-    if (!cpuinfo_loaded) {
+    std::call_once(cpuinfo_flag, []() {
         std::ifstream f("/proc/cpuinfo");
         if (f.is_open()) {
             std::ostringstream oss;
             oss << f.rdbuf();
             cached_cpuinfo = oss.str();
         }
-        cpuinfo_loaded = true;
-    }
+    });
     return cached_cpuinfo;
 }
 #endif
