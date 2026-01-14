@@ -152,9 +152,24 @@ class SecureFileHandle {
     SecureFileHandle(const SecureFileHandle&) = delete;
     SecureFileHandle& operator=(const SecureFileHandle&) = delete;
 
-    bool write(const void* data, size_t size) {
-        ssize_t written = ::write(fd_.get(), data, size);
-        return written == static_cast<ssize_t>(size);
+    std::expected<void, int> write(const void* data, size_t size) {
+        const char* ptr = static_cast<const char*>(data);
+        size_t remaining = size;
+        while (remaining > 0) {
+            ssize_t written = ::write(fd_.get(), ptr, remaining);
+            if (written < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                return std::unexpected(errno);
+            }
+            if (written == 0) {
+                return std::unexpected(ENOSPC);
+            }
+            ptr += written;
+            remaining -= static_cast<size_t>(written);
+        }
+        return {};
     }
 
     void commit() {
@@ -241,7 +256,7 @@ std::optional<std::filesystem::path> sanitize_path(const std::filesystem::path& 
         result /= component;
     }
 
-    auto lexical_rel = std::filesystem::relative(result, base_dir);
+    auto lexical_rel = result.lexically_relative(base_dir);
     if (lexical_rel.empty() || lexical_rel.string().starts_with("..") ||
         lexical_rel.is_absolute()) {
         return std::nullopt;
@@ -383,8 +398,10 @@ std::expected<void, ExtractError> TgzExtractor::extract(const std::filesystem::p
         std::filesystem::path file_path = safe_path.value();
 
         auto space_info = std::filesystem::space(dest_dir, ec);
-        if (!ec && space_info.available < (file_size + 1048576)) {
-            return std::unexpected(ExtractError::DiskFull);
+        if (!ec) {
+            if (space_info.available < 1048576 || (space_info.available - 1048576) < file_size) {
+                return std::unexpected(ExtractError::DiskFull);
+            }
         }
 
         if (type_flag == '5') {
@@ -416,7 +433,12 @@ std::expected<void, ExtractError> TgzExtractor::extract(const std::filesystem::p
                         return std::unexpected(ExtractError::ReadFailed);
                     }
 
-                    if (!secure_file.write(buffer.data(), static_cast<std::size_t>(chunk_read))) {
+                    if (auto result = secure_file.write(buffer.data(), static_cast<std::size_t>(chunk_read));
+                        !result) {
+                        int err = result.error();
+                        if (err == ENOSPC || err == EDQUOT) {
+                            return std::unexpected(ExtractError::DiskFull);
+                        }
                         return std::unexpected(ExtractError::WriteFileFailed);
                     }
 
@@ -435,7 +457,7 @@ std::expected<void, ExtractError> TgzExtractor::extract(const std::filesystem::p
                 secure_file.commit();
                 total_extracted_size += file_size;
 
-                if (file_mode & 0111) {
+                if (file_mode & 0100) {
                     std::filesystem::permissions(file_path,
                                                  std::filesystem::perms::owner_exec,
                                                  std::filesystem::perm_options::add,
