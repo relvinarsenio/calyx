@@ -478,7 +478,6 @@ std::expected<void, ExtractError> TgzExtractor::extract(const std::filesystem::p
             if (gzseek(gz.get(), skip_bytes, SEEK_CUR) == -1) {
                 return std::unexpected(ExtractError::ReadFailed);
             }
-            total_extracted_size += file_size;
         }
     }
 
