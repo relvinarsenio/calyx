@@ -82,21 +82,22 @@ ShellPipe::ShellPipe(const std::vector<std::string>& args) {
         throw std::system_error(errno, std::generic_category(), "Failed to create pipe");
     }
 
+    read_fd_.reset(pipe_fds[0]);
+    FileDescriptor write_fd(pipe_fds[1]);
+
     pid_t pid = ::fork();
     if (pid == -1) {
-        ::close(pipe_fds[0]);
-        ::close(pipe_fds[1]);
         throw std::system_error(errno, std::generic_category(), "Failed to fork process");
     }
 
     if (pid == 0) {
-        if (::dup2(pipe_fds[1], STDOUT_FILENO) == -1)
+        if (::dup2(write_fd.get(), STDOUT_FILENO) == -1)
             ::_exit(errno);
-        if (::dup2(pipe_fds[1], STDERR_FILENO) == -1)
+        if (::dup2(write_fd.get(), STDERR_FILENO) == -1)
             ::_exit(errno);
 
-        ::close(pipe_fds[0]);
-        ::close(pipe_fds[1]);
+        read_fd_.reset();
+        write_fd.reset();
 
         ::execvp(c_args[0], c_args.data());
 
@@ -106,15 +107,11 @@ ShellPipe::ShellPipe(const std::vector<std::string>& args) {
         ::_exit(127);
     }
 
-    ::close(pipe_fds[1]);
-    read_fd_ = pipe_fds[0];
     pid_ = pid;
 }
 
 ShellPipe::~ShellPipe() {
-    if (read_fd_ != -1) {
-        ::close(read_fd_);
-    }
+    read_fd_.reset();
 
     if (pid_ != -1) {
         int status;
@@ -188,16 +185,13 @@ std::string ShellPipe::read_all(std::chrono::milliseconds timeout,
             ::waitpid(pid_, &status, 0);
             pid_ = -1;
 
-            if (read_fd_ != -1) {
-                ::close(read_fd_);
-                read_fd_ = -1;
-            }
+            read_fd_.reset();
 
             throw std::runtime_error("Child process timed out while reading output");
         }
 
         struct pollfd pfd{};
-        pfd.fd = read_fd_;
+        pfd.fd = read_fd_.get();
         pfd.events = POLLIN;
 
         int poll_res = ::poll(&pfd, 1, remaining_ms);
@@ -214,7 +208,7 @@ std::string ShellPipe::read_all(std::chrono::milliseconds timeout,
             continue;
         }
 
-        ssize_t bytes_read = ::read(read_fd_, buffer.data(), buffer.size());
+        ssize_t bytes_read = ::read(read_fd_.get(), buffer.data(), buffer.size());
 
         if (bytes_read > 0) {
             if (total_read + static_cast<size_t>(bytes_read) > MAX_OUTPUT_SIZE) {
@@ -235,10 +229,7 @@ std::string ShellPipe::read_all(std::chrono::milliseconds timeout,
         }
     }
 
-    if (read_fd_ != -1) {
-        ::close(read_fd_);
-        read_fd_ = -1;
-    }
+    read_fd_.reset();
 
     if (pid_ != -1) {
         if (g_interrupted || stop.stop_requested()) {

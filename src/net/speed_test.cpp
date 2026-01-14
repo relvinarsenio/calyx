@@ -56,7 +56,6 @@ struct Node {
     std::string_view name;
 };
 
-// C++23: Using span for simpler array passing
 constexpr std::array<Node, 7> SERVERS = {{{"", "Speedtest.net (Auto)"},
                                           {"59016", "Singapore, SG"},
                                           {"5905", "Los Angeles, US"},
@@ -98,7 +97,7 @@ class ScopedCertFile {
         // Modern POSIX open with O_CLOEXEC and mode 0600 (rw-------)
         int raw_fd = ::open(cert_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
         if (raw_fd < 0) {
-            return std::unexpected(std::string("Failed to open file: ") + std::strerror(errno));
+            return std::unexpected(std::format("Failed to open file (errno={})", errno));
         }
 
         // Hand over to RAII wrapper immediately
@@ -112,7 +111,7 @@ class ScopedCertFile {
             ssize_t written = ::write(fd.get(), ptr, remaining);
             if (written < 0) {
                 if (errno == EINTR) continue;
-                return std::unexpected(std::string("Write failed: ") + std::strerror(errno));
+                return std::unexpected(std::format("Write failed (errno={})", errno));
             }
             ptr += written;
             remaining -= static_cast<size_t>(written);
@@ -120,7 +119,7 @@ class ScopedCertFile {
 
         // Ensure data hits the disk
         if (::fsync(fd.get()) < 0) {
-            return std::unexpected(std::string("fsync failed: ") + std::strerror(errno));
+            return std::unexpected(std::format("fsync failed (errno={})", errno));
         }
 
         return ScopedCertFile(std::move(cert_path));
@@ -134,9 +133,7 @@ class ScopedCertFile {
     void cleanup() {
         if (!path_.empty()) {
             std::error_code ec;
-            if (fs::exists(path_, ec)) {
-                fs::remove(path_, ec);
-            }
+            fs::remove(path_, ec);
         }
     }
 };
@@ -248,11 +245,15 @@ void SpeedTest::install() {
                        ? std::expected<void, std::string>{}
                        : std::unexpected("Speedtest binary not found after extraction!");
         })
+        .and_then([this]() -> std::expected<void, std::string> {
+            std::error_code ec;
+            fs::permissions(cli_path_, fs::perms::owner_all, fs::perm_options::add, ec);
+            return ec ? std::unexpected("Failed to set executable permissions: " + ec.message())
+                      : std::expected<void, std::string>{};
+        })
         .or_else([](const std::string& err) -> std::expected<void, std::string> {
             throw std::runtime_error(err);
         });
-
-    fs::permissions(cli_path_, fs::perms::owner_all, fs::perm_options::add);
 }
 
 SpeedTestResult SpeedTest::run(const SpinnerCallback& spinner_cb) {

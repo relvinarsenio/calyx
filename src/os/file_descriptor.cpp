@@ -9,7 +9,6 @@
 
 #include <unistd.h>
 #include <cerrno>
-#include <print>
 #include <utility>
 
 FileDescriptor::~FileDescriptor() {

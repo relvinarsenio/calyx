@@ -21,6 +21,7 @@
 #include <format>
 #include <span>
 #include <unistd.h>
+#include <new>
 
 namespace {
 
@@ -37,7 +38,10 @@ class CurlHeaders {
    public:
     void add(const std::string& header) {
         auto new_head = curl_slist_append(list_.get(), header.c_str());
-        if (new_head && !list_) {
+        if (!new_head) {
+            throw std::bad_alloc();
+        }
+        if (!list_) {
             list_.reset(new_head);
         }
     }

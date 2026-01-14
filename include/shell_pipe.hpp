@@ -12,8 +12,10 @@
 #include <string>
 #include <vector>
 
+#include "file_descriptor.hpp"
+
 class ShellPipe {
-    int read_fd_ = -1;
+    FileDescriptor read_fd_;
     int pid_ = -1;
 
    public:
