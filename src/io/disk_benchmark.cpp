@@ -173,9 +173,11 @@ struct FileCleaner {
                     return std::unexpected("Read buffer index out of range");
                 }
                 io_uring_prep_read(sqe, fd, read_buffers[buf_idx].get(), len, offset_bytes);
-                
-                // Pack index (High 32) and length (Low 32) to track buffer usage across async completions
-                std::uint64_t user_data = (static_cast<std::uint64_t>(buf_idx) << 32) | static_cast<std::uint32_t>(len);
+
+                // Pack index (High 32) and length (Low 32) to track buffer usage across async
+                // completions
+                std::uint64_t user_data =
+                    (static_cast<std::uint64_t>(buf_idx) << 32) | static_cast<std::uint32_t>(len);
                 io_uring_sqe_set_data64(sqe, user_data);
             }
 

@@ -224,27 +224,29 @@ void SpeedTest::install() {
                     Config::SPEEDTEST_CLI_VERSION,
                     url_arch);
 
-    auto dl_res = http_.download(url, tgz_path_.string());
-    if (!dl_res) {
-        throw std::runtime_error("Download failed: " + dl_res.error());
-    }
-
-    std::error_code ec;
-    fs::create_directories(cli_dir_, ec);
-    if (ec) {
-        throw std::runtime_error("Failed to create installation directory: " + ec.message());
-    }
-
-    auto result = calyx::core::TgzExtractor::extract(tgz_path_, cli_dir_);
-
-    if (!result) {
-        std::string msg = calyx::core::TgzExtractor::error_string(result.error());
-        throw std::runtime_error("Failed to extract Speedtest: " + msg);
-    }
-
-    if (!fs::exists(cli_path_)) {
-        throw std::runtime_error("Speedtest binary not found after extraction!");
-    }
+    http_.download(url, tgz_path_.string())
+        .transform_error([](std::string err) { return "Download failed: " + err; })
+        .and_then([this]() -> std::expected<void, std::string> {
+            std::error_code ec;
+            fs::create_directories(cli_dir_, ec);
+            return ec ? std::unexpected("Failed to create installation directory: " + ec.message())
+                      : std::expected<void, std::string>{};
+        })
+        .and_then([this]() -> std::expected<void, std::string> {
+            return calyx::core::TgzExtractor::extract(tgz_path_, cli_dir_)
+                .transform_error([](calyx::core::ExtractError err) {
+                    return "Failed to extract Speedtest: " +
+                           calyx::core::TgzExtractor::error_string(err);
+                });
+        })
+        .and_then([this]() -> std::expected<void, std::string> {
+            return fs::exists(cli_path_)
+                       ? std::expected<void, std::string>{}
+                       : std::unexpected("Speedtest binary not found after extraction!");
+        })
+        .or_else([](const std::string& err) -> std::expected<void, std::string> {
+            throw std::runtime_error(err);
+        });
 
     fs::permissions(cli_path_, fs::perms::owner_all, fs::perm_options::add);
 }

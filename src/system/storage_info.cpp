@@ -13,6 +13,7 @@
 #include <charconv>
 #include <expected>
 #include <fstream>
+#include <sstream>
 #include <format>
 #include <ranges>
 #include <string>
@@ -126,45 +127,22 @@ DiskInfo SystemInfo::get_disk_usage(const std::string& mountpoint) {
 
 std::vector<SwapEntry> SystemInfo::get_swaps() {
     std::vector<SwapEntry> swaps;
-
-    // Use C++ streams but process lines with ranges
     std::ifstream swaps_file("/proc/swaps");
     std::string line;
 
-    // Skip header line
     if (std::getline(swaps_file, line)) {
         while (std::getline(swaps_file, line)) {
-            // /proc/swaps format:
-            // Filename Type Size Used Priority
-            // Tokenize by whitespace
+            std::istringstream iss(line);
+            std::string path, type, size_str, used_str;
 
-            // C++23 range-based tokenization
-            auto tokens = line | std::views::split(' ') |
-                          std::views::filter([](auto&& rng) { return !std::ranges::empty(rng); }) |
-                          std::views::transform(
-                              [](auto&& rng) { return std::string_view(rng.begin(), rng.end()); });
-
-            auto it = tokens.begin();
-            auto end = tokens.end();
-
-            if (it == end)
+            if (!(iss >> path >> type >> size_str >> used_str)) {
                 continue;
-            std::string_view path(*it++);
-            if (it == end)
-                continue;
-            std::string_view type(*it++);
-            if (it == end)
-                continue;
-            std::string_view size_str(*it++);
-            if (it == end)
-                continue;
-            std::string_view used_str(*it++);
-            // We ignore priority usually
+            }
 
             SwapEntry entry;
-            entry.path = std::string(path);
+            entry.path = path;
 
-            if (path.find("zram") != std::string_view::npos) {
+            if (path.find("zram") != std::string::npos) {
                 entry.type = "ZRAM";
             } else {
                 entry.type = capitalize(type);
@@ -172,6 +150,7 @@ std::vector<SwapEntry> SystemInfo::get_swaps() {
 
             if (auto val = parse_number<uint64_t>(size_str))
                 entry.size = *val * 1024;
+
             if (auto val = parse_number<uint64_t>(used_str))
                 entry.used = *val * 1024;
 
@@ -179,7 +158,6 @@ std::vector<SwapEntry> SystemInfo::get_swaps() {
         }
     }
 
-    // Check ZSwap
     std::ifstream zswap_file("/sys/module/zswap/parameters/enabled");
     char c;
     if (zswap_file >> c && (c == 'Y' || c == 'y' || c == '1')) {

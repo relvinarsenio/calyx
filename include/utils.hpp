@@ -28,6 +28,7 @@ void print_centered_header(std::string_view text);
 }
 
 std::string format_bytes(std::uint64_t bytes);
-[[nodiscard]] bool is_disk_space_available(const std::filesystem::path& path, std::uint64_t required_bytes);
+[[nodiscard]] bool is_disk_space_available(const std::filesystem::path& path,
+                                           std::uint64_t required_bytes);
 void cleanup_artifacts();
 std::filesystem::path get_exe_dir();
