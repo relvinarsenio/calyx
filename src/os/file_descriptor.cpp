@@ -7,35 +7,49 @@
  */
 #include "include/file_descriptor.hpp"
 
-#include <cerrno>
 #include <unistd.h>
-
-FileDescriptor::FileDescriptor(int fd) : fd_(fd) {
-    if (fd_ < 0) {
-        throw std::system_error(errno, std::generic_category(), "Invalid file descriptor");
-    }
-}
+#include <cerrno>
+#include <print>
+#include <utility>
 
 FileDescriptor::~FileDescriptor() {
-    if (fd_ >= 0)
-        ::close(fd_);
+    reset();
 }
 
-FileDescriptor::FileDescriptor(FileDescriptor&& other) noexcept : fd_(other.fd_) {
-    other.fd_ = -1;
-}
+FileDescriptor::FileDescriptor(FileDescriptor&& other) noexcept
+    : fd_(std::exchange(other.fd_, -1)) {}
 
 FileDescriptor& FileDescriptor::operator=(FileDescriptor&& other) noexcept {
     if (this != &other) {
-        if (fd_ >= 0) {
-            ::close(fd_);
-        }
-        fd_ = other.fd_;
-        other.fd_ = -1;
+        reset(std::exchange(other.fd_, -1));
     }
     return *this;
 }
 
-int FileDescriptor::get() const {
-    return fd_;
+void FileDescriptor::reset(int new_fd) {
+    if (fd_ >= 0) {
+        ::close(fd_);
+    }
+    fd_ = new_fd;
+}
+
+int FileDescriptor::release() {
+    return std::exchange(fd_, -1);
+}
+
+std::expected<FileDescriptor, std::string> FileDescriptor::duplicate() const {
+    if (fd_ < 0) {
+        return std::unexpected("Cannot duplicate invalid file descriptor");
+    }
+
+    int new_fd = ::dup(fd_);
+    if (new_fd < 0) {
+        return std::unexpected(std::string("dup failed: ") + std::strerror(errno));
+    }
+
+    return FileDescriptor(new_fd);
+}
+
+void FileDescriptor::swap(FileDescriptor& other) noexcept {
+    std::swap(fd_, other.fd_);
 }

@@ -7,13 +7,18 @@
  */
 #pragma once
 
-#include <system_error>
+#include <expected>
+#include <string>
+#include <utility>
 
 class FileDescriptor {
     int fd_ = -1;
 
    public:
-    explicit FileDescriptor(int fd);
+    FileDescriptor() = default;
+
+    explicit FileDescriptor(int fd) noexcept : fd_(fd) {}
+
     ~FileDescriptor();
 
     FileDescriptor(const FileDescriptor&) = delete;
@@ -22,5 +27,15 @@ class FileDescriptor {
     FileDescriptor(FileDescriptor&& other) noexcept;
     FileDescriptor& operator=(FileDescriptor&& other) noexcept;
 
-    int get() const;
+    void reset(int new_fd = -1);
+    int release();
+    [[nodiscard]] std::expected<FileDescriptor, std::string> duplicate() const;
+    void swap(FileDescriptor& other) noexcept;
+
+    int get() const noexcept { return fd_; }
+    explicit operator bool() const noexcept { return fd_ >= 0; }
 };
+
+inline void swap(FileDescriptor& a, FileDescriptor& b) noexcept {
+    a.swap(b);
+}

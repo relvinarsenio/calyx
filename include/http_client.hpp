@@ -8,12 +8,13 @@
 #pragma once
 
 #include <expected>
-#include <fstream>
 #include <memory>
 #include <string>
 #include <vector>
 
 using CURL = void;
+
+class FileDescriptor;
 
 class HttpClient {
    public:
@@ -34,5 +35,5 @@ class HttpClient {
     static size_t write_file(void* ptr,
                              size_t size,
                              size_t nmemb,
-                             std::ofstream* file_stream) noexcept;
+                             FileDescriptor* fd) noexcept;
 };

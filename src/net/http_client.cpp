@@ -9,15 +9,18 @@
 #include "include/http_client.hpp"
 #include "include/config.hpp"
 #include "include/embedded_cert.hpp"
+#include "include/file_descriptor.hpp"
 #include "include/interrupts.hpp"
 
 #include <array>
 #include <cerrno>
+#include <cstring>
 #include <curl/curl.h>
+#include <fcntl.h>
 #include <filesystem>
 #include <format>
-#include <fstream>
 #include <span>
+#include <unistd.h>
 
 namespace {
 
@@ -98,19 +101,24 @@ size_t HttpClient::write_string(void* ptr,
 size_t HttpClient::write_file(void* ptr,
                               size_t size,
                               size_t nmemb,
-                              std::ofstream* file_stream) noexcept {
-    try {
-        size_t total_size = size * nmemb;
-        std::span<const char> data_view(static_cast<const char*>(ptr), total_size);
+                              FileDescriptor* fd) noexcept {
+    const size_t total_size = size * nmemb;
+    const char* data_ptr = static_cast<const char*>(ptr);
+    size_t remaining = total_size;
 
-        file_stream->write(data_view.data(), static_cast<std::streamsize>(data_view.size()));
-
-        if (!*file_stream)
+    while (remaining > 0) {
+        ssize_t written = ::write(fd->get(), data_ptr, remaining);
+        if (written < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
             return 0;
-        return total_size;
-    } catch (...) {
-        return 0;
+        }
+        data_ptr += written;
+        remaining -= static_cast<size_t>(written);
     }
+
+    return total_size;
 }
 
 std::expected<std::string, std::string> HttpClient::get(const std::string& url) {
@@ -152,11 +160,12 @@ std::expected<void, std::string> HttpClient::download(const std::string& url,
                                                       const std::string& filepath) {
     curl_easy_reset(handle_.get());
 
-    std::ofstream outfile(filepath, std::ios::binary);
-    if (!outfile) {
+    int raw_fd = ::open(filepath.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    if (raw_fd < 0) {
         return std::unexpected(std::format(
-            "Cannot save file '{}': {}", filepath, std::system_category().message(errno)));
+            "Cannot save file '{}': {}", filepath, std::strerror(errno)));
     }
+    FileDescriptor fd(raw_fd);
 
     CurlHeaders headers;
     setup_browser_impersonation(handle_.get(), headers);
@@ -164,7 +173,7 @@ std::expected<void, std::string> HttpClient::download(const std::string& url,
     curl_easy_setopt(handle_.get(), CURLOPT_URL, url.c_str());
     curl_easy_setopt(handle_.get(), CURLOPT_HTTPHEADER, headers.get());
     curl_easy_setopt(handle_.get(), CURLOPT_WRITEFUNCTION, write_file);
-    curl_easy_setopt(handle_.get(), CURLOPT_WRITEDATA, &outfile);
+    curl_easy_setopt(handle_.get(), CURLOPT_WRITEDATA, &fd);
 
     curl_easy_setopt(handle_.get(), CURLOPT_TIMEOUT, Config::SPEEDTEST_DL_TIMEOUT_SEC);
     curl_easy_setopt(handle_.get(), CURLOPT_CONNECTTIMEOUT, Config::HTTP_CONNECT_TIMEOUT_SEC);
@@ -183,7 +192,6 @@ std::expected<void, std::string> HttpClient::download(const std::string& url,
     check_interrupted();
 
     if (res != CURLE_OK) {
-        outfile.close();
         std::filesystem::remove(filepath);
         return std::unexpected(std::format("Download failed: {}", curl_easy_strerror(res)));
     }

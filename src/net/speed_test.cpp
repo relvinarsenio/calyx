@@ -30,6 +30,8 @@
 
 #include <nlohmann/json.hpp>
 #include <sys/utsname.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 #include "include/config.hpp"
 #include "include/http_client.hpp"
@@ -39,6 +41,7 @@
 #include "include/utils.hpp"
 #include "include/tgz_extractor.hpp"
 #include "include/system_info.hpp"
+#include "include/file_descriptor.hpp"
 
 extern unsigned char cacert_pem[];
 extern unsigned int cacert_pem_len;
@@ -88,35 +91,36 @@ class ScopedCertFile {
         cleanup();
     }
 
-    // Modern C++23: Use std::span to avoid pointer/length pair issues
     static std::expected<ScopedCertFile, std::string> create(const fs::path& dir,
                                                              std::span<const unsigned char> data) {
         fs::path cert_path = dir / "cacert.pem";
 
-        // Secure file creation
-        // We open with exclusive flag if possible, but standard fstream doesn't expose O_EXCL
-        // easily without C++23/OS specifics or manual open. However, we can ensure we overwrite
-        // truncating.
-        std::ofstream cert_stream(cert_path, std::ios::binary | std::ios::trunc);
-        if (!cert_stream) {
-            return std::unexpected(std::format("Failed to open file: {}", std::strerror(errno)));
+        // Modern POSIX open with O_CLOEXEC and mode 0600 (rw-------)
+        int raw_fd = ::open(cert_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+        if (raw_fd < 0) {
+            return std::unexpected(std::string("Failed to open file: ") + std::strerror(errno));
         }
 
-        if (!cert_stream.write(reinterpret_cast<const char*>(data.data()),
-                               static_cast<std::streamsize>(data.size()))) {
-            return std::unexpected(std::format("Failed to write data: {}", std::strerror(errno)));
+        // Hand over to RAII wrapper immediately
+        FileDescriptor fd(raw_fd);
+
+        const unsigned char* ptr = data.data();
+        size_t remaining = data.size();
+
+        // Robust write loop handling partial writes and EINTR
+        while (remaining > 0) {
+            ssize_t written = ::write(fd.get(), ptr, remaining);
+            if (written < 0) {
+                if (errno == EINTR) continue;
+                return std::unexpected(std::string("Write failed: ") + std::strerror(errno));
+            }
+            ptr += written;
+            remaining -= static_cast<size_t>(written);
         }
 
-        cert_stream.close();
-        if (cert_stream.fail()) {
-            return std::unexpected("Failed to flush/close file stream");
-        }
-
-        std::error_code ec;
-        fs::permissions(cert_path, fs::perms::owner_read, fs::perm_options::replace, ec);
-        if (ec) {
-            fs::remove(cert_path, ec);
-            return std::unexpected("Failed to set permissions: " + ec.message());
+        // Ensure data hits the disk
+        if (::fsync(fd.get()) < 0) {
+            return std::unexpected(std::string("fsync failed: ") + std::strerror(errno));
         }
 
         return ScopedCertFile(std::move(cert_path));
