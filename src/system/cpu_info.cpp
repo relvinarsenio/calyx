@@ -225,10 +225,8 @@ std::string SystemInfo::get_cpu_cache() {
             else if (suffix == 'M')
                 size *= 1024 * 1024;
         } else {
-            if (static_cast<char>(std::toupper(static_cast<unsigned char>(sv.back()))) == 'K')
-                size *= 1024;
-            else if (std::isdigit(static_cast<unsigned char>(sv.back())))
-                size *= 1024;
+            // Sysfs value is in KB by default
+            size *= 1024;
         }
 
         if (size >= 1024 * 1024)
