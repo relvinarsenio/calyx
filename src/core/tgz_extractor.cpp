@@ -123,8 +123,10 @@ bool is_safe_filename(std::string_view filename) {
         return false;
     }
 
-    if (filename == ".." || filename == "." || filename.starts_with(".") ||
-        filename.ends_with(".") || filename.find("..") != std::string_view::npos) {
+    // Strict Check: Block directory traversal (".." and ".") components explicitly.
+    // Note: We allow hidden files (starting with ".") and legitimate filenames containing ".."
+    // (e.g. "data..v1.txt")
+    if (filename == ".." || filename == ".") {
         return false;
     }
 
@@ -282,6 +284,8 @@ std::string TgzExtractor::error_string(ExtractError err) {
             return "Symlink detected (potential security risk)";
         case ExtractError::UnicodeAttackDetected:
             return "Unicode-based path attack detected";
+        case ExtractError::DiskFull:
+            return "Disk full (insufficient space for extraction)";
         default:
             return "Unknown error";
     }
@@ -317,15 +321,16 @@ std::expected<void, ExtractError> TgzExtractor::extract(const std::filesystem::p
         bool is_empty = std::all_of(header_block.begin(), header_block.end(), [](std::byte b) {
             return b == std::byte{0};
         });
+
         if (is_empty)
             break;
 
-        if (++file_count > Config::TGZ_MAX_FILES) {
-            return std::unexpected(ExtractError::ArchiveTooLarge);
-        }
-
         if (!validate_checksum(std::span(header_block))) {
             return std::unexpected(ExtractError::InvalidChecksum);
+        }
+
+        if (++file_count > Config::TGZ_MAX_FILES) {
+            return std::unexpected(ExtractError::ArchiveTooLarge);
         }
 
         std::span<const std::byte> block_span(header_block);
@@ -336,6 +341,7 @@ std::expected<void, ExtractError> TgzExtractor::extract(const std::filesystem::p
             return std::unexpected(ExtractError::InvalidHeader);
         }
 
+        std::error_code ec;
         auto size_span = block_span.subspan(Config::TAR_SIZE_OFFSET, Config::TAR_SIZE_LENGTH);
         auto prefix_result = get_safe_string(
             block_span.subspan(Config::TAR_PREFIX_OFFSET, Config::TAR_PREFIX_LENGTH));
@@ -348,6 +354,8 @@ std::expected<void, ExtractError> TgzExtractor::extract(const std::filesystem::p
         char type_flag = static_cast<char>(header_block[Config::TAR_TYPE_OFFSET]);
 
         std::uint64_t file_size = parse_octal(size_span);
+        std::uint64_t file_mode =
+            parse_octal(block_span.subspan(Config::TAR_MODE_OFFSET, Config::TAR_MODE_LENGTH));
 
         if (type_flag == '1' || type_flag == '2') {
             return std::unexpected(ExtractError::SymlinkDetected);
@@ -373,6 +381,11 @@ std::expected<void, ExtractError> TgzExtractor::extract(const std::filesystem::p
             return std::unexpected(ExtractError::PathTraversalDetected);
         }
         std::filesystem::path file_path = safe_path.value();
+
+        auto space_info = std::filesystem::space(dest_dir, ec);
+        if (!ec && space_info.available < (file_size + 1048576)) {
+            return std::unexpected(ExtractError::DiskFull);
+        }
 
         if (type_flag == '5') {
             auto dir_result = create_secure_directory(file_path);
@@ -421,6 +434,13 @@ std::expected<void, ExtractError> TgzExtractor::extract(const std::filesystem::p
 
                 secure_file.commit();
                 total_extracted_size += file_size;
+
+                if (file_mode & 0111) {
+                    std::filesystem::permissions(file_path,
+                                                 std::filesystem::perms::owner_exec,
+                                                 std::filesystem::perm_options::add,
+                                                 ec);
+                }
 
             } catch (const std::system_error& e) {
                 if (e.code().value() == EEXIST || e.code().value() == ELOOP) {

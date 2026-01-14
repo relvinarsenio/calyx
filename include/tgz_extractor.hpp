@@ -26,7 +26,8 @@ enum class ExtractError {
     FileTooLarge,
     ArchiveTooLarge,
     SymlinkDetected,
-    UnicodeAttackDetected
+    UnicodeAttackDetected,
+    DiskFull
 };
 
 class TgzExtractor {
