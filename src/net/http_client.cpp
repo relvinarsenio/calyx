@@ -79,12 +79,15 @@ HttpClient::HttpClient() : handle_(curl_easy_init(), curl_easy_cleanup) {
         throw std::runtime_error("Failed to create curl handle");
 }
 
-size_t HttpClient::write_string(void* ptr, size_t size, size_t nmemb, std::string* s) noexcept {
+size_t HttpClient::write_string(void* ptr,
+                                size_t size,
+                                size_t nmemb,
+                                std::string* str_buffer) noexcept {
     try {
         size_t total_size = size * nmemb;
         std::span<const char> data_view(static_cast<const char*>(ptr), total_size);
 
-        s->append(data_view.begin(), data_view.end());
+        str_buffer->append(data_view.begin(), data_view.end());
 
         return total_size;
     } catch (...) {
@@ -92,7 +95,10 @@ size_t HttpClient::write_string(void* ptr, size_t size, size_t nmemb, std::strin
     }
 }
 
-size_t HttpClient::write_file(void* ptr, size_t size, size_t nmemb, std::ofstream* file_stream) noexcept {
+size_t HttpClient::write_file(void* ptr,
+                              size_t size,
+                              size_t nmemb,
+                              std::ofstream* file_stream) noexcept {
     try {
         size_t total_size = size * nmemb;
         std::span<const char> data_view(static_cast<const char*>(ptr), total_size);

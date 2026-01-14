@@ -24,10 +24,10 @@
 
 namespace {
 
-std::string capitalize(std::string_view s) {
-    if (s.empty())
+std::string capitalize(std::string_view text) {
+    if (text.empty())
         return {};
-    std::string ret(s);
+    std::string ret(text);
     ret[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(ret[0])));
     if (ret == "Zram")
         return "ZRAM";

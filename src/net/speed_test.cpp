@@ -16,10 +16,13 @@
 #include <fstream>
 #include <print>
 #include <sstream>
+#include <cerrno>
+#include <cstring>
 #include <stdexcept>
-#include <string>
 #include <string_view>
+#include <string>
 #include <vector>
+#include <expected>
 
 #include <nlohmann/json.hpp>
 #include <sys/utsname.h>
@@ -57,33 +60,70 @@ constexpr std::array<Node, 7> SERVERS = {{{"", "Speedtest.net (Auto)"},
 class ScopedCertFile {
     fs::path path_;
 
+    explicit ScopedCertFile(fs::path path) : path_(std::move(path)) {}
+
    public:
-    ScopedCertFile(const fs::path& dir, const unsigned char* data, unsigned int len) {
-        path_ = dir / "cacert.pem";
-
-        {
-            std::ofstream cert_stream(path_, std::ios::binary | std::ios::trunc);
-            if (cert_stream) {
-                cert_stream.write(reinterpret_cast<const char*>(data), len);
-            }
-        }
-
-        std::error_code ec;
-        fs::permissions(path_, fs::perms::owner_read, fs::perm_options::replace, ec);
+    ScopedCertFile(ScopedCertFile&& other) noexcept : path_(std::move(other.path_)) {
+        other.path_.clear();
     }
 
-    ~ScopedCertFile() {
-        std::error_code ec;
-        if (fs::exists(path_, ec)) {
-            fs::remove(path_, ec);
+    ScopedCertFile& operator=(ScopedCertFile&& other) noexcept {
+        if (this != &other) {
+            cleanup();
+            path_ = std::move(other.path_);
+            other.path_.clear();
         }
+        return *this;
     }
 
     ScopedCertFile(const ScopedCertFile&) = delete;
     ScopedCertFile& operator=(const ScopedCertFile&) = delete;
 
+    ~ScopedCertFile() {
+        cleanup();
+    }
+
+    static std::expected<ScopedCertFile, std::string> create(const fs::path& dir,
+                                                             const unsigned char* data,
+                                                             unsigned int len) {
+        fs::path cert_path = dir / "cacert.pem";
+
+        std::ofstream cert_stream(cert_path, std::ios::binary | std::ios::trunc);
+        if (!cert_stream) {
+            return std::unexpected(std::format("Failed to open file: {}", std::strerror(errno)));
+        }
+
+        if (!cert_stream.write(reinterpret_cast<const char*>(data), len)) {
+            return std::unexpected(std::format("Failed to write data: {}", std::strerror(errno)));
+        }
+
+        cert_stream.close();
+        if (cert_stream.fail()) {
+            return std::unexpected("Failed to flush/close file stream");
+        }
+
+        std::error_code ec;
+        fs::permissions(cert_path, fs::perms::owner_read, fs::perm_options::replace, ec);
+        if (ec) {
+            fs::remove(cert_path, ec);
+            return std::unexpected("Failed to set permissions: " + ec.message());
+        }
+
+        return ScopedCertFile(std::move(cert_path));
+    }
+
     std::string get_path() const {
         return path_.string();
+    }
+
+   private:
+    void cleanup() {
+        if (!path_.empty()) {
+            std::error_code ec;
+            if (fs::exists(path_, ec)) {
+                fs::remove(path_, ec);
+            }
+        }
     }
 };
 
@@ -110,13 +150,10 @@ std::string sanitize_error(std::string_view msg) {
     if (nl != std::string_view::npos) {
         msg = msg.substr(0, nl);
     }
-
     msg = trim_sv(msg);
-
     if (msg.starts_with("Error: ")) {
         msg.remove_prefix(7);
     }
-
     return std::string(msg);
 }
 
@@ -198,7 +235,18 @@ SpeedTestResult SpeedTest::run(const SpinnerCallback& spinner_cb) {
     SpeedTestResult result;
     result.entries.reserve(SERVERS.size());
 
-    ScopedCertFile cert(base_dir_, cacert_pem, cacert_pem_len);
+    auto cert_expected = ScopedCertFile::create(base_dir_, cacert_pem, cacert_pem_len);
+
+    if (!cert_expected) {
+        SpeedEntryResult entry;
+        entry.node_name = "System Error";
+        entry.error = "Certificate Error: " + cert_expected.error();
+        entry.success = false;
+        result.entries.push_back(entry);
+        return result;
+    }
+
+    const auto& cert = *cert_expected;
 
     for (const auto& node : SERVERS) {
         if (g_interrupted)

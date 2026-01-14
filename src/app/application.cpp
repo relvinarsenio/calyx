@@ -181,9 +181,9 @@ int Application::run(int argc, char* argv[]) {
         if (!swaps.empty()) {
             uint64_t total_swap = 0;
             uint64_t used_swap = 0;
-            for (const auto& s : swaps) {
-                total_swap += s.size;
-                used_swap += s.used;
+            for (const auto& swap : swaps) {
+                total_swap += swap.size;
+                used_swap += swap.used;
             }
 
             std::println(" {:<{}} : {} ({} Used)",
@@ -192,21 +192,21 @@ int Application::run(int argc, char* argv[]) {
                          Color::colorize(format_bytes(total_swap), Color::YELLOW),
                          Color::colorize(format_bytes(used_swap), Color::CYAN));
 
-            for (const auto& s : swaps) {
-                std::string label = "   -> " + s.type;
-                if (s.is_zswap) {
+            for (const auto& swap : swaps) {
+                std::string label = "   -> " + swap.type;
+                if (swap.is_zswap) {
                     std::println("{:<{}} : {}",
                                  label,
                                  Config::APP_SWAP_LABEL_WIDTH,
-                                 Color::colorize(s.path, Color::GREEN));
+                                 Color::colorize(swap.path, Color::GREEN));
                 } else {
-                    std::string info =
-                        std::format("{} ({} Used)", format_bytes(s.size), format_bytes(s.used));
+                    std::string info = std::format(
+                        "{} ({} Used)", format_bytes(swap.size), format_bytes(swap.used));
                     std::println("{:<{}} : {} ({})",
                                  label,
                                  Config::APP_SWAP_LABEL_WIDTH,
                                  Color::colorize(info, Color::CYAN),
-                                 s.path);
+                                 swap.path);
                 }
             }
         }
