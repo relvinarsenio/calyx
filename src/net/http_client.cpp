@@ -41,9 +41,9 @@ class CurlHeaders {
         if (!new_head) {
             throw std::bad_alloc();
         }
-        if (!list_) {
-            list_.reset(new_head);
-        }
+
+        list_.release();
+        list_.reset(new_head);
     }
 
     struct curl_slist* get() const {
@@ -198,6 +198,15 @@ std::expected<void, std::string> HttpClient::download(const std::string& url,
     if (res != CURLE_OK) {
         std::filesystem::remove(filepath);
         return std::unexpected(std::format("Download failed: {}", curl_easy_strerror(res)));
+    }
+
+    if (::fsync(fd.get()) == -1) {
+        std::filesystem::remove(filepath);
+        
+        return std::unexpected(std::format("Failed to sync file '{}': {} (Code: {})", 
+                                           filepath, 
+                                           std::system_category().message(errno), 
+                                           errno));
     }
 
     return {};

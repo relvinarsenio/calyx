@@ -259,7 +259,7 @@ struct FileCleaner {
 #endif
 
 // Helper to attempt opening file with increasingly relaxed consistency flags
-[[nodiscard]] std::pair<int, int> open_benchmark_file(const std::string& path,
+[[nodiscard]] std::pair<FileDescriptor, int> open_benchmark_file(const std::string& path,
                                                       int flags,
                                                       mode_t mode) {
     int fd = -1;
@@ -269,37 +269,37 @@ struct FileCleaner {
     // Try 1: O_DIRECT | O_DSYNC (Best)
     fd = ::open(path.c_str(), flags | O_DIRECT | O_DSYNC, mode);
     if (fd >= 0)
-        return {fd, 1};
+        return {FileDescriptor(fd), 1};
 
     // If verification fails for reasons other than "Invalid Argument" (which implies
     // flags not supported), we should stop and report that specific error.
     if (errno != EINVAL)
-        return {-1, 0};
+        return {FileDescriptor(), 0};
 
     // Try 2: O_DIRECT (Good)
     fd = ::open(path.c_str(), flags | O_DIRECT, mode);
     if (fd >= 0)
-        return {fd, 2};
+        return {FileDescriptor(fd), 2};
 
     if (errno != EINVAL)
-        return {-1, 0};
+        return {FileDescriptor(), 0};
 #endif
 
     // Try 3: O_DSYNC (Reliable but maybe cached read)
     // We reach here if O_DIRECT is undefined OR if previous attempts failed with EINVAL.
     fd = ::open(path.c_str(), flags | O_DSYNC, mode);
     if (fd >= 0)
-        return {fd, 3};
+        return {FileDescriptor(fd), 3};
 
     if (errno != EINVAL)
-        return {-1, 0};
+        return {FileDescriptor(), 0};
 
     // Try 4: Buffered (Fallback)
     fd = ::open(path.c_str(), flags, mode);
     if (fd >= 0)
-        return {fd, 4};
+        return {FileDescriptor(fd), 4};
 
-    return {-1, 0};
+    return {FileDescriptor(), 0};
 }
 
 void print_storage_warning(int mode, bool is_read) {
@@ -392,9 +392,9 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(
         return std::unexpected("FATAL: O_DIRECT is not available on this platform compilation.");
 #endif
 
-        auto [fd_raw, success_mode] = open_benchmark_file(filename, base_flags, 0600);
+        auto [fd, success_mode] = open_benchmark_file(filename, base_flags, 0600);
 
-        if (fd_raw < 0) {
+        if (!fd) {
             return std::unexpected(get_error_message(errno, "create"));
         }
 
@@ -402,15 +402,12 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(
 
         {
             off_t prealloc_bytes = static_cast<off_t>(total_bytes);
-            int prealloc_rc = ::posix_fallocate(fd_raw, 0, prealloc_bytes);
+            int prealloc_rc = ::posix_fallocate(fd.get(), 0, prealloc_bytes);
             if (prealloc_rc != 0 && prealloc_rc != EINVAL && prealloc_rc != ENOTSUP) {
-                ::close(fd_raw);
                 return std::unexpected(std::format("Preallocation failed: {}",
                                                    std::system_category().message(prealloc_rc)));
             }
         }
-
-        FileDescriptor fd(fd_raw);
 
 #ifdef USE_IO_URING
         io_uring ring{};
@@ -460,16 +457,14 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(
 
     // Read Test
     int rd_flags = O_RDONLY;
-    auto [rd_raw, success_mode] =
+    auto [read_fd, success_mode] =
         open_benchmark_file(filename, rd_flags, 0);  // Mode ignored for O_RDONLY
 
-    if (rd_raw < 0) {
+    if (!read_fd) {
         return std::unexpected(get_error_message(errno, "open/read"));
     }
 
     print_storage_warning(success_mode, true);
-
-    FileDescriptor read_fd(rd_raw);
     auto read_start = high_resolution_clock::now();
 
     deadline = read_start + std::chrono::seconds(Config::DISK_BENCHMARK_MAX_SECONDS);

@@ -15,7 +15,6 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
-#include <map>
 #include <print>
 #include <span>
 #include <sstream>
@@ -23,6 +22,7 @@
 #include <cerrno>
 #include <cstring>
 #include <stdexcept>
+#include <system_error>
 #include <string_view>
 #include <string>
 #include <vector>
@@ -97,7 +97,8 @@ class ScopedCertFile {
         // Modern POSIX open with O_CLOEXEC and mode 0600 (rw-------)
         int raw_fd = ::open(cert_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
         if (raw_fd < 0) {
-            return std::unexpected(std::format("Failed to open file (errno={})", errno));
+            return std::unexpected(std::format("Failed to open file: {} (Code: {})",
+                                               std::system_category().message(errno), errno));
         }
 
         // Hand over to RAII wrapper immediately
@@ -111,7 +112,8 @@ class ScopedCertFile {
             ssize_t written = ::write(fd.get(), ptr, remaining);
             if (written < 0) {
                 if (errno == EINTR) continue;
-                return std::unexpected(std::format("Write failed (errno={})", errno));
+                return std::unexpected(std::format("Write failed: {} (Code: {})",
+                                                   std::system_category().message(errno), errno));
             }
             ptr += written;
             remaining -= static_cast<size_t>(written);
@@ -119,7 +121,8 @@ class ScopedCertFile {
 
         // Ensure data hits the disk
         if (::fsync(fd.get()) < 0) {
-            return std::unexpected(std::format("fsync failed (errno={})", errno));
+            return std::unexpected(std::format("fsync failed: {} (Code: {})",
+                                               std::system_category().message(errno), errno));
         }
 
         return ScopedCertFile(std::move(cert_path));
