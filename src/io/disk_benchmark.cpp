@@ -129,7 +129,7 @@ struct FileCleaner {
     while (completed < total_blocks) {
         while (submitted < total_blocks &&
                (submitted - completed) < static_cast<std::uint64_t>(queue_depth)) {
-            if (g_interrupted || stop.stop_requested()) {
+            if (g_interrupted || stop.stop_requested() || interrupt_requested) {
                 interrupt_requested = true;
                 break;
             }

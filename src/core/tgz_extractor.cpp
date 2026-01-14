@@ -389,10 +389,12 @@ std::expected<void, ExtractError> TgzExtractor::extract(const std::filesystem::p
         std::filesystem::path file_path = safe_path.value();
 
         auto space_info = std::filesystem::space(dest_dir, ec);
-        if (!ec) {
-            if (space_info.available < 1048576 || (space_info.available - 1048576) < file_size) {
-                return std::unexpected(ExtractError::DiskFull);
-            }
+        if (ec) {
+            return std::unexpected(ExtractError::DiskFull);
+        }
+
+        if (space_info.available < 1048576 || (space_info.available - 1048576) < file_size) {
+            return std::unexpected(ExtractError::DiskFull);
         }
 
         if (type_flag == '5') {
