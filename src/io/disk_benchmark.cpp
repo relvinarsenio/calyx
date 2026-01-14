@@ -457,14 +457,14 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(
 
     // Read Test
     int rd_flags = O_RDONLY;
-    auto [read_fd, success_mode] =
+    auto [read_fd, read_success_mode] =
         open_benchmark_file(filename, rd_flags, 0);  // Mode ignored for O_RDONLY
 
     if (!read_fd) {
         return std::unexpected(get_error_message(errno, "open/read"));
     }
 
-    print_storage_warning(success_mode, true);
+    print_storage_warning(read_success_mode, true);
     auto read_start = high_resolution_clock::now();
 
     deadline = read_start + std::chrono::seconds(Config::DISK_BENCHMARK_MAX_SECONDS);
