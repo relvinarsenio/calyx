@@ -147,8 +147,8 @@ class SecureFileHandle {
     explicit SecureFileHandle(const std::filesystem::path& path)
         : fd_(create_fd(path)), file_path_(path) {}
 
-        SecureFileHandle(const SecureFileHandle&) = delete;
-        SecureFileHandle& operator=(const SecureFileHandle&) = delete;
+    SecureFileHandle(const SecureFileHandle&) = delete;
+    SecureFileHandle& operator=(const SecureFileHandle&) = delete;
 
     bool write(const void* data, size_t size) {
         ssize_t written = ::write(fd_.get(), data, size);

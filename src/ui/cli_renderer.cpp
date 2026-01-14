@@ -177,8 +177,9 @@ std::string create_progress_bar(int percent) {
     std::string bar;
     bar.reserve(Config::PROGRESS_BAR_WIDTH * 3);  // Unicode chars can be 3 bytes
 
-    const char* fill_char = (Config::UI_FORCE_ASCII || !is_utf8_term()) ? "#" : "\u2588";
-    const char* empty_char = (Config::UI_FORCE_ASCII || !is_utf8_term()) ? "-" : "\u2591";
+    const bool use_ascii = Config::UI_FORCE_ASCII || !is_utf8_term();
+    const char* fill_char = use_ascii ? "#" : "\u2588";
+    const char* empty_char = use_ascii ? "-" : "\u2591";
 
     for (int j = 0; j < Config::PROGRESS_BAR_WIDTH; ++j) {
         bar += (j < filled) ? fill_char : empty_char;
