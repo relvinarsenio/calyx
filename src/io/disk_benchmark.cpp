@@ -318,7 +318,7 @@ void print_storage_warning(int mode, bool is_read) {
                Color::RESET);
 }
 
-}
+}  // namespace
 
 std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(
     int size_mb,
@@ -441,8 +441,7 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(
         diff_write.count() <= 0 ? 0.0 : static_cast<double>(size_mb) / diff_write.count();
 
     int rd_flags = O_RDONLY;
-    auto [read_fd, read_success_mode] =
-        open_benchmark_file(filename, rd_flags, 0);
+    auto [read_fd, read_success_mode] = open_benchmark_file(filename, rd_flags, 0);
 
     if (!read_fd) {
         return std::unexpected(get_error_message(errno, "open/read"));

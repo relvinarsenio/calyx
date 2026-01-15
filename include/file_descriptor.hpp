@@ -20,12 +20,13 @@
 class FileDescriptor {
     int fd_ = -1;
 
-public:
+   public:
     FileDescriptor() = default;
 
     explicit FileDescriptor(int fd) : fd_(fd) {
         if (fd_ < 0 && fd != -1) [[unlikely]] {
-            throw std::system_error(errno, std::generic_category(), "Failed to wrap invalid file descriptor");
+            throw std::system_error(
+                errno, std::generic_category(), "Failed to wrap invalid file descriptor");
         }
     }
 

@@ -109,7 +109,7 @@ ShellPipe::~ShellPipe() noexcept {
 
         if (::waitpid(pid_, nullptr, WNOHANG) != pid_) {
             std::this_thread::sleep_for(std::chrono::milliseconds(32));
-            
+
             if (::waitpid(pid_, nullptr, WNOHANG) != pid_) {
                 ::kill(pid_, SIGKILL);
                 ::waitpid(pid_, nullptr, 0);
@@ -152,7 +152,7 @@ std::string ShellPipe::read_all(std::chrono::milliseconds timeout,
             throw std::runtime_error("Child process timed out while reading output");
         }
 
-        struct pollfd pfd{};
+        struct pollfd pfd {};
         pfd.fd = read_fd_.get();
         pfd.events = POLLIN;
 

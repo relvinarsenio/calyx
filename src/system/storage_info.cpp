@@ -174,7 +174,7 @@ std::vector<SwapEntry> SystemInfo::get_swaps() {
 }
 
 std::string SystemInfo::get_device_name(const std::string& path) {
-    struct stat st{};
+    struct stat st {};
     if (stat(path.c_str(), &st) != 0)
         return "unknown device";
 
