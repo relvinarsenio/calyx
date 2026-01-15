@@ -36,15 +36,15 @@ COPY src/ ./src/
 # - Full LLVM stack (clang + lld + llvm-ar)
 # - Full LTO for maximum optimization
 # - Security hardening flags applied via CMakeLists.txt
-RUN mkdir build && cd build && \
-    CC=clang CXX=clang++ cmake .. \
+# 2. Configure and build with full optimizations
+RUN CC=clang CXX=clang++ cmake -B build -S . \
         -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_AR=/usr/bin/llvm-ar \
         -DCMAKE_RANLIB=/usr/bin/llvm-ranlib \
         -DCMAKE_EXE_LINKER_FLAGS="-static -fuse-ld=lld -rtlib=compiler-rt" \
         -DCMAKE_CXX_FLAGS="-stdlib=libc++" && \
-    ninja -j$(nproc)
+    cmake --build build --parallel $(nproc)
 
 # Strip binary (remove debug symbols for smaller size)
 RUN strip build/calyx
