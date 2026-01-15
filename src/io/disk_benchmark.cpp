@@ -68,7 +68,7 @@ struct FileCleaner {
 
 [[nodiscard]] std::unique_ptr<std::byte[], AlignedDelete> make_aligned_buffer(
     std::size_t size, std::size_t alignment) {
-    void* ptr = ::operator new(size, std::align_val_t(alignment));
+    void* ptr = ::operator new(size, std::align_val_t(alignment), std::nothrow);
     return std::unique_ptr<std::byte[], AlignedDelete>(static_cast<std::byte*>(ptr),
                                                        AlignedDelete{alignment});
 }
@@ -343,6 +343,10 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(
 
     auto buffer = make_aligned_buffer(write_block_size, Config::IO_ALIGNMENT);
 
+    if (!buffer) {
+        return std::unexpected("FATAL: Out of Memory (Failed to allocate Write Buffer)");
+    }
+
     constexpr unsigned int RNG_MULTIPLIER = 0x9E3779B1u;
     std::ranges::generate(std::span{buffer.get(), write_block_size}, [i = 0u]() mutable {
         return std::byte{static_cast<unsigned char>(i++ * RNG_MULTIPLIER)};
@@ -352,6 +356,9 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(
     read_buffers.reserve(static_cast<size_t>(queue_depth_read));
     for (int k = 0; k < queue_depth_read; ++k) {
         read_buffers.push_back(make_aligned_buffer(read_block_size, Config::IO_ALIGNMENT));
+        if (!read_buffers.back()) {
+            return std::unexpected("FATAL: Out of Memory (Failed to allocate Read Buffer)");
+        }
         std::ranges::generate(
             std::span{read_buffers.back().get(), read_block_size}, [i = 0u]() mutable {
                 return std::byte{static_cast<unsigned char>(i++ * RNG_MULTIPLIER)};
