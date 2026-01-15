@@ -7,9 +7,14 @@
  */
 #pragma once
 
+#include <cerrno>
+#include <cstring>
 #include <expected>
+#include <format>
 #include <string>
+#include <system_error>
 #include <utility>
+#include <unistd.h>
 
 class FileDescriptor {
     int fd_ = -1;
@@ -19,21 +24,57 @@ class FileDescriptor {
 
     explicit FileDescriptor(int fd) noexcept : fd_(fd) {}
 
-    ~FileDescriptor();
+    ~FileDescriptor() {
+        reset();
+    }
+
+    FileDescriptor(FileDescriptor&& other) noexcept : fd_(std::exchange(other.fd_, -1)) {}
+
+    FileDescriptor& operator=(FileDescriptor&& other) noexcept {
+        if (this != &other) {
+            reset(std::exchange(other.fd_, -1));
+        }
+        return *this;
+    }
 
     FileDescriptor(const FileDescriptor&) = delete;
     FileDescriptor& operator=(const FileDescriptor&) = delete;
 
-    FileDescriptor(FileDescriptor&& other) noexcept;
-    FileDescriptor& operator=(FileDescriptor&& other) noexcept;
+    void reset(int new_fd = -1) {
+        if (fd_ >= 0) {
+            ::close(fd_);
+        }
+        fd_ = new_fd;
+    }
 
-    void reset(int new_fd = -1);
-    int release();
-    [[nodiscard]] std::expected<FileDescriptor, std::string> duplicate() const;
-    void swap(FileDescriptor& other) noexcept;
+    int release() {
+        return std::exchange(fd_, -1);
+    }
 
-    int get() const noexcept { return fd_; }
-    explicit operator bool() const noexcept { return fd_ >= 0; }
+    [[nodiscard]] std::expected<FileDescriptor, std::string> duplicate() const {
+        if (fd_ < 0) {
+            return std::unexpected("Cannot duplicate invalid file descriptor");
+        }
+
+        int new_fd = ::dup(fd_);
+        if (new_fd < 0) {
+            return std::unexpected(std::format(
+                "dup failed: {} (Code: {})", std::system_category().message(errno), errno));
+        }
+
+        return FileDescriptor(new_fd);
+    }
+
+    void swap(FileDescriptor& other) noexcept {
+        std::swap(fd_, other.fd_);
+    }
+
+    int get() const noexcept {
+        return fd_;
+    }
+    explicit operator bool() const noexcept {
+        return fd_ >= 0;
+    }
 };
 
 inline void swap(FileDescriptor& a, FileDescriptor& b) noexcept {

@@ -200,9 +200,7 @@ add_executable(calyx
     src/app/main.cpp
     src/app/application.cpp
     src/core/interrupts.cpp
-    src/core/utils.cpp
     src/core/tgz_extractor.cpp
-    src/os/file_descriptor.cpp
     src/os/shell_pipe.cpp
     src/system/cpu_info.cpp
     src/system/os_info.cpp

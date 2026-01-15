@@ -102,10 +102,7 @@ size_t HttpClient::write_string(void* ptr,
     }
 }
 
-size_t HttpClient::write_file(void* ptr,
-                              size_t size,
-                              size_t nmemb,
-                              FileDescriptor* fd) noexcept {
+size_t HttpClient::write_file(void* ptr, size_t size, size_t nmemb, FileDescriptor* fd) noexcept {
     const size_t total_size = size * nmemb;
     const char* data_ptr = static_cast<const char*>(ptr);
     size_t remaining = total_size;
@@ -171,8 +168,8 @@ std::expected<void, std::string> HttpClient::download(const std::string& url,
 
     int raw_fd = ::open(filepath.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
     if (raw_fd < 0) {
-        return std::unexpected(std::format(
-            "Cannot save file '{}': {}", filepath, std::strerror(errno)));
+        return std::unexpected(
+            std::format("Cannot save file '{}': {}", filepath, std::strerror(errno)));
     }
     FileDescriptor fd(raw_fd);
 
@@ -206,12 +203,12 @@ std::expected<void, std::string> HttpClient::download(const std::string& url,
     }
 
     if (::fsync(fd.get()) == -1) {
-        int saved_errno  = errno;
+        int saved_errno = errno;
         std::filesystem::remove(filepath);
-        
-        return std::unexpected(std::format("Failed to sync file '{}': {} (Code: {})", 
-                                           filepath, 
-                                           std::system_category().message(saved_errno), 
+
+        return std::unexpected(std::format("Failed to sync file '{}': {} (Code: {})",
+                                           filepath,
+                                           std::system_category().message(saved_errno),
                                            saved_errno));
     }
 

@@ -98,7 +98,8 @@ class ScopedCertFile {
         int raw_fd = ::open(cert_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
         if (raw_fd < 0) {
             return std::unexpected(std::format("Failed to open file: {} (Code: {})",
-                                               std::system_category().message(errno), errno));
+                                               std::system_category().message(errno),
+                                               errno));
         }
 
         // Hand over to RAII wrapper immediately
@@ -111,13 +112,14 @@ class ScopedCertFile {
         while (remaining > 0) {
             ssize_t written = ::write(fd.get(), ptr, remaining);
             if (written < 0) {
-                if (errno == EINTR) continue;
-                return std::unexpected(std::format("Write failed: {} (Code: {})",
-                                                   std::system_category().message(errno), errno));
+                if (errno == EINTR)
+                    continue;
+                return std::unexpected(std::format(
+                    "Write failed: {} (Code: {})", std::system_category().message(errno), errno));
             }
             if (written == 0) {
-                return std::unexpected(std::format("Write failed: {} (Code: {})",
-                                                   std::system_category().message(ENOSPC), ENOSPC));
+                return std::unexpected(std::format(
+                    "Write failed: {} (Code: {})", std::system_category().message(ENOSPC), ENOSPC));
             }
             ptr += written;
             remaining -= static_cast<size_t>(written);
@@ -125,8 +127,8 @@ class ScopedCertFile {
 
         // Ensure data hits the disk
         if (::fsync(fd.get()) < 0) {
-            return std::unexpected(std::format("fsync failed: {} (Code: {})",
-                                               std::system_category().message(errno), errno));
+            return std::unexpected(std::format(
+                "fsync failed: {} (Code: {})", std::system_category().message(errno), errno));
         }
 
         return ScopedCertFile(std::move(cert_path));

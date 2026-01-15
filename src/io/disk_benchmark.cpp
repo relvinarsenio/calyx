@@ -260,8 +260,8 @@ struct FileCleaner {
 
 // Helper to attempt opening file with increasingly relaxed consistency flags
 [[nodiscard]] std::pair<FileDescriptor, int> open_benchmark_file(const std::string& path,
-                                                      int flags,
-                                                      mode_t mode) {
+                                                                 int flags,
+                                                                 mode_t mode) {
     int fd = -1;
     // 0=none, 1=DIRECT+DSYNC, 2=DIRECT, 3=DSYNC, 4=Buffered
 
