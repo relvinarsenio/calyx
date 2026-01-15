@@ -35,6 +35,7 @@
 
 #include "include/config.hpp"
 #include "include/http_client.hpp"
+#include "include/color.hpp"
 #include "include/interrupts.hpp"
 #include "include/results.hpp"
 #include "include/shell_pipe.hpp"
