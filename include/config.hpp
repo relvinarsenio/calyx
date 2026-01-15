@@ -22,6 +22,7 @@ constexpr std::size_t IO_WRITE_BLOCK_SIZE = 1 * 1024 * 1024;
 constexpr std::size_t IO_READ_BLOCK_SIZE = 1 * 1024 * 1024;
 constexpr std::size_t IO_ALIGNMENT = 4096;
 constexpr std::size_t TERM_WIDTH = 80;
+constexpr std::size_t MAX_ERROR_DISPLAY_LEN = 45;
 constexpr std::string_view TEST_FILENAME = "calyx_test_file";
 
 constexpr bool IO_URING_ENABLED = true;

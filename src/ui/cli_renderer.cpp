@@ -159,10 +159,10 @@ void render_speed_results(const SpeedTestResult& result) {
             // In C++23/UTF-8 world, substr might cut multibyte char, but error messages from CLI
             // are usually ASCII. A more robust solution would be to use a proper unicode library,
             // but for now std::string is assumed.
-            if (err.length() > 45) {
+            if (err.length() > Config::MAX_ERROR_DISPLAY_LEN) {
                 // Ensure we don't end with a weird sequence if we can help it,
                 // but std::string substr is byte-based.
-                err = err.substr(0, 42) + "...";
+                err = err.substr(0, Config::MAX_ERROR_DISPLAY_LEN - 3) + "...";
             }
 
             std::print("{}{: <24}{}Error: {}{}\n",
