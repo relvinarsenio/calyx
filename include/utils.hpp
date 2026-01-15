@@ -78,14 +78,6 @@ inline std::string format_bytes(std::uint64_t bytes) {
     return std::format("{:.1f} {}", d, units[i]);
 }
 
-inline std::filesystem::path get_exe_dir() {
-    std::error_code ec;
-    auto exe = std::filesystem::read_symlink("/proc/self/exe", ec);
-    if (!ec && exe.has_parent_path())
-        return exe.parent_path();
-    return std::filesystem::current_path();
-}
-
 inline bool is_disk_space_available(const std::filesystem::path& path,
                                     std::uint64_t required_bytes) {
     std::error_code ec;

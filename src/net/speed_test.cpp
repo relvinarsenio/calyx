@@ -348,7 +348,8 @@ SpeedTestResult SpeedTest::run(const SpinnerCallback& spinner_cb) {
                     std::string type = j.value("type", "");
 
                     if (type == "result") {
-                        if (!j.contains("download") || !j.contains("upload")) {
+                        if (!j.contains("download") || !j["download"].is_object() ||
+                            !j.contains("upload") || !j["upload"].is_object()) {
                             entry.error = "Malformed result (missing speed data)";
                             continue;
                         }
@@ -391,8 +392,8 @@ SpeedTestResult SpeedTest::run(const SpinnerCallback& spinner_cb) {
                         }
                     }
 
-                } catch (const json::parse_error&) {
-                    continue;  // Skip non-JSON lines
+                } catch (const json::exception&) {
+                    continue;  // Skip malformed/non-JSON lines
                 }
             }
 
