@@ -102,19 +102,12 @@ inline bool is_disk_space_available(const std::filesystem::path& path,
 }
 
 inline void cleanup_artifacts() {
-    const auto exe_dir = get_exe_dir();
-
     for (std::string_view filename :
          {Config::SPEEDTEST_TGZ, std::string_view("speedtest-cli"), Config::TEST_FILENAME}) {
         std::error_code ec;
 
         if (fs::exists(filename, ec)) {
             fs::remove_all(filename, ec);
-        }
-
-        auto abs_path = exe_dir / filename;
-        if (fs::exists(abs_path, ec)) {
-            fs::remove_all(abs_path, ec);
         }
     }
 }
