@@ -20,7 +20,8 @@ RUN apk add --no-cache \
     llvm-libunwind-static \
     perl \
     xxd \
-    liburing-dev
+    liburing-dev \
+    ccache
 
 # Set working directory
 WORKDIR /src
@@ -32,18 +33,18 @@ COPY cmake/ ./cmake/
 COPY include/ ./include/
 COPY src/ ./src/
 
-# 2. Configure and build with full optimizations
-# - Full LLVM stack (clang + lld + llvm-ar)
-# - Full LTO for maximum optimization
-# - Security hardening flags applied via CMakeLists.txt
-# 2. Configure and build with full optimizations
-RUN CC=clang CXX=clang++ cmake -B build -S . \
+ENV CCACHE_DIR=/root/.ccache
+ENV CCACHE_MAXSIZE=500M
+
+RUN --mount=type=cache,target=/root/.ccache \
+    CC=clang CXX=clang++ cmake -B build -S . \
         -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_AR=/usr/bin/llvm-ar \
         -DCMAKE_RANLIB=/usr/bin/llvm-ranlib \
         -DCMAKE_EXE_LINKER_FLAGS="-static -fuse-ld=lld -rtlib=compiler-rt" \
         -DCMAKE_CXX_FLAGS="-stdlib=libc++" && \
+    # Pake ccache buat build
     cmake --build build --parallel $(nproc)
 
 # Strip binary (remove debug symbols for smaller size)

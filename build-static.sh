@@ -81,7 +81,7 @@ echo "🐳 Building static binary with Docker (Alpine/musl)..."
 echo "=============================================="
 
 # Build using Docker
-docker build $DOCKER_ARGS_BASE $DOCKER_ARGS --target builder -t "$IMAGE_NAME" .
+DOCKER_BUILDKIT=1 docker build $DOCKER_ARGS_BASE $DOCKER_ARGS --target builder -t "$IMAGE_NAME" .
 
 # =============================================================================
 # 3. Cleanup Phase (On Success)

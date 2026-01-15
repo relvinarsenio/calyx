@@ -201,8 +201,12 @@ SpeedTest::~SpeedTest() {
     if (!base_dir_.empty() && fs::exists(base_dir_, ec)) {
         fs::remove_all(base_dir_, ec);
         if (ec) {
-            std::println(stderr, "{}Warning: Failed to clean up temp dir '{}': {}{}", 
-                Color::YELLOW, base_dir_.string(), ec.message(), Color::RESET);
+            std::println(stderr,
+                         "{}Warning: Failed to clean up temp dir '{}': {}{}",
+                         Color::YELLOW,
+                         base_dir_.string(),
+                         ec.message(),
+                         Color::RESET);
         }
     }
 }
