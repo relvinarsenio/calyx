@@ -25,37 +25,6 @@
 #include <sys/sysinfo.h>
 #include <sys/sysmacros.h>
 
-namespace {
-
-// C++23: Helper to capitalize using ranges/views if complex, but simple version is fine.
-// Improved to be safe and use string views where possible, returning a string.
-std::string capitalize(std::string_view text) {
-    if (text.empty())
-        return {};
-
-    std::string ret(text);
-    if (!ret.empty()) {
-        ret[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(ret[0])));
-    }
-
-    if (ret == "Zram")
-        return "ZRAM";
-    return ret;
-}
-
-// C++23: Robust number parsing helper
-template <typename T>
-std::expected<T, std::errc> parse_number(std::string_view sv) {
-    T value;
-    auto [ptr, ec] = std::from_chars(sv.data(), sv.data() + sv.size(), value);
-    if (ec == std::errc()) {
-        return value;
-    }
-    return std::unexpected(ec);
-}
-
-}  // namespace
-
 MemInfo SystemInfo::get_memory_status() {
     MemInfo info{};
     struct sysinfo si;

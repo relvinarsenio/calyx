@@ -17,6 +17,8 @@
 #include <print>
 #include <sys/ioctl.h>
 #include <unistd.h>
+#include <charconv>
+#include <expected>
 
 #include "config.hpp"
 
@@ -102,4 +104,29 @@ inline void cleanup_artifacts() {
             fs::remove_all(filename, ec);
         }
     }
+}
+
+inline std::string capitalize(std::string_view text) {
+    if (text.empty())
+        return {};
+
+    std::string ret(text);
+    if (!ret.empty()) {
+        ret[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(ret[0])));
+    }
+
+    // Special case Linux specific
+    if (ret == "Zram")
+        return "ZRAM";
+    return ret;
+}
+
+template <typename T>
+std::expected<T, std::errc> parse_number(std::string_view sv) {
+    T value;
+    auto [ptr, ec] = std::from_chars(sv.data(), sv.data() + sv.size(), value);
+    if (ec == std::errc()) {
+        return value;
+    }
+    return std::unexpected(ec);
 }
