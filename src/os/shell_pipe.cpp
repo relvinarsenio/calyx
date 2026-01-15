@@ -25,15 +25,6 @@
 #include <system_error>
 #include <unistd.h>
 
-static int pidfd_open(pid_t pid, unsigned int flags) {
-#ifdef __NR_pidfd_open
-    return static_cast<int>(syscall(__NR_pidfd_open, pid, flags));
-#else
-    errno = ENOSYS;
-    return -1;
-#endif
-}
-
 static std::string describe_signal(int sig) {
     switch (sig) {
         case SIGINT:
@@ -110,50 +101,21 @@ ShellPipe::ShellPipe(const std::vector<std::string>& args) {
     pid_ = pid;
 }
 
-ShellPipe::~ShellPipe() {
+ShellPipe::~ShellPipe() noexcept {
     read_fd_.reset();
 
-    if (pid_ != -1) {
-        int status;
-        pid_t result = ::waitpid(pid_, &status, WNOHANG);
-
-        if (result == pid_) {
-            return;
-        }
-
+    if (pid_ > 0) {
         ::kill(pid_, SIGTERM);
 
-        bool reaped = false;
-        int pfd = pidfd_open(pid_, 0);
-
-        if (pfd >= 0) {
-            struct pollfd pfd_struct;
-            pfd_struct.fd = pfd;
-            pfd_struct.events = POLLIN;
-
-            int ret = ::poll(&pfd_struct, 1, 1000);
-            ::close(pfd);
-
-            if (ret > 0) {
-                ::waitpid(pid_, &status, 0);
-                reaped = true;
-            }
-        }
-
-        if (!reaped) {
-            for (int i = 0; i < 5; ++i) {
-                if (::waitpid(pid_, &status, WNOHANG) == pid_) {
-                    reaped = true;
-                    break;
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            }
-
-            if (!reaped) {
+        if (::waitpid(pid_, nullptr, WNOHANG) != pid_) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(32));
+            
+            if (::waitpid(pid_, nullptr, WNOHANG) != pid_) {
                 ::kill(pid_, SIGKILL);
                 ::waitpid(pid_, nullptr, 0);
             }
         }
+        pid_ = -1;
     }
 }
 

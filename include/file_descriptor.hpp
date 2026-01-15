@@ -15,16 +15,21 @@
 #include <system_error>
 #include <utility>
 #include <unistd.h>
+#include <stdexcept>
 
 class FileDescriptor {
     int fd_ = -1;
 
-   public:
+public:
     FileDescriptor() = default;
 
-    explicit FileDescriptor(int fd) noexcept : fd_(fd) {}
+    explicit FileDescriptor(int fd) : fd_(fd) {
+        if (fd_ < 0 && fd != -1) [[unlikely]] {
+            throw std::system_error(errno, std::generic_category(), "Failed to wrap invalid file descriptor");
+        }
+    }
 
-    ~FileDescriptor() {
+    ~FileDescriptor() noexcept {
         reset();
     }
 
@@ -40,14 +45,14 @@ class FileDescriptor {
     FileDescriptor(const FileDescriptor&) = delete;
     FileDescriptor& operator=(const FileDescriptor&) = delete;
 
-    void reset(int new_fd = -1) {
+    void reset(int new_fd = -1) noexcept {
         if (fd_ >= 0) {
             ::close(fd_);
         }
         fd_ = new_fd;
     }
 
-    int release() {
+    int release() noexcept {
         return std::exchange(fd_, -1);
     }
 
@@ -69,9 +74,13 @@ class FileDescriptor {
         std::swap(fd_, other.fd_);
     }
 
-    int get() const noexcept {
+    [[nodiscard]] int get() const {
+        if (fd_ < 0) [[unlikely]] {
+            throw std::logic_error("FATAL: Accessing invalid file descriptor (-1)");
+        }
         return fd_;
     }
+
     explicit operator bool() const noexcept {
         return fd_ >= 0;
     }

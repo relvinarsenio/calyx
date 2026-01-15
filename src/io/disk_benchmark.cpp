@@ -126,8 +126,6 @@ struct FileCleaner {
     std::uint64_t completed = 0;
     bool interrupt_requested = false;
 
-    // Fix for race condition in circular buffer usage:
-    // Track explicitly which read buffers are currently free.
     std::vector<std::size_t> free_read_indices;
     if (!is_write) {
         free_read_indices.reserve(read_buffers.size());
@@ -144,6 +142,10 @@ struct FileCleaner {
                 break;
             }
 
+            if (!is_write && free_read_indices.empty()) {
+                break;
+            }
+
             io_uring_sqe* sqe = io_uring_get_sqe(&ring);
             if (!sqe)
                 break;
@@ -155,17 +157,13 @@ struct FileCleaner {
             unsigned int len = static_cast<unsigned int>(chunk);
 
             if (is_write) {
-                // Bounds check for safety strictly
                 if (chunk > write_buffer.size()) {
                     return std::unexpected("Buffer overflow detected in write preparation");
                 }
                 io_uring_prep_write(sqe, fd, write_buffer.data(), len, offset_bytes);
                 io_uring_sqe_set_data64(sqe, static_cast<__u64>(len));
             } else {
-                if (free_read_indices.empty()) {
-                    // Should theoretically not happen if queue_depth matches buffer count
-                    return std::unexpected("Logic Error: No free read buffers available");
-                }
+                // Guaranteed safe because of the check above
                 size_t buf_idx = free_read_indices.back();
                 free_read_indices.pop_back();
 
@@ -174,8 +172,6 @@ struct FileCleaner {
                 }
                 io_uring_prep_read(sqe, fd, read_buffers[buf_idx].get(), len, offset_bytes);
 
-                // Pack index (High 32) and length (Low 32) to track buffer usage across async
-                // completions
                 std::uint64_t user_data =
                     (static_cast<std::uint64_t>(buf_idx) << 32) | static_cast<std::uint32_t>(len);
                 io_uring_sqe_set_data64(sqe, user_data);
@@ -258,25 +254,19 @@ struct FileCleaner {
 
 #endif
 
-// Helper to attempt opening file with increasingly relaxed consistency flags
 [[nodiscard]] std::pair<FileDescriptor, int> open_benchmark_file(const std::string& path,
                                                                  int flags,
                                                                  mode_t mode) {
     int fd = -1;
-    // 0=none, 1=DIRECT+DSYNC, 2=DIRECT, 3=DSYNC, 4=Buffered
 
 #ifdef O_DIRECT
-    // Try 1: O_DIRECT | O_DSYNC (Best)
     fd = ::open(path.c_str(), flags | O_DIRECT | O_DSYNC, mode);
     if (fd >= 0)
         return {FileDescriptor(fd), 1};
 
-    // If verification fails for reasons other than "Invalid Argument" (which implies
-    // flags not supported), we should stop and report that specific error.
     if (errno != EINVAL)
         return {FileDescriptor(), 0};
 
-    // Try 2: O_DIRECT (Good)
     fd = ::open(path.c_str(), flags | O_DIRECT, mode);
     if (fd >= 0)
         return {FileDescriptor(fd), 2};
@@ -285,8 +275,6 @@ struct FileCleaner {
         return {FileDescriptor(), 0};
 #endif
 
-    // Try 3: O_DSYNC (Reliable but maybe cached read)
-    // We reach here if O_DIRECT is undefined OR if previous attempts failed with EINVAL.
     fd = ::open(path.c_str(), flags | O_DSYNC, mode);
     if (fd >= 0)
         return {FileDescriptor(fd), 3};
@@ -294,7 +282,6 @@ struct FileCleaner {
     if (errno != EINVAL)
         return {FileDescriptor(), 0};
 
-    // Try 4: Buffered (Fallback)
     fd = ::open(path.c_str(), flags, mode);
     if (fd >= 0)
         return {FileDescriptor(fd), 4};
@@ -304,7 +291,7 @@ struct FileCleaner {
 
 void print_storage_warning(int mode, bool is_read) {
     if (mode == 1)
-        return;  // Best case
+        return;
 
     const char* op_type = is_read ? "read" : "write";
     const char* reason = "";
@@ -331,7 +318,7 @@ void print_storage_warning(int mode, bool is_read) {
                Color::RESET);
 }
 
-}  // namespace
+}
 
 std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(
     int size_mb,
@@ -356,7 +343,6 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(
 
     auto buffer = make_aligned_buffer(write_block_size, Config::IO_ALIGNMENT);
 
-    // Modern C++20 range generation
     constexpr unsigned int RNG_MULTIPLIER = 0x9E3779B1u;
     std::ranges::generate(std::span{buffer.get(), write_block_size}, [i = 0u]() mutable {
         return std::byte{static_cast<unsigned char>(i++ * RNG_MULTIPLIER)};
@@ -385,7 +371,6 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(
         std::error_code ec;
         std::filesystem::remove(filename, ec);
 
-        // Security: Use 0600 (S_IRUSR | S_IWUSR) so only owner can read/write the benchmark file
         const int base_flags = O_WRONLY | O_CREAT | O_TRUNC | O_EXCL;
 
 #ifndef O_DIRECT
@@ -455,10 +440,9 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(
     double write_speed =
         diff_write.count() <= 0 ? 0.0 : static_cast<double>(size_mb) / diff_write.count();
 
-    // Read Test
     int rd_flags = O_RDONLY;
     auto [read_fd, read_success_mode] =
-        open_benchmark_file(filename, rd_flags, 0);  // Mode ignored for O_RDONLY
+        open_benchmark_file(filename, rd_flags, 0);
 
     if (!read_fd) {
         return std::unexpected(get_error_message(errno, "open/read"));

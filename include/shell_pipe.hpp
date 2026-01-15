@@ -21,7 +21,7 @@ class ShellPipe {
    public:
     explicit ShellPipe(const std::vector<std::string>& args);
 
-    ~ShellPipe();
+    ~ShellPipe() noexcept;
 
     ShellPipe(const ShellPipe&) = delete;
     ShellPipe& operator=(const ShellPipe&) = delete;
