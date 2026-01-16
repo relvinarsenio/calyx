@@ -18,6 +18,7 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 #include <charconv>
+#include <cctype>
 #include <expected>
 
 #include "config.hpp"
