@@ -126,7 +126,10 @@ std::expected<T, std::errc> parse_number(std::string_view sv) {
     T value;
     auto [ptr, ec] = std::from_chars(sv.data(), sv.data() + sv.size(), value);
     if (ec == std::errc()) {
-        return value;
+        if (ptr == sv.data() + sv.size()) {
+            return value;
+        }
+        return std::unexpected(std::errc::invalid_argument);
     }
     return std::unexpected(ec);
 }

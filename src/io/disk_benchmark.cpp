@@ -405,9 +405,10 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(
         io_uring ring{};
         int ret = io_uring_queue_init(queue_depth_write, &ring, 0);
         if (ret != 0) {
-            return std::unexpected(std::format("FATAL: io_uring init failed: {}. Kernel too old?",
-                                               std::system_category().message(-ret)));
-        }
+        return std::unexpected(std::format(
+            "Skipped: io_uring feature not available (Kernel <= 5.4?). Error: {}", 
+            std::system_category().message(-ret)));
+    }
 
         auto res = run_uring_io(true,
                                 ring,
@@ -427,7 +428,7 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(
             return std::unexpected(res.error());
 #else
         return std::unexpected(
-            "FATAL: Binary compiled without io_uring support. Cannot benchmark.");
+            "Skipped: Binary compiled without io_uring support. Cannot benchmark.");
 #endif
 
         if (progress_cb)
