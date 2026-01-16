@@ -12,10 +12,10 @@
 #include <vector>
 
 struct SwapEntry {
-    std::string type; // Partition, File, ZRAM, ZSwap
-    std::string path; // /dev/sda2, /swapfile, dll
-    uint64_t size;    // bytes
-    uint64_t used;    // bytes
+    std::string type;  // Partition, File, ZRAM, ZSwap
+    std::string path;  // /dev/sda2, /swapfile, dll
+    uint64_t size = 0;     // bytes
+    uint64_t used = 0;     // bytes
     bool is_zswap = false;
 };
 
@@ -29,11 +29,11 @@ struct DiskInfo {
     uint64_t total;
     uint64_t used;
     uint64_t free;
+    uint64_t available;
 };
 
 class SystemInfo {
-
-public:
+   public:
     static std::string get_model_name();
     static std::string get_cpu_cores_freq();
     static std::string get_cpu_cache();
@@ -42,6 +42,7 @@ public:
     static std::string get_virtualization();
     static std::string get_os();
     static std::string get_arch();
+    static std::string get_raw_arch();
     static std::string get_kernel();
     static std::string get_tcp_cc();
     static std::string get_uptime();
@@ -51,4 +52,5 @@ public:
 
     static MemInfo get_memory_status();
     static DiskInfo get_disk_usage(const std::string& mountpoint);
+    static std::string get_device_name(const std::string& path);
 };

@@ -5,9 +5,15 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
-#include "include/application.hpp"
+#pragma once
 
-int main(int argc, char* argv[]) {
-    Application app;
-    return app.run(argc, argv);
-}
+#include <string>
+
+class Application {
+   public:
+    int run(int argc, char* argv[]);
+
+   private:
+    void show_help(const std::string& app_name) const;
+    void show_version() const;
+};

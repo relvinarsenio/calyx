@@ -15,12 +15,13 @@ RUN apk add --no-cache \
     libc++-dev \
     compiler-rt \
     cmake \
-    make \
+    ninja \
     linux-headers \
     llvm-libunwind-static \
     perl \
     xxd \
-    liburing-dev
+    liburing-dev \
+    ccache
 
 # Set working directory
 WORKDIR /src
@@ -32,18 +33,19 @@ COPY cmake/ ./cmake/
 COPY include/ ./include/
 COPY src/ ./src/
 
-# 2. Configure and build with full optimizations
-# - Full LLVM stack (clang + lld + llvm-ar)
-# - Full LTO for maximum optimization
-# - Security hardening flags applied via CMakeLists.txt
-RUN mkdir build && cd build && \
-    CC=clang CXX=clang++ cmake .. \
+ENV CCACHE_DIR=/root/.ccache
+ENV CCACHE_MAXSIZE=500M
+
+RUN --mount=type=cache,target=/root/.ccache \
+    CC=clang CXX=clang++ cmake -B build -S . \
+        -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_AR=/usr/bin/llvm-ar \
         -DCMAKE_RANLIB=/usr/bin/llvm-ranlib \
         -DCMAKE_EXE_LINKER_FLAGS="-static -fuse-ld=lld -rtlib=compiler-rt" \
         -DCMAKE_CXX_FLAGS="-stdlib=libc++" && \
-    make -j$(nproc)
+    # Pake ccache buat build
+    cmake --build build --parallel $(nproc)
 
 # Strip binary (remove debug symbols for smaller size)
 RUN strip build/calyx
@@ -53,8 +55,8 @@ RUN strip build/calyx
 # =============================================================================
 FROM scratch AS runtime
 
-# Copy binary doang.
-# GAK PERLU copy ca-certificates.crt lagi (karena udah embedded)
+# Copy binary only.
+# No need to copy ca-certificates.crt again (already embedded)
 COPY --from=builder /src/build/calyx /calyx
 
 ENTRYPOINT ["/calyx"]

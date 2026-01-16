@@ -6,12 +6,26 @@ cmake_policy(SET CMP0135 NEW)
 # =============================================================================
 # Calyx - Rapid Linux Server Profiler
 # =============================================================================
-project(calyx VERSION 7.1.2 LANGUAGES CXX C)
+project(calyx VERSION 7.2.1 LANGUAGES CXX C)
 
 # C++23 Required
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+# =============================================================================
+# 1. Compiler Detection & CCACHE SETUP (CRITICAL: MUST BE TOP)
+# =============================================================================
+# Enable ccache if available (Global)
+find_program(CCACHE_PROGRAM ccache)
+if(CCACHE_PROGRAM)
+    message(STATUS "🚀 Optimization: ccache found and enabled (Global)")
+    set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
+    set(CMAKE_C_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
+endif()
+
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+include(DetectCompiler)
 
 # =============================================================================
 # Pre-flight Check: Ensure 'xxd' is available
@@ -91,13 +105,6 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release")
     message(STATUS "🚀 Optimization: -Oz + Full LTO + GC sections")
 endif()
 
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
-
-# =============================================================================
-# 1. Compiler Detection
-# =============================================================================
-include(DetectCompiler)
-
 # =============================================================================
 # 2. Configure Static Dependencies
 # =============================================================================
@@ -123,7 +130,7 @@ if(TARGET libcurl_static)
 endif()
 
 # =============================================================================
-# 3. Compiler Configuration
+# 3. Compiler Configuration (Linking)
 # =============================================================================
 add_link_options("-static")
 add_link_options("-fuse-ld=lld")
@@ -151,7 +158,7 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
 endif()
 
 # =============================================================================
-# 5. Embedded Certificate Generation (MOVED UP FOR SAFETY)
+# 5. Embedded Certificate Generation
 # =============================================================================
 set(CACERT_HASH "SHA256=f1407d974c5ed87d544bd931a278232e13925177e239fca370619aba63c757b4")
 
@@ -198,12 +205,15 @@ add_custom_target(generate_cert DEPENDS "${EMBEDDED_CERT_PATH}")
 # =============================================================================
 add_executable(calyx
     src/app/main.cpp
+    src/app/application.cpp
     src/core/interrupts.cpp
-    src/core/utils.cpp
-    src/os/file_descriptor.cpp
+    src/core/tgz_extractor.cpp
     src/os/shell_pipe.cpp
-    src/system/system_info.cpp
+    src/system/cpu_info.cpp
+    src/system/os_info.cpp
+    src/system/storage_info.cpp
     src/net/http_client.cpp
+    src/net/http_context.cpp
     src/io/disk_benchmark.cpp
     src/net/speed_test.cpp
     src/ui/cli_renderer.cpp
@@ -214,6 +224,10 @@ add_executable(calyx
 set_target_properties(calyx PROPERTIES
     LINK_FLAGS "-Wl,--icf=all"
 )
+
+# === OPTIMIZATION: UNITY BUILD (Batch Mode) ===
+# Enable unity build to speed up compilation times
+set_target_properties(calyx PROPERTIES UNITY_BUILD ON)
 
 # Explicit dependency
 add_dependencies(calyx generate_cert)
@@ -235,7 +249,6 @@ target_link_libraries(calyx
     OpenSSL::Crypto
     ZLIB::ZLIB
     Threads::Threads
-    m
 )
 
 if(USE_IO_URING)
@@ -259,7 +272,67 @@ if(USE_LIBCXX AND STL_STATIC_LIBS)
 endif()
 
 # =============================================================================
-# 8. Install & Packaging (CPack)
+# 8. Build Optimization: Precompiled Headers (PCH)
+# =============================================================================
+
+# Setup Precompiled Headers (PCH) - "The God Tier List"
+target_precompile_headers(calyx PRIVATE
+    # --- C++23 Heavyweights ---
+    <print>
+    <format>
+    <filesystem>
+    <ranges>
+    <expected>
+    
+    # --- Standard Containers & Algo ---
+    <string>
+    <vector>
+    <array>
+    <map>
+    <string_view>
+    <span>
+    <algorithm>
+    <numeric>
+    <optional>
+    
+    # --- Memory & Utility ---
+    <memory>
+    <functional>
+    <utility>
+    <tuple>
+    
+    # --- I/O & Error ---
+    <fstream>
+    <sstream>
+    <stdexcept>
+    <charconv>
+    <system_error>
+    
+    # --- Threading ---
+    <chrono>
+    <thread>
+    <mutex>
+    <atomic>
+    <stop_token>
+    <future>
+    
+    # --- C Wrappers (POSIX) ---
+    <cstdint>
+    <cstring>
+    <cerrno>
+    <cstdlib>
+    <unistd.h>
+    
+    # --- 3rd Party Libs ---
+    <nlohmann/json.hpp>
+    <curl/curl.h>
+    <zlib.h>
+)
+
+message(STATUS "🚀 Optimization: Precompiled Headers (PCH) enabled for target 'calyx'")
+
+# =============================================================================
+# 9. Install & Packaging (CPack)
 # =============================================================================
 install(TARGETS calyx DESTINATION bin)
 

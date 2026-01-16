@@ -17,7 +17,7 @@ void signal_handler(int) noexcept;
 void check_interrupted();
 
 class SignalGuard {
-public:
+   public:
     SignalGuard();
     ~SignalGuard() = default;
 

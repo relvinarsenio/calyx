@@ -22,4 +22,4 @@ constexpr std::string_view BOLD = "\033[1m";
 inline std::string colorize(std::string_view text, std::string_view color) {
     return std::format("{}{}{}", color, text, RESET);
 }
-} // namespace Color
+}  // namespace Color

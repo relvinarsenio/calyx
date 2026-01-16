@@ -25,41 +25,32 @@
 #include <system_error>
 #include <unistd.h>
 
-static int pidfd_open(pid_t pid, unsigned int flags) {
-#ifdef __NR_pidfd_open
-    return static_cast<int>(syscall(__NR_pidfd_open, pid, flags));
-#else
-    errno = ENOSYS;
-    return -1;
-#endif
-}
-
 static std::string describe_signal(int sig) {
     switch (sig) {
-    case SIGINT:
-        return "Interrupted by user (SIGINT)";
-    case SIGTERM:
-        return "Terminated (SIGTERM)";
-    case SIGKILL:
-        return "Killed (SIGKILL)";
-    case SIGQUIT:
-        return "Quit (SIGQUIT)";
-    case SIGPIPE:
-        return "Broken pipe (SIGPIPE)";
-    case SIGHUP:
-        return "Hangup (SIGHUP)";
-    case SIGABRT:
-        return "Aborted (SIGABRT)";
-    case SIGSEGV:
-        return "Segmentation fault (SIGSEGV)";
-    default: {
-        const char* msg = ::strsignal(sig);
-        if (msg) {
-            return std::string("Child terminated by signal ") + std::to_string(sig) + " (" + msg +
-                   ")";
+        case SIGINT:
+            return "Interrupted by user (SIGINT)";
+        case SIGTERM:
+            return "Terminated (SIGTERM)";
+        case SIGKILL:
+            return "Killed (SIGKILL)";
+        case SIGQUIT:
+            return "Quit (SIGQUIT)";
+        case SIGPIPE:
+            return "Broken pipe (SIGPIPE)";
+        case SIGHUP:
+            return "Hangup (SIGHUP)";
+        case SIGABRT:
+            return "Aborted (SIGABRT)";
+        case SIGSEGV:
+            return "Segmentation fault (SIGSEGV)";
+        default: {
+            const char* msg = ::strsignal(sig);
+            if (msg) {
+                return std::string("Child terminated by signal ") + std::to_string(sig) + " (" +
+                       msg + ")";
+            }
+            return std::string("Child terminated by signal ") + std::to_string(sig);
         }
-        return std::string("Child terminated by signal ") + std::to_string(sig);
-    }
     }
 }
 
@@ -82,21 +73,22 @@ ShellPipe::ShellPipe(const std::vector<std::string>& args) {
         throw std::system_error(errno, std::generic_category(), "Failed to create pipe");
     }
 
+    read_fd_.reset(pipe_fds[0]);
+    FileDescriptor write_fd(pipe_fds[1]);
+
     pid_t pid = ::fork();
     if (pid == -1) {
-        ::close(pipe_fds[0]);
-        ::close(pipe_fds[1]);
         throw std::system_error(errno, std::generic_category(), "Failed to fork process");
     }
 
     if (pid == 0) {
-        if (::dup2(pipe_fds[1], STDOUT_FILENO) == -1)
+        if (::dup2(write_fd.get(), STDOUT_FILENO) == -1)
             ::_exit(errno);
-        if (::dup2(pipe_fds[1], STDERR_FILENO) == -1)
+        if (::dup2(write_fd.get(), STDERR_FILENO) == -1)
             ::_exit(errno);
 
-        ::close(pipe_fds[0]);
-        ::close(pipe_fds[1]);
+        read_fd_.reset();
+        write_fd.reset();
 
         ::execvp(c_args[0], c_args.data());
 
@@ -106,61 +98,29 @@ ShellPipe::ShellPipe(const std::vector<std::string>& args) {
         ::_exit(127);
     }
 
-    ::close(pipe_fds[1]);
-    read_fd_ = pipe_fds[0];
     pid_ = pid;
 }
 
-ShellPipe::~ShellPipe() {
-    if (read_fd_ != -1) {
-        ::close(read_fd_);
-    }
+ShellPipe::~ShellPipe() noexcept {
+    read_fd_.reset();
 
-    if (pid_ != -1) {
-        int status;
-        pid_t result = ::waitpid(pid_, &status, WNOHANG);
-
-        if (result == pid_) {
-            return;
-        }
-
+    if (pid_ > 0) {
         ::kill(pid_, SIGTERM);
 
-        bool reaped = false;
-        int pfd = pidfd_open(pid_, 0);
+        if (::waitpid(pid_, nullptr, WNOHANG) != pid_) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(32));
 
-        if (pfd >= 0) {
-            struct pollfd pfd_struct;
-            pfd_struct.fd = pfd;
-            pfd_struct.events = POLLIN;
-
-            int ret = ::poll(&pfd_struct, 1, 1000);
-            ::close(pfd);
-
-            if (ret > 0) {
-                ::waitpid(pid_, &status, 0);
-                reaped = true;
-            }
-        }
-
-        if (!reaped) {
-            for (int i = 0; i < 5; ++i) {
-                if (::waitpid(pid_, &status, WNOHANG) == pid_) {
-                    reaped = true;
-                    break;
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            }
-
-            if (!reaped) {
+            if (::waitpid(pid_, nullptr, WNOHANG) != pid_) {
                 ::kill(pid_, SIGKILL);
                 ::waitpid(pid_, nullptr, 0);
             }
         }
+        pid_ = -1;
     }
 }
 
-std::string ShellPipe::read_all(std::chrono::milliseconds timeout, std::stop_token stop,
+std::string ShellPipe::read_all(std::chrono::milliseconds timeout,
+                                std::stop_token stop,
                                 bool raise_on_error) {
     std::string output;
     std::array<char, 4096> buffer;
@@ -187,16 +147,13 @@ std::string ShellPipe::read_all(std::chrono::milliseconds timeout, std::stop_tok
             ::waitpid(pid_, &status, 0);
             pid_ = -1;
 
-            if (read_fd_ != -1) {
-                ::close(read_fd_);
-                read_fd_ = -1;
-            }
+            read_fd_.reset();
 
             throw std::runtime_error("Child process timed out while reading output");
         }
 
-        struct pollfd pfd{};
-        pfd.fd = read_fd_;
+        struct pollfd pfd {};
+        pfd.fd = read_fd_.get();
         pfd.events = POLLIN;
 
         int poll_res = ::poll(&pfd, 1, remaining_ms);
@@ -210,11 +167,10 @@ std::string ShellPipe::read_all(std::chrono::milliseconds timeout, std::stop_tok
         }
 
         if (poll_res == 0) {
-            // timeout hit, loop will terminate on next iteration deadline check
             continue;
         }
 
-        ssize_t bytes_read = ::read(read_fd_, buffer.data(), buffer.size());
+        ssize_t bytes_read = ::read(read_fd_.get(), buffer.data(), buffer.size());
 
         if (bytes_read > 0) {
             if (total_read + static_cast<size_t>(bytes_read) > MAX_OUTPUT_SIZE) {
@@ -235,10 +191,7 @@ std::string ShellPipe::read_all(std::chrono::milliseconds timeout, std::stop_tok
         }
     }
 
-    if (read_fd_ != -1) {
-        ::close(read_fd_);
-        read_fd_ = -1;
-    }
+    read_fd_.reset();
 
     if (pid_ != -1) {
         if (g_interrupted || stop.stop_requested()) {
@@ -257,8 +210,8 @@ std::string ShellPipe::read_all(std::chrono::milliseconds timeout, std::stop_tok
 
         int status = 0;
         if (::waitpid(pid_, &status, 0) == -1) {
-            throw std::system_error(errno, std::generic_category(),
-                                    "waitpid failed for child process");
+            throw std::system_error(
+                errno, std::generic_category(), "waitpid failed for child process");
         }
 
         if (WIFSIGNALED(status)) {

@@ -9,8 +9,16 @@
 
 #include "results.hpp"
 #include "speed_test.hpp"
+#include <string>
+#include <string_view>
+#include <functional>
 
 namespace CliRenderer {
 void render_speed_results(const SpeedTestResult& result);
 SpinnerCallback make_spinner_callback();
-} // namespace CliRenderer
+
+std::string create_progress_bar(int percent);
+std::function<void(std::size_t, std::size_t, std::string_view)> make_progress_callback(
+    int label_width);
+void render_progress_line(std::string_view label, int percent, int label_width);
+}  // namespace CliRenderer
