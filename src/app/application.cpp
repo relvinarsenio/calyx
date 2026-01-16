@@ -319,7 +319,7 @@ int Application::run(int argc, char* argv[]) {
             std::println(
                 "{}",
                 Color::colorize(
-                    "Note: Write speed reflects real disk commit speed, not temporary cache speed.",
+                    "Note: Write speed reflects real disk commit speed (O_DIRECT).",
                     Color::BOLD));
         }
 
