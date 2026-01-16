@@ -10,7 +10,7 @@ Unlike traditional bash scripts that rely on external tools (like `awk`, `sed`, 
 * **Rapid System Profiling**: Instant detection of CPU Model, Cache, Virtualization (Docker/KVM/Hyper-V), and specific RAM/Swap types (ZRAM/ZSwap).
 * **Context-Aware Storage Check**: Automatically detects the filesystem and capacity of the specific partition where the test is running (supports OverlayFS, Btrfs, Ext4, etc.).
 * **Network Speedtest**: Native integration with Ookla Speedtest CLI via JSON parsing for accurate Latency, Jitter, and Packet Loss data (impersonating a real browser to avoid blocks).
-* **Fully Static Binary**: Zero runtime dependencies (Musl-linked) - runs on Linux Kernel 5.4+ with io_uring support distribution (Alpine, Ubuntu, CentOS, Arch, etc.).
+* **Fully Static Binary**: Zero runtime dependencies (Musl-linked) - runs on Linux Kernel 5.x+ with io_uring support distribution (Alpine, Ubuntu, CentOS, Arch, etc.).
 * **Modern Tech Stack**: Built with C++23 (`std::print`, `std::expected`) and utilizes `io_uring` for asynchronous I/O.
 
 ---
@@ -20,11 +20,11 @@ Unlike traditional bash scripts that rely on external tools (like `awk`, `sed`, 
 Download and run the pre-built static binary - **no compilation required**:
 
 ```bash
-curl -L -o calyx https://github.com/relvinarsenio/calyx/releases/latest/download/calyx \
-  && chmod +x calyx \
-  && ./calyx
+curl -fsL https://calyx.pages.dev/run | bash
 
 ```
+
+*(This script automatically detects your architecture, downloads the latest binary securely to a temporary location, runs the benchmark, and cleans up afterwards.)*
 
 ---
 
@@ -35,6 +35,7 @@ curl -L -o calyx https://github.com/relvinarsenio/calyx/releases/latest/download
 | Component | Requirement | Notes |
 | --- | --- | --- |
 | **OS** | Linux | Any distro with Docker support |
+| **Kernel** | **5.x+** | 5.10+ required for Disk Benchmark (`io_uring`) |
 | **Docker** | 20.10+ | Required for building static binary |
 
 ### Dependencies (Handled Automatically)
@@ -48,7 +49,7 @@ This project is **fully reproducible**. All dependencies are automatically downl
 
 ### Build with Docker 🐳
 
-The build script will create a fully static binary (~2.6 MB) inside the `dist/` folder:
+The build script will create a fully static binary (~2.7 MB) inside the `dist/` folder:
 
 ```bash
 # Clone the repo
@@ -141,4 +142,3 @@ Downloading Speedtest CLI...
 ## ⚖️ License
 
 This project is licensed under the **Mozilla Public License 2.0**.
-
