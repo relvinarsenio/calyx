@@ -80,10 +80,10 @@ chmod +x build-static.sh
 ## 📊 Example Output
 
 ```text
---------------------- Calyx - Rapid VPS Profiler (v7.1.2) ----------------------
- Author : Alfie Ardinata (https://calyx.pages.dev/)
- GitHub : https://github.com/relvinarsenio/calyx
- Usage  : ./calyx
+--------------------- Calyx - Rapid VPS Profiler (v7.2.1) ----------------------
+ Author             : Alfie Ardinata (https://calyx.pages.dev/)
+ GitHub             : https://github.com/relvinarsenio/calyx
+ Usage              : ./calyx
 --------------------------------------------------------------------------------
  -> CPU & Hardware
  CPU Model            : AMD Ryzen 5 7535HS with Radeon Graphics
