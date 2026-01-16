@@ -69,6 +69,7 @@ void setup_browser_impersonation(CURL* handle, CurlHeaders& headers) {
     headers.add("Sec-Fetch-User: ?1");
     headers.add("Upgrade-Insecure-Requests: 1");
 
+    curl_easy_setopt(handle, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2TLS);
     curl_easy_setopt(handle, CURLOPT_USERAGENT, Config::HTTP_USER_AGENT.data());
     curl_easy_setopt(handle, CURLOPT_REFERER, "https://www.google.com/");
     curl_easy_setopt(handle, CURLOPT_ACCEPT_ENCODING, "gzip, deflate, br");
