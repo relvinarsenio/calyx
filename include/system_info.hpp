@@ -12,10 +12,10 @@
 #include <vector>
 
 struct SwapEntry {
-    std::string type;  // Partition, File, ZRAM, ZSwap
-    std::string path;  // /dev/sda2, /swapfile, dll
-    uint64_t size = 0;     // bytes
-    uint64_t used = 0;     // bytes
+    std::string type;   // Partition, File, ZRAM, ZSwap
+    std::string path;   // /dev/sda2, /swapfile, dll
+    uint64_t size = 0;  // bytes
+    uint64_t used = 0;  // bytes
     bool is_zswap = false;
 };
 

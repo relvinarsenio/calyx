@@ -87,53 +87,51 @@ chmod +x build-static.sh
  Usage              : ./calyx
 --------------------------------------------------------------------------------
  -> CPU & Hardware
- CPU Model            : AMD Ryzen 5 7535HS with Radeon Graphics
- CPU Cores            : 4 @ 4587.8 MHz
- CPU Cache            : 16 MB
+ CPU Model            : AMD EPYC 7763 64-Core Processor
+ CPU Cores            : 4 @ 2445.4 MHz
+ CPU Cache            : 32 MB
  AES-NI               : ✓ Enabled
- VM-x/AMD-V           : ✗ Disabled
+ VM-x/AMD-V           : ✓ Enabled
 
  -> System Info
- OS                   : Oracle Linux Server 10.1
+ OS                   : Ubuntu 24.04.3 LTS
  Arch                 : x86_64 (64 Bit)
- Kernel               : 6.12.0-106.55.4.2.el10uek.x86_64
- TCP CC               : bbr
- Virtualization       : Hyper-V
- System Uptime        : 0 days, 4 hour 40 min
- Load Average         : 1.72, 0.87, 0.55
+ Kernel               : 6.8.0-1030-azure
+ TCP CC               : cubic
+ Virtualization       : Docker
+ System Uptime        : 3 hours, 6 mins
+ Load Average         : 1.63, 0.82, 1.23
 
  -> Storage & Memory
- Disk Test Path       : /home/user/calyx (/dev/sda3 (btrfs))
- Total Disk           : 60.2 GB (12.1 GB Used)
- Total Mem            : 2.5 GB (1.6 GB Used)
+ Disk Test Path       : /tmp (/dev/sda1 (ext4))
+ Total Disk           : 117.6 GB (4.0 GB Used)
+ Total Mem            : 15.6 GB (2.7 GB Used)
  Total Swap           : 3.2 GB (1.1 GB Used)
    -> Partition        : 3.2 GB (1.1 GB Used) (/dev/sda2)
    -> ZSwap            : Enabled
 
  -> Network
  IPv4/IPv6            : ✓ Online / ✗ Offline
- ISP                  : AS7713 PT TELKOM INDONESIA
- Location             : Bandar Lampung / ID
- Region               : Lampung
+ ISP                  : AS8075 Microsoft Corporation
+ Location             : Singapore / SG
 --------------------------------------------------------------------------------
 Running I/O Test (1GB File)...
-  I/O Speed (Run #1)   : Write    952.2 MB/s   Read   4206.5 MB/s
-  I/O Speed (Run #2)   : Write    194.4 MB/s   Read   4207.1 MB/s
-  I/O Speed (Run #3)   : Write   1168.6 MB/s   Read   4195.1 MB/s
-  I/O Speed (Average)  : Write    771.7 MB/s   Read   4202.9 MB/s
-Note: Write speed reflects real disk commit speed (O_DIRECT).
+  I/O Speed (Run #1)   : Write    440.1 MB/s   Read    385.9 MB/s
+  I/O Speed (Run #2)   : Write    390.3 MB/s   Read    392.7 MB/s
+  I/O Speed (Run #3)   : Write    389.9 MB/s   Read    385.9 MB/s
+  I/O Speed (Average)  : Write    406.8 MB/s   Read    388.2 MB/s
 --------------------------------------------------------------------------------
 Downloading Speedtest CLI...
  Node Name              Download          Upload            Latency     Loss    
- Speedtest.net (Auto)   36.74 Mbps        22.96 Mbps        21.55 ms    0.00 %  
- Singapore, SG          71.06 Mbps        21.83 Mbps        28.42 ms    0.00 %  
- Los Angeles, US        23.18 Mbps        21.72 Mbps        219.95 ms   0.42 %  
- Montreal, CA           39.62 Mbps        31.46 Mbps        291.89 ms   0.00 %  
- Paris, FR              54.28 Mbps        20.32 Mbps        194.75 ms   0.00 %  
- Amsterdam, NL          71.38 Mbps        20.90 Mbps        295.83 ms   0.00 %  
- Melbourne, AU          72.43 Mbps        20.49 Mbps        306.23 ms   0.00 %  
+ Speedtest.net (Auto)   27.94 Gbps        11.89 Gbps        1.12 ms     0.00 %  
+ Singapore, SG          9.07 Gbps         5.33 Gbps         14.61 ms    0.00 %  
+ Los Angeles, US        3.30 Gbps         389.92 Mbps       187.93 ms   0.00 %  
+ Montreal, CA           3.40 Gbps         307.46 Mbps       224.41 ms   2.01 %  
+ London, UK             5.98 Gbps         575.37 Mbps       155.56 ms   0.00 %  
+ Amsterdam, NL          6.29 Gbps         647.44 Mbps       159.31 ms   0.00 %  
+ Sydney, AU             7.57 Gbps         1.13 Gbps         94.01 ms    0.00 %  
 --------------------------------------------------------------------------------
- Finished in        : 2 min 55 sec
+ Finished in        : 3 min 47 sec
 
 ```
 

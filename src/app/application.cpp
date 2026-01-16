@@ -315,12 +315,6 @@ int Application::run(int argc, char* argv[]) {
                          io_label_width,
                          Color::colorize(std::format("Write {:>8.1f} MB/s", avg_w), Color::YELLOW),
                          Color::colorize(std::format("Read {:>8.1f} MB/s", avg_r), Color::CYAN));
-
-            std::println(
-                "{}",
-                Color::colorize(
-                    "Note: Write speed reflects real disk commit speed (O_DIRECT).",
-                    Color::BOLD));
         }
 
         print_line();

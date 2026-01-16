@@ -17,6 +17,7 @@
 #include <functional>
 #include <future>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <numeric>
 #include <print>
@@ -26,6 +27,7 @@
 #include <stop_token>
 #include <system_error>
 
+#include <sys/mman.h>
 #include <sys/statvfs.h>
 
 #include <fcntl.h>
@@ -66,9 +68,27 @@ struct FileCleaner {
     }
 };
 
-[[nodiscard]] std::unique_ptr<std::byte[], AlignedDelete> make_aligned_buffer(
-    std::size_t size, std::size_t alignment) {
+void optimize_memory_region(std::span<std::byte> mem) noexcept {
+    if (mem.empty())
+        return;
+
+    void* ptr = mem.data();
+    size_t size = mem.size_bytes();
+
+    ::madvise(ptr, size, MADV_HUGEPAGE);
+}
+
+[[nodiscard]] std::expected<std::unique_ptr<std::byte[], AlignedDelete>, std::string>
+make_aligned_buffer(std::size_t size, std::size_t alignment) {
     void* ptr = ::operator new(size, std::align_val_t(alignment), std::nothrow);
+
+    if (!ptr) [[unlikely]] {
+        return std::unexpected(
+            std::format("FATAL: Failed to allocate {} bytes (aligned to {}). System Out of Memory.",
+                        size,
+                        alignment));
+    }
+
     return std::unique_ptr<std::byte[], AlignedDelete>(static_cast<std::byte*>(ptr),
                                                        AlignedDelete{alignment});
 }
@@ -122,6 +142,9 @@ struct FileCleaner {
     const std::function<void(std::size_t, std::size_t, std::string_view)>& progress_cb,
     std::string_view label,
     std::stop_token stop) {
+    static_assert(Config::IO_READ_QUEUE_DEPTH <= (1ULL << 32),
+                  "Queue depth config exceeds 32-bit limit for io_uring user_data encoding");
+
     std::uint64_t submitted = 0;
     std::uint64_t completed = 0;
     bool interrupt_requested = false;
@@ -163,7 +186,6 @@ struct FileCleaner {
                 io_uring_prep_write(sqe, fd, write_buffer.data(), len, offset_bytes);
                 io_uring_sqe_set_data64(sqe, static_cast<__u64>(len));
             } else {
-                // Guaranteed safe because of the check above
                 size_t buf_idx = free_read_indices.back();
                 free_read_indices.pop_back();
 
@@ -203,7 +225,7 @@ struct FileCleaner {
 
         io_uring_for_each_cqe(&ring, head, cqe) {
             count++;
-            uint64_t user_data = io_uring_cqe_get_data64(cqe);
+            std::uint64_t user_data = io_uring_cqe_get_data64(cqe);
             int expected_len = static_cast<int>(user_data & 0xFFFFFFFF);
 
             if (!is_write) {
@@ -341,28 +363,40 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(
                                format_bytes(required) + ")");
     }
 
-    auto buffer = make_aligned_buffer(write_block_size, Config::IO_ALIGNMENT);
-
-    if (!buffer) {
-        return std::unexpected("FATAL: Out of Memory (Failed to allocate Write Buffer)");
+    auto buffer_res = make_aligned_buffer(write_block_size, Config::IO_ALIGNMENT);
+    if (!buffer_res) {
+        return std::unexpected(buffer_res.error());
     }
+    auto buffer = std::move(buffer_res.value());
 
     constexpr unsigned int RNG_MULTIPLIER = 0x9E3779B1u;
-    std::ranges::generate(std::span{buffer.get(), write_block_size}, [i = 0u]() mutable {
-        return std::byte{static_cast<unsigned char>(i++ * RNG_MULTIPLIER)};
-    });
+
+    auto pattern_gen = [=](size_t idx) {
+        return std::byte{static_cast<unsigned char>(idx * RNG_MULTIPLIER)};
+    };
+
+    auto write_mem = std::span{buffer.get(), write_block_size};
+    optimize_memory_region(write_mem);
+
+    std::ranges::copy(
+        std::views::iota(size_t{0}, write_block_size) | std::views::transform(pattern_gen),
+        write_mem.begin());
 
     std::vector<std::unique_ptr<std::byte[], AlignedDelete>> read_buffers;
     read_buffers.reserve(static_cast<size_t>(queue_depth_read));
     for (int k = 0; k < queue_depth_read; ++k) {
-        read_buffers.push_back(make_aligned_buffer(read_block_size, Config::IO_ALIGNMENT));
-        if (!read_buffers.back()) {
-            return std::unexpected("FATAL: Out of Memory (Failed to allocate Read Buffer)");
+        auto read_buf_res = make_aligned_buffer(read_block_size, Config::IO_ALIGNMENT);
+        if (!read_buf_res) {
+            return std::unexpected(read_buf_res.error());
         }
-        std::ranges::generate(
-            std::span{read_buffers.back().get(), read_block_size}, [i = 0u]() mutable {
-                return std::byte{static_cast<unsigned char>(i++ * RNG_MULTIPLIER)};
-            });
+        read_buffers.push_back(std::move(read_buf_res.value()));
+
+        auto read_mem = std::span{read_buffers.back().get(), read_block_size};
+        optimize_memory_region(read_mem);
+
+        std::ranges::copy(
+            std::views::iota(size_t{0}, read_block_size) | std::views::transform(pattern_gen),
+            read_mem.begin());
     }
 
     auto start = high_resolution_clock::now();
@@ -405,10 +439,10 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(
         io_uring ring{};
         int ret = io_uring_queue_init(queue_depth_write, &ring, 0);
         if (ret != 0) {
-        return std::unexpected(std::format(
-            "Skipped: io_uring feature not available (Kernel <= 5.4?). Error: {}", 
-            std::system_category().message(-ret)));
-    }
+            return std::unexpected(
+                std::format("Skipped: io_uring feature not available (Kernel <= 5.4?). Error: {}",
+                            std::system_category().message(-ret)));
+        }
 
         auto res = run_uring_io(true,
                                 ring,

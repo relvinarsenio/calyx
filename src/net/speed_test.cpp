@@ -61,7 +61,7 @@ constexpr std::array<Node, 7> SERVERS = {{{"", "Speedtest.net (Auto)"},
                                           {"59016", "Singapore, SG"},
                                           {"5905", "Los Angeles, US"},
                                           {"59219", "Montreal, CA"},
-                                          {"62493", "Paris, FR"},
+                                          {"40788", "London, UK"},
                                           {"3386", "Amsterdam, NL"},
                                           {"12492", "Sydney, AU"}}};
 
