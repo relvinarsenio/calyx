@@ -121,7 +121,7 @@ Running I/O Test (1GB File)...
   I/O Speed (Run #2)   : Write    194.4 MB/s   Read   4207.1 MB/s
   I/O Speed (Run #3)   : Write   1168.6 MB/s   Read   4195.1 MB/s
   I/O Speed (Average)  : Write    771.7 MB/s   Read   4202.9 MB/s
-Note: Write speed reflects real disk commit speed, not temporary cache speed.
+Note: Write speed reflects real disk commit speed (O_DIRECT).
 --------------------------------------------------------------------------------
 Downloading Speedtest CLI...
  Node Name              Download          Upload            Latency     Loss    
