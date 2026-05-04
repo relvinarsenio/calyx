@@ -1,0 +1,450 @@
+/*
+ * Copyright (c) 2025-2026 Alfie Ardinata
+ *
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+#pragma once
+
+#include "color.hpp"
+#include "config.hpp"
+#include "file_descriptor.hpp"
+#include "numeric_cast.hpp"
+#include "posix.hpp"
+#include "posix_error.hpp"
+#include "scope.hpp"
+
+#include <algorithm>
+#include <array>
+#include <bit>
+#include <cctype>
+#include <charconv>
+#include <chrono>
+#include <cstdint>
+#include <cstdio>
+#include <expected>
+#include <fcntl.h>
+#include <filesystem>
+#include <format>
+#include <optional>
+#include <print>
+#include <ranges>
+#include <span>
+#include <string>
+#include <string_view>
+#include <sys/ioctl.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <thread>
+#include <type_traits>
+#include <unistd.h>
+#include <utility>
+
+namespace tsc {
+
+/**
+ * @brief Providing hardware-level hint for spin-waiting.
+ */
+inline void cpu_pause() noexcept {
+#if defined(__x86_64__)
+    __builtin_ia32_pause();
+#elif defined(__aarch64__)
+    __asm__ __volatile__("yield" ::: "memory");
+#else
+    std::this_thread::yield();
+#endif
+}
+
+/**
+ * @brief Read the hardware cycle counter (non-serializing).
+ * @return 64-bit cycle count.
+ */
+[[nodiscard]] inline std::uint64_t rdtsc() noexcept {
+#if defined(__x86_64__)
+    std::uint32_t lo {}, hi {};
+    __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi));
+    return (toULong(hi) << 32) | toULong(lo);
+#elif defined(__aarch64__)
+    std::uint64_t val {};
+    __asm__ __volatile__("isb; mrs %0, cntvct_el0" : "=r"(val)::"memory");
+    return val;
+#else
+    return toULong(std::chrono::steady_clock::now().time_since_epoch().count());
+#endif
+}
+
+/**
+ * @brief Serialized start-of-interval cycle read.
+ * @details Per Intel SDM Vol. 2 (RDTSC guidance): LFENCE before RDTSC
+ * ensures all prior instructions and loads complete before the timestamp.
+ * This is the recommended pattern for the start of a timed interval.
+ */
+[[nodiscard]] inline std::uint64_t rdtsc_ordered() noexcept {
+#if defined(__x86_64__)
+    std::uint32_t lo {}, hi {};
+    __asm__ __volatile__("lfence\n\trdtsc" : "=a"(lo), "=d"(hi)::"memory");
+    return (toULong(hi) << 32) | toULong(lo);
+#elif defined(__aarch64__)
+    std::uint64_t val {};
+    __asm__ __volatile__("isb; mrs %0, cntvct_el0" : "=r"(val)::"memory");
+    return val;
+#else
+    return toULong(std::chrono::steady_clock::now().time_since_epoch().count());
+#endif
+}
+
+/**
+ * @brief Read the hardware cycle counter with partial serialization.
+ * @details Per Intel SDM Vol. 2: RDTSCP waits for all prior instructions to
+ * complete, but does NOT prevent subsequent instructions from starting before
+ * the timestamp is read. Use rdtscp_ordered() when a full end-of-interval
+ * barrier is required.
+ * @return 64-bit cycle count.
+ */
+[[nodiscard]] inline std::uint64_t rdtscp() noexcept {
+#if defined(__x86_64__)
+    std::uint32_t lo {}, hi {};
+    __asm__ __volatile__("rdtscp" : "=a"(lo), "=d"(hi)::"rcx");
+    return (toULong(hi) << 32) | toULong(lo);
+#elif defined(__aarch64__)
+    std::uint64_t val {};
+    __asm__ __volatile__("isb; mrs %0, cntvct_el0; isb" : "=r"(val)::"memory");
+    return val;
+#else
+    return rdtsc();
+#endif
+}
+
+/**
+ * @brief Serialized end-of-interval cycle read.
+ * @details Per Intel SDM Vol. 2: RDTSCP waits for all prior instructions,
+ * then LFENCE prevents subsequent instructions from executing speculatively
+ * before the timestamp is captured. This is the recommended pattern for
+ * the end of a timed interval.
+ */
+[[nodiscard]] inline std::uint64_t rdtscp_ordered() noexcept {
+#if defined(__x86_64__)
+    std::uint32_t lo {}, hi {};
+    __asm__ __volatile__("rdtscp\n\tlfence" : "=a"(lo), "=d"(hi)::"rcx", "memory");
+    return (toULong(hi) << 32) | toULong(lo);
+#elif defined(__aarch64__)
+    std::uint64_t val {};
+    __asm__ __volatile__("isb; mrs %0, cntvct_el0; isb" : "=r"(val)::"memory");
+    return val;
+#else
+    return rdtsc();
+#endif
+}
+
+/**
+ * @brief Calibrate the cycle frequency against a steady clock.
+ * @param duration Duration to calibrate for (default 10ms).
+ * @return Cycles per nanosecond.
+ */
+[[nodiscard]] inline double calibrate(std::chrono::nanoseconds duration = std::chrono::milliseconds(10)) noexcept {
+    const auto t0 = std::chrono::steady_clock::now();
+    const auto c0 = rdtsc();
+
+    // Busy wait for better precision than sleep
+    while (std::chrono::steady_clock::now() - t0 < duration) {
+        cpu_pause();
+    }
+
+    const auto t1 = std::chrono::steady_clock::now();
+    const auto c1 = rdtsc();
+
+    const auto elapsed_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
+    return toDouble(c1 - c0) / toDouble(elapsed_ns);
+}
+
+} // namespace tsc
+
+/**
+ * @brief Safely multiply two unsigned 64-bit integers with overflow checking.
+ * @return The result if no overflow occurred, otherwise @c std::nullopt.
+ */
+inline constexpr auto safe_mul
+    = [](std::uint64_t left_value, std::uint64_t right_value) noexcept -> std::optional<std::uint64_t> {
+    std::uint64_t result {};
+    if (__builtin_mul_overflow(left_value, right_value, &result)) { return std::nullopt; }
+    return result;
+};
+
+/**
+ * @brief Safely add two unsigned 64-bit integers with overflow checking.
+ * @return The result if no overflow occurred, otherwise @c std::nullopt.
+ */
+inline constexpr auto safe_add
+    = [](std::uint64_t left_value, std::uint64_t right_value) noexcept -> std::optional<std::uint64_t> {
+    std::uint64_t result {};
+    if (__builtin_add_overflow(left_value, right_value, &result)) { return std::nullopt; }
+    return result;
+};
+
+namespace fs = std::filesystem;
+
+/**
+ * @brief Removes surrounding quotes (double or single) from a string view.
+ */
+inline constexpr auto unquote = [](std::string_view input_view) noexcept -> std::string_view {
+    if (input_view.size() < 2) { return input_view; }
+
+    const bool double_quoted = input_view.front() == '"' && input_view.back() == '"';
+    const bool single_quoted = input_view.front() == '\'' && input_view.back() == '\'';
+    if (double_quoted || single_quoted) { return input_view.substr(1, input_view.size() - 2); }
+    return input_view;
+};
+
+inline constexpr auto print_error
+    = [](std::string_view message) noexcept { std::print(stderr, "{}{}{}\n", color::kRed, message, color::kReset); };
+
+inline constexpr auto print_warning
+    = [](std::string_view message) noexcept { std::print(stderr, "{}{}{}\n", color::kYellow, message, color::kReset); };
+
+/**
+ * @brief Detects the current terminal width in columns.
+ */
+inline constexpr auto get_term_width = []() noexcept -> std::size_t {
+    struct winsize win_size;
+    if (posix::file_descriptor::ioctl_raw(posix::file_descriptor::stdout_fd, TIOCGWINSZ, win_size)
+        && win_size.ws_col > 0) {
+        return std::min(toSize(win_size.ws_col), config::kTermWidth);
+    }
+    return config::kTermWidth;
+};
+
+inline constexpr auto print_line = []() noexcept {
+    const std::size_t width = get_term_width();
+    std::println("{:-<{}}", "", width);
+};
+
+inline constexpr auto print_centered_header = [](std::string_view text) noexcept {
+    const std::size_t width    = get_term_width();
+    const std::size_t text_len = text.length();
+
+    if (text_len >= width - 2) {
+        std::println("{}", text);
+        return;
+    }
+
+    const std::size_t remaining = width - text_len - 2;
+    const std::size_t left_pad  = remaining / 2;
+    const std::size_t right_pad = remaining - left_pad;
+
+    std::println("{0:-<{1}} {2} {0:-<{3}}", "", left_pad, text, right_pad);
+};
+
+inline constexpr auto trim_sv = [](std::string_view str) noexcept -> std::string_view {
+    const auto first = str.find_first_not_of(" \t\n\r\v\f");
+    if (first == std::string_view::npos) { return {}; }
+    const auto last = str.find_last_not_of(" \t\n\r\v\f");
+    return str.substr(first, last - first + 1);
+};
+
+inline constexpr auto trim = [](const std::string& str) -> std::string { return std::string(trim_sv(str)); };
+
+/**
+ * @brief Truncates a string to a maximum length, appending an ellipsis if needed.
+ */
+inline constexpr auto truncate_error
+    = [](std::string_view message, std::size_t max_len = config::kMaxErrorDisplayLen) -> std::string {
+    if (message.length() <= max_len) { return std::string(message); }
+    const auto limit = (max_len > 3) ? max_len - 3 : 0;
+    return std::format("{:.{}}...", message, limit);
+};
+
+/**
+ * @brief Retrieves the system's page size in bytes.
+ */
+inline constexpr auto get_page_size = []() noexcept -> std::uint64_t {
+    static const std::uint64_t size = []() {
+        const std::int64_t res = ::sysconf(_SC_PAGESIZE);
+        return (res > 0) ? toULong(res) : 4096ULL;
+    }();
+    return size;
+};
+
+/**
+ * @brief Formats a byte count into a human-readable string (e.g., "1.2 MB").
+ */
+inline constexpr auto format_bytes = [](std::uint64_t bytes) -> std::string {
+    if (bytes == 0) { return "0 B"; }
+    static constexpr std::array kUnits = { "B", "KB", "MB", "GB", "TB" };
+    const std::size_t unit_index = std::min<std::size_t>(toSize(std::bit_width(bytes) - 1) / 10, kUnits.size() - 1);
+    const double scaled_value    = toDouble(bytes) / toDouble(1ULL << (unit_index * 10));
+    std::string s                = std::format("{:.1f}", scaled_value);
+    if (s.ends_with(".0")) { s.erase(s.size() - 2); }
+    return std::format("{} {}", s, kUnits[unit_index]);
+};
+
+/**
+ * @brief Formats a generic count with SI suffixes (e.g., "5.8 M").
+ */
+inline constexpr auto format_count = [](std::uint64_t count) -> std::string {
+    if (count < 1000) { return std::to_string(count); }
+    static constexpr std::array kUnits = { "", "K", "M", "G", "T" };
+    double scaled                      = toDouble(count);
+    std::size_t unit                   = 0;
+    while (scaled >= 1000.0 && unit < kUnits.size() - 1) {
+        scaled /= 1000.0;
+        unit++;
+    }
+    std::string s = std::format("{:.1f}", scaled);
+    if (s.ends_with(".0")) { s.erase(s.size() - 2); }
+    return std::format("{}{}", s, kUnits[unit]);
+};
+
+inline constexpr auto check_disk_space
+    = [](const std::filesystem::path& path,
+          std::uint64_t required_bytes) noexcept -> std::expected<void, std::error_code> {
+    std::error_code ec;
+    const auto absolute_path = fs::absolute(path, ec);
+    if (ec) { return std::unexpected(ec); }
+
+    const auto target_res = [absolute_path](this auto self, fs::path p) -> std::expected<fs::path, std::error_code> {
+        std::error_code ec;
+        if (fs::exists(p, ec)) { return p; }
+        if (ec) { return std::unexpected(ec); }
+        if (!p.has_parent_path() || p.parent_path() == p) { return p; }
+        return self(p.parent_path());
+    }(absolute_path);
+
+    if (!target_res) { return std::unexpected(target_res.error()); }
+    const auto target = *target_res;
+
+    auto space_info = fs::space(target, ec);
+    if (ec) { return std::unexpected(ec); }
+
+    auto total_req = safe_add(required_bytes, config::kMinBufferBytes);
+    if (!total_req) { return std::unexpected(std::make_error_code(std::errc::value_too_large)); }
+
+    if (space_info.available < *total_req) {
+        return std::unexpected(std::make_error_code(std::errc::no_space_on_device));
+    }
+    return {};
+};
+
+inline constexpr auto get_test_filename
+    = []() noexcept -> std::string { return std::format("{}.{}", ::config::kTestFilename, posix::getpid()); };
+
+inline constexpr auto cleanup_artifacts = []() noexcept {
+    const std::string disk_file = get_test_filename();
+    std::error_code error_status;
+    if (fs::exists(disk_file, error_status)) { fs::remove(disk_file, error_status); }
+};
+
+inline constexpr auto capitalize = [](std::string_view text) noexcept -> std::string {
+    if (text.empty()) { return {}; }
+
+    if (text == "zram" || text == "Zram") { return "ZRAM"; }
+
+    if (std::isupper(toUChar(text[0]))) { return std::string(text); }
+
+    std::string result_string(text);
+    result_string[0] = toChar(std::toupper(toUChar(result_string[0])));
+    return result_string;
+};
+
+template <typename T> [[nodiscard]] std::expected<T, std::errc> parse_number(std::string_view input_view) noexcept {
+    T value {};
+    auto [end_pointer, error_status] = std::from_chars(input_view.data(), input_view.data() + input_view.size(), value);
+    if (error_status == std::errc()) {
+        if (end_pointer == input_view.data() + input_view.size()) { return value; }
+        return std::unexpected(std::errc::invalid_argument);
+    }
+    return std::unexpected(error_status);
+}
+
+[[nodiscard]] inline std::string format_sys_error(std::error_code ec, std::string_view operation) {
+    return std::format("{} ({})", operation, ec.message());
+}
+
+[[nodiscard]] inline std::string format_sys_error(std::errc ec, std::string_view operation) {
+    return format_sys_error(std::make_error_code(ec), operation);
+}
+
+[[nodiscard]] inline std::string format_sys_error(std::integral auto error_status, std::string_view operation) {
+    return format_sys_error(posix::make_error(error_status), operation);
+}
+
+inline constexpr auto read_file = [](const std::filesystem::path& path) -> std::expected<std::string, std::error_code> {
+    return posix::file::read_all(path);
+};
+
+inline std::expected<std::size_t, posix::file_descriptor::write_failure> write_all(
+    posix::file_descriptor::native_handle_type fd, std::span<const std::byte> data) {
+    return posix::file_descriptor::write_exact_raw(fd, data);
+}
+
+inline std::expected<std::size_t, posix::file_descriptor::write_failure> write_all(
+    posix::file_descriptor::native_handle_type fd, std::string_view data) {
+    return write_all(fd, std::as_bytes(std::span { data.data(), data.size() }));
+}
+
+inline std::expected<std::size_t, posix::file_descriptor::write_failure> write_all(
+    const posix::file_descriptor& fd, auto&& data) {
+    return write_all(fd.native_handle(), std::forward<decltype(data)>(data));
+}
+
+inline constexpr auto write_file
+    = [](const std::filesystem::path& path, std::string_view content) -> std::expected<void, std::error_code> {
+    return posix::file::write_to(path, content);
+};
+
+/**
+ * @brief Read a file and apply a parser, returning a fallback on failure.
+ * @param path   Path to read.
+ * @param parser Callable that takes std::string_view and returns T.
+ * @param fallback Value returned if the file cannot be read.
+ */
+template <typename T, typename Parser>
+    requires std::invocable<Parser, std::string_view>
+    && std::convertible_to<std::invoke_result_t<Parser, std::string_view>, T>
+inline T parse_file_or(const std::filesystem::path& path, Parser&& parser, T fallback) {
+    auto content = read_file(path);
+    if (!content) { return fallback; }
+    return std::forward<Parser>(parser)(*content);
+}
+
+/**
+ * @brief Range adapter that splits by a delimiter and transforms each part into a string_view.
+ * @param delim The character delimiter.
+ * @warning The resulting string_views are non-owning.
+ * The source string must outlive the pipeline.
+ */
+inline auto split_to_sv(char delim) {
+    return std::views::split(delim) | std::views::transform([](auto&& range) { return std::string_view(range); });
+}
+
+/**
+ * @brief Range adapter that tokenizes by a single delimiter character, yielding non-empty string_view parts.
+ * @param delim The character delimiter.
+ * @warning The resulting string_views are non-owning.
+ * The source string must outlive the pipeline.
+ */
+inline auto tokenize_sv(char delim) {
+    return std::views::split(delim) | std::views::transform([](auto&& part) { return std::string_view(part); })
+        | std::views::filter([](std::string_view token) { return !token.empty(); });
+}
+
+/**
+ * @brief Range adapter that tokenizes by any leading/trailing whitespace (space, tab), yielding non-empty string_view
+ * parts.
+ * @note Resulting range is input_range only (not forward_range) due to
+ * join_view caching of prvalue inner ranges (C++23 P2328R1).
+ * Safe for single-pass use only.
+ * @warning The resulting string_views are non-owning.
+ * The source string must outlive the pipeline.
+ */
+inline auto tokenize_sv() {
+    return std::views::split(' ') | std::views::transform([](auto&& range) { return std::string_view(range); })
+        | std::views::filter([](std::string_view token) { return !token.empty(); })
+        | std::views::transform([](std::string_view token) {
+              /** @note secondary split by tab inline, avoid nested lazy view dangling */
+              return token | std::views::split('\t')
+                  | std::views::transform([](auto&& sub_range) { return std::string_view(sub_range); })
+                  | std::views::filter([](std::string_view sub_token) { return !sub_token.empty(); });
+          })
+        | std::views::join;
+}

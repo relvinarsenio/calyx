@@ -1,0 +1,43 @@
+name: Build Static Binary
+
+on:
+  push:
+    branches: [ master, experimental ]
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+  pull_request:
+    branches: [ master, experimental ]
+
+jobs:
+  build:
+    name: Build (${{ matrix.arch }})
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+          - arch: arm64
+            platform: linux/arm64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build Static Binary
+        run: |
+          chmod +x build-static.sh
+          ./build-static.sh --platform ${{ matrix.platform }}
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: calyx-static-${{ matrix.arch }}
+          path: dist/calyx
+          if-no-files-found: error
+          retention-days: 7
