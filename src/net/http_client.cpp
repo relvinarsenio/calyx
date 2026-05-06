@@ -24,6 +24,7 @@
 #include "file_descriptor.hpp"
 #include "http_context.hpp"
 #include "interrupts.hpp"
+#include "random_engine.hpp"
 #include "scope.hpp"
 #include "utils.hpp"
 
@@ -46,6 +47,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 namespace {
+
+using prng::Xoshiro256PlusPlus;
 
 std::expected<std::string, std::string> extract_origin(std::string_view url) noexcept {
     curl::unique_url_handle handle { curl_url() };
@@ -224,9 +227,10 @@ std::expected<posix::file, std::string> open_download_directory(const std::files
 
 std::expected<std::pair<std::filesystem::path, posix::file>, std::string> open_temp_download_file(
     const std::filesystem::path& filepath) {
-    const auto nonce = std::random_device {}();
+    thread_local Xoshiro256PlusPlus engine { std::random_device {}() };
     for (auto attempt : std::views::iota(0u, 256u)) {
-        auto temp_path = filepath;
+        const std::uint64_t nonce = engine();
+        auto temp_path            = filepath;
         temp_path += std::format(".tmp.{}.{}.{}", posix::getpid(), nonce, attempt);
 
         auto opened = posix::file::open(

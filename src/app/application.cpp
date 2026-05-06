@@ -286,10 +286,12 @@ std::string build_zswap_info(const SwapEntry& swap, const ZSwapStats& stats, std
 }
 
 std::string build_zswap_secondary_info(const ZSwapStats& stats) {
-    if (!stats.debugfs_available
-        || (stats.written_back == 0 && stats.reject_reclaim_fail == 0 && stats.pool_limit_hit == 0)) {
-        return {};
-    }
+    if (!stats.debugfs_available) { return {}; }
+
+    const bool no_activity
+        = (stats.written_back == 0) && (stats.reject_reclaim_fail == 0) && (stats.pool_limit_hit == 0);
+
+    if (no_activity) { return {}; }
 
     const auto page_size = get_page_size();
     const auto metrics   = std::to_array<std::tuple<std::string_view, std::uint64_t, std::string_view>>(
@@ -525,7 +527,7 @@ std::expected<void, std::string> Application::run(int argc, char* argv[]) {
     auto start_time = high_resolution_clock::now();
 
     std::print("\033c");
-    print_centered_header(std::format("Calyx - Modern Linux Performance Suite (v{})", config::kAppVersion));
+    print_centered_header(std::format("Calyx - Linux System Benchmarking Utility (v{})", config::kAppVersion));
     std::println(" {:<{}} : {} ({})", "Author", config::kAppAuthorLabelWidth, "Alfie Ardinata", config::kUrlMaintainer);
     std::println(" {:<{}} : {}", "GitHub", config::kAppAuthorLabelWidth, config::kUrlGithub);
     std::println(" {:<{}} : ./{}", "Usage", config::kAppAuthorLabelWidth, app_name);
