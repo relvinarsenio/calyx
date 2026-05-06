@@ -286,10 +286,12 @@ std::string build_zswap_info(const SwapEntry& swap, const ZSwapStats& stats, std
 }
 
 std::string build_zswap_secondary_info(const ZSwapStats& stats) {
-    if (!stats.debugfs_available
-        || (stats.written_back == 0 && stats.reject_reclaim_fail == 0 && stats.pool_limit_hit == 0)) {
-        return {};
-    }
+    if (!stats.debugfs_available) { return {}; }
+
+    const bool no_activity
+        = (stats.written_back == 0) && (stats.reject_reclaim_fail == 0) && (stats.pool_limit_hit == 0);
+
+    if (no_activity) { return {}; }
 
     const auto page_size = get_page_size();
     const auto metrics   = std::to_array<std::tuple<std::string_view, std::uint64_t, std::string_view>>(
