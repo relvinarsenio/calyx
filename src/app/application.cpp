@@ -525,7 +525,7 @@ std::expected<void, std::string> Application::run(int argc, char* argv[]) {
     auto start_time = high_resolution_clock::now();
 
     std::print("\033c");
-    print_centered_header(std::format("Calyx - Modern Linux Performance Suite (v{})", config::kAppVersion));
+    print_centered_header(std::format("Calyx - Linux System Benchmarking Utility (v{})", config::kAppVersion));
     std::println(" {:<{}} : {} ({})", "Author", config::kAppAuthorLabelWidth, "Alfie Ardinata", config::kUrlMaintainer);
     std::println(" {:<{}} : {}", "GitHub", config::kAppAuthorLabelWidth, config::kUrlGithub);
     std::println(" {:<{}} : ./{}", "Usage", config::kAppAuthorLabelWidth, app_name);

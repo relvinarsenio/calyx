@@ -72,7 +72,7 @@ chmod +x build-static.sh
 ## 📊 Example Output
 
 ```text
-------------------- Calyx - Modern Linux Performance Suite (v1.0.0) -------------------
+------------------- Calyx - Linux System Benchmarking Utility (v1.0.0) -------------------
  Author             : Alfie Ardinata (https://calyx.pages.dev/)
  GitHub             : https://github.com/relvinarsenio/calyx
  Usage              : ./calyx
