@@ -146,6 +146,8 @@ if [[ "$REBUILD_IMAGE" == "true" ]]; then
 elif ! docker image inspect "$IMAGE_NAME" &>/dev/null; then
     echo "📦 Toolchain image not found — building for the first time..."
     NEED_BUILD=true
+elif [[ $(docker inspect -f "{{ range .Mounts }}{{ if eq .Destination \"$C_SRC\" }}{{ .Source }}{{ break }}{{ end }}{{ end }}" "$CONTAINER_NAME" 2>/dev/null || true) != "$SCRIPT_DIR" ]]; then
+    NEED_BUILD=true
 fi
 
 if [[ "$NEED_BUILD" == "true" ]]; then
