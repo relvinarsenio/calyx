@@ -150,6 +150,8 @@ add_compile_options(
     -Wunused-parameter -Wold-style-cast
     -Wnon-virtual-dtor -Woverloaded-virtual -Wcast-align
     -Wfloat-equal -Wundef -Wimplicit-fallthrough -Wsuggest-override
+    -Wpessimizing-move -Wredundant-move -Wvla -Wmisleading-indentation
+    -Wparentheses -Waddress -Wswitch-enum -Wtautological-compare
     -ftrivial-auto-var-init=zero
 )
 

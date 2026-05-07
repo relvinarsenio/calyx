@@ -142,7 +142,7 @@ std::optional<std::uint64_t> parse_numeric(std::span<const std::byte> data) {
             [](auto checksum_pair, auto enum_pair) -> std::pair<std::uint64_t, std::int64_t> {
                 auto [index, byte_val] = enum_pair;
                 const auto byte_value  = (toSize(index) >= config::kTarChecksumOffset
-                                             && toSize(index) < config::kTarChecksumOffset + config::kTarChecksumLength)
+                                            && toSize(index) < config::kTarChecksumOffset + config::kTarChecksumLength)
                     ? std::byte { ' ' }
                     : byte_val;
                 return { checksum_pair.first + std::to_integer<std::uint64_t>(byte_value),
@@ -749,9 +749,12 @@ struct EntryActionContext {
                 .transform(update_state);
 
         case EntryAction::Skip:
-        default:
             return skip_tar_data(state, context.final_size).transform(update_state);
+
+        case EntryAction::Forbidden:
+            return std::unexpected(ExtractError::SymlinkDetected);
     }
+    std::unreachable();
 }
 
 [[nodiscard]] std::expected<void, ExtractError> process_tar_entry(

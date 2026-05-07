@@ -24,8 +24,7 @@ To ensure the protection of your intellectual property and the long-term securit
 2.  Create a new **branch** for your feature or fix.
 3.  Ensure your code passes automatic formatting using the **`.clang-format`** provided in the root directory.
 4.  **Commit** your changes with clear messages (and the `-s` flag).
-5.  Submit a **Pull Request** to the `experimental` branch (`master` is reserved for stable releases).
-6.  All Pull Requests are integrated via **Squash and merge** to maintain a clean commit history.
+5.  Submit a **Pull Request** to the `development` branch (`master` is reserved for stable releases).
 
 ### 🛡️ Coding Standards
 
