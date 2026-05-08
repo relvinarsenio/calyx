@@ -63,7 +63,7 @@ inline void cpu_pause() noexcept {
 [[nodiscard]] inline std::uint64_t rdtsc() noexcept {
 #if defined(__x86_64__)
     std::uint32_t lo {}, hi {};
-    __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi));
+    __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi)::"memory");
     return (toULong(hi) << 32) | toULong(lo);
 #elif defined(__aarch64__)
     std::uint64_t val {};
@@ -105,7 +105,7 @@ inline void cpu_pause() noexcept {
 [[nodiscard]] inline std::uint64_t rdtscp() noexcept {
 #if defined(__x86_64__)
     std::uint32_t lo {}, hi {};
-    __asm__ __volatile__("rdtscp" : "=a"(lo), "=d"(hi)::"rcx");
+    __asm__ __volatile__("rdtscp" : "=a"(lo), "=d"(hi)::"rcx", "memory");
     return (toULong(hi) << 32) | toULong(lo);
 #elif defined(__aarch64__)
     std::uint64_t val {};
@@ -144,7 +144,7 @@ inline void cpu_pause() noexcept {
  */
 [[nodiscard]] inline double calibrate(std::chrono::nanoseconds duration = std::chrono::milliseconds(10)) noexcept {
     const auto t0 = std::chrono::steady_clock::now();
-    const auto c0 = rdtsc();
+    const auto c0 = rdtsc_ordered();
 
     // Busy wait for better precision than sleep
     while (std::chrono::steady_clock::now() - t0 < duration) {
@@ -152,7 +152,7 @@ inline void cpu_pause() noexcept {
     }
 
     const auto t1 = std::chrono::steady_clock::now();
-    const auto c1 = rdtsc();
+    const auto c1 = rdtscp_ordered();
 
     const auto elapsed_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
     return toDouble(c1 - c0) / toDouble(elapsed_ns);
