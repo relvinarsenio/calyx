@@ -67,34 +67,26 @@ endfunction()
 # Helper: Find libc++ static libraries
 # =============================================================================
 function(find_libcxx_static OUT_PATH OUT_LIBS)
-    find_program(LLVM_CONFIG_EXE llvm-config)
+    # The official CMake way to find libraries using the compiler's implicit search paths
+    find_library(LIBCXX_A NAMES libc++.a PATHS ${CMAKE_CXX_IMPLICIT_LINK_DIRECTORIES} NO_DEFAULT_PATH)
+    find_library(LIBCXXABI_A NAMES libc++abi.a PATHS ${CMAKE_CXX_IMPLICIT_LINK_DIRECTORIES} NO_DEFAULT_PATH)
+    find_library(LIBUNWIND_A NAMES libunwind.a PATHS ${CMAKE_CXX_IMPLICIT_LINK_DIRECTORIES} NO_DEFAULT_PATH)
 
-    set(FOUND_PATH "")
-    if(LLVM_CONFIG_EXE)
-        execute_process(
-            COMMAND ${LLVM_CONFIG_EXE} --libdir
-            OUTPUT_VARIABLE LLVM_LIB_DIR
-            OUTPUT_STRIP_TRAILING_WHITESPACE
-        )
-        if(EXISTS "${LLVM_LIB_DIR}/libc++.a")
-            set(FOUND_PATH "${LLVM_LIB_DIR}")
-        endif()
-    endif()
-
-    if(NOT FOUND_PATH)
+    if(NOT LIBCXX_A)
         set(${OUT_PATH} "" PARENT_SCOPE)
         set(${OUT_LIBS} "" PARENT_SCOPE)
         return()
     endif()
 
-    set(STATIC_LIBS "${FOUND_PATH}/libc++.a")
+    get_filename_component(FOUND_PATH "${LIBCXX_A}" DIRECTORY)
+    set(STATIC_LIBS "${LIBCXX_A}")
     
-    if(EXISTS "${FOUND_PATH}/libc++abi.a")
-        list(APPEND STATIC_LIBS "${FOUND_PATH}/libc++abi.a")
+    if(LIBCXXABI_A)
+        list(APPEND STATIC_LIBS "${LIBCXXABI_A}")
     endif()
     
-    if(EXISTS "${FOUND_PATH}/libunwind.a")
-        list(APPEND STATIC_LIBS "${FOUND_PATH}/libunwind.a")
+    if(LIBUNWIND_A)
+        list(APPEND STATIC_LIBS "${LIBUNWIND_A}")
     endif()
 
     set(${OUT_PATH} "${FOUND_PATH}" PARENT_SCOPE)
@@ -129,7 +121,7 @@ if(NOT CLANG_VERSION VERSION_GREATER_EQUAL ${CALYX_MIN_CLANG_VERSION})
 endif()
 
 # -----------------------------------------------------------------------------
-# Option 1: Try Clang with libstdc++ (Primary - now preferred)
+# Option 1: Try Clang with libstdc++ (Primary)
 # -----------------------------------------------------------------------------
 message(STATUS "🔍 Testing Clang ${CLANG_VERSION} with libstdc++ (primary)...")
 
