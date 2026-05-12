@@ -2,12 +2,12 @@ name: Build Static Binary
 
 on:
   push:
-    branches: [ master, experimental ]
+    branches: [ master, development ]
     paths-ignore:
       - '**.md'
       - 'LICENSE'
   pull_request:
-    branches: [ master, experimental ]
+    branches: [ master, development ]
 
 jobs:
   build:
