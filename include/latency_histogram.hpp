@@ -7,6 +7,7 @@
  */
 #pragma once
 
+#include "mdspan.hpp"
 #include "utils.hpp"
 
 #include <algorithm>
@@ -16,7 +17,6 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
-#include <mdspan>
 #include <new>
 #include <ranges>
 #include <span>
@@ -67,8 +67,8 @@ class alignas(std::hardware_destructive_interference_size) LatencyHistogram {
      * @return A 2D view of the frequency distribution.
      */
     [[nodiscard]] constexpr auto view() const noexcept {
-        return std::mdspan<const std::uint64_t, std::extents<std::uint32_t, kGroups, kBinsPerGroup>,
-            std::layout_right> { buckets_.data() };
+        return stx::mdspan<const std::uint64_t, stx::extents<std::uint32_t, kGroups, kBinsPerGroup>,
+            stx::layout_right> { buckets_.data() };
     }
 
     /**
@@ -76,7 +76,7 @@ class alignas(std::hardware_destructive_interference_size) LatencyHistogram {
      * @return A 2D mdspan view (Groups x BinsPerGroup).
      */
     [[nodiscard]] constexpr auto view() noexcept {
-        return std::mdspan<std::uint64_t, std::extents<std::uint32_t, kGroups, kBinsPerGroup>, std::layout_right> {
+        return stx::mdspan<std::uint64_t, stx::extents<std::uint32_t, kGroups, kBinsPerGroup>, stx::layout_right> {
             buckets_.data()
         };
     }
