@@ -90,7 +90,7 @@ add_compile_options(
 
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
     add_compile_options(-fcf-protection=full)
-    add_link_options(-Wl,-z,shstk -Wl,-z,ibt)
+    add_link_options(-Wl,-z,shstk)
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
     add_compile_options(-mbranch-protection=standard)
 endif()
