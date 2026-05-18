@@ -171,7 +171,7 @@ struct ExtractState {
     std::flat_set<std::filesystem::path> validated_dirs; /**< Cache of verified sub-directories */
     std::uint64_t total_extracted_size { 0 }; /**< Cumulative size of extracted files */
     std::uint32_t file_count { 0 }; /**< Total number of files processed */
-    std::optional<std::string> pending_long_path; /**< Stored path from GNU LongLink header */
+    std::optional<std::string> pending_long_path; /**< Stored path from GNU LongLink header ('L') */
     std::optional<std::string> pending_pax_path; /**< Stored path from PAX extended header ('x') */
     std::optional<std::uint64_t> pending_pax_size; /**< Stored size from PAX extended header ('x') */
     std::optional<std::string> global_pax_path; /**< Persistent path from global PAX header ('g') */
@@ -398,7 +398,7 @@ std::optional<std::filesystem::path> sanitize_path(const std::filesystem::path& 
         return std::nullopt;
     }
 
-    const auto rel_path_res = [&]() -> std::optional<std::filesystem::path> {
+    const auto rel_path_res = [path_str]() -> std::optional<std::filesystem::path> {
         const auto normalized_path = std::filesystem::path(path_str).lexically_normal();
         if (normalized_path.empty() || normalized_path.is_absolute() || normalized_path.string().starts_with("..")) {
             return std::nullopt;
@@ -445,6 +445,7 @@ static constexpr auto kTypeClassification = [] {
     table[toSize('x')] = EntryAction::Skip;
     table[toSize('g')] = EntryAction::Skip;
     table[toSize('L')] = EntryAction::Skip;
+    table[toSize('K')] = EntryAction::Skip;
 
     return table;
 }();
@@ -497,6 +498,56 @@ static constexpr auto kTypeClassification = [] {
                          : std::expected<std::string, ExtractError>(std::move(payload));
 }
 
+struct PaxRecordView {
+    std::string_view key;
+    std::string_view value;
+    std::size_t total_len;
+};
+
+[[nodiscard]] std::expected<std::size_t, ExtractError> parse_record_length(std::string_view text) {
+    std::size_t len = 0;
+    auto [end, ec]  = std::from_chars(text.data(), text.data() + text.size(), len);
+    if (ec != std::errc {} || end != text.data() + text.size()) { return std::unexpected(ExtractError::InvalidHeader); }
+    return len;
+}
+
+[[nodiscard]] std::expected<PaxRecordView, ExtractError> parse_pax_record(std::string_view payload, std::size_t pos) {
+    const auto space_pos = payload.find(' ', pos);
+    if (space_pos == std::string_view::npos || space_pos == pos) {
+        return std::unexpected(ExtractError::InvalidHeader);
+    }
+
+    return parse_record_length(payload.substr(pos, space_pos - pos))
+        .and_then([payload, pos, space_pos](std::size_t record_len) -> std::expected<PaxRecordView, ExtractError> {
+            const auto prefix_len = (space_pos - pos) + 1;
+            const auto remaining  = payload.size() - pos;
+
+            if (record_len <= prefix_len || record_len > remaining) {
+                return std::unexpected(ExtractError::InvalidHeader);
+            }
+
+            auto content = payload.substr(space_pos + 1, record_len - prefix_len);
+            if (content.empty() || content.back() != '\n') { return std::unexpected(ExtractError::InvalidHeader); }
+            content.remove_suffix(1);
+
+            auto eq = content.find('=');
+            if (eq == std::string_view::npos) {
+                return PaxRecordView { .key = {}, .value = {}, .total_len = record_len };
+            }
+
+            return PaxRecordView {
+                .key = content.substr(0, eq), .value = content.substr(eq + 1), .total_len = record_len
+            };
+        });
+}
+
+[[nodiscard]] std::expected<std::uint64_t, ExtractError> parse_uint64(std::string_view text) {
+    std::uint64_t val = 0;
+    auto [end, ec]    = std::from_chars(text.data(), text.data() + text.size(), val);
+    if (ec != std::errc {} || end != text.data() + text.size()) { return std::unexpected(ExtractError::InvalidHeader); }
+    return val;
+}
+
 struct PaxMetadata {
     std::optional<std::string> path; /**< Extended path attribute */
     std::optional<std::uint64_t> size; /**< Extended size attribute */
@@ -504,88 +555,68 @@ struct PaxMetadata {
 
 [[nodiscard]] std::expected<PaxMetadata, ExtractError> parse_pax_metadata(std::string_view payload) {
     PaxMetadata metadata;
-    for (std::size_t current_pos = 0; current_pos < payload.size();) {
-        const auto space_pos = payload.find(' ', current_pos);
-        if (space_pos == std::string_view::npos || space_pos == current_pos) {
-            return std::unexpected(ExtractError::InvalidHeader);
+
+    for (std::size_t pos = 0; pos < payload.size();) {
+        auto record = parse_pax_record(payload, pos);
+        if (!record) { return std::unexpected(record.error()); }
+
+        pos += record->total_len;
+        if (record->key.empty()) { continue; }
+
+        if (record->key == "path") {
+            metadata.path = std::string(record->value);
+        } else if (record->key == "size") {
+            auto size = parse_uint64(record->value);
+            if (!size) { return std::unexpected(size.error()); }
+            metadata.size = *size;
         }
-
-        const auto record_len_res = [&]() -> std::expected<std::size_t, ExtractError> {
-            std::size_t len        = 0;
-            const auto length_text = payload.substr(current_pos, space_pos - current_pos);
-            if (auto [end_pointer, error_code]
-                = std::from_chars(length_text.data(), length_text.data() + length_text.size(), len);
-                error_code != std::errc {} || end_pointer != length_text.data() + length_text.size()) {
-                return std::unexpected(ExtractError::InvalidHeader);
-            }
-            return len;
-        }();
-
-        if (!record_len_res) { return std::unexpected(record_len_res.error()); }
-        const auto record_len = *record_len_res;
-
-        const auto prefix_len = (space_pos - current_pos) + 1;
-        const auto remaining  = payload.size() - current_pos;
-        if (record_len <= prefix_len || record_len > remaining) { return std::unexpected(ExtractError::InvalidHeader); }
-
-        const auto record_content = payload.substr(space_pos + 1, record_len - prefix_len);
-        if (record_content.empty() || record_content.back() != '\n') {
-            return std::unexpected(ExtractError::InvalidHeader);
-        }
-
-        const auto key_value_pair = record_content.substr(0, record_content.size() - 1);
-        if (const auto equals_pos = key_value_pair.find('='); equals_pos != std::string_view::npos) {
-            const auto key   = key_value_pair.substr(0, equals_pos);
-            const auto value = key_value_pair.substr(equals_pos + 1);
-            if (key == "path") {
-                metadata.path = std::string(value);
-            } else if (key == "size") {
-                std::uint64_t extracted_size = 0;
-                if (auto [end_pointer, error_status]
-                    = std::from_chars(value.data(), value.data() + value.size(), extracted_size);
-                    error_status != std::errc {} || end_pointer != value.data() + value.size()) {
-                    return std::unexpected(ExtractError::InvalidHeader);
-                }
-                metadata.size = extracted_size;
-            }
-        }
-        current_pos += record_len;
     }
     return metadata;
 }
 
 [[nodiscard]] std::expected<void, ExtractError> process_pax_entry(
     ExtractState& state, char type_flag, std::uint64_t file_size) {
-    return read_tar_payload(state, file_size).and_then(parse_pax_metadata).transform([&](PaxMetadata metadata) {
-        if (type_flag == 'x') {
-            state.pending_pax_path = std::move(metadata.path);
-            state.pending_pax_size = metadata.size;
-            return;
-        }
+    return read_tar_payload(state, file_size)
+        .and_then(parse_pax_metadata)
+        .transform([&state, type_flag](PaxMetadata metadata) {
+            if (type_flag == 'x') {
+                state.pending_pax_path = std::move(metadata.path);
+                state.pending_pax_size = metadata.size;
+                return;
+            }
 
-        if (metadata.path) { state.global_pax_path = std::move(metadata.path); }
-        if (metadata.size) { state.global_pax_size = metadata.size; }
-    });
+            if (metadata.path) { state.global_pax_path = std::move(metadata.path); }
+            if (metadata.size) { state.global_pax_size = metadata.size; }
+        });
+}
+
+[[nodiscard]] std::expected<void, ExtractError> skip_tar_data(ExtractState& state, std::uint64_t size) {
+    if (size == 0) { return {}; }
+
+    const auto padding = (config::kTarBlockSize - (size % config::kTarBlockSize)) % config::kTarBlockSize;
+    return (size > std::numeric_limits<std::uint64_t>::max() - padding) ? std::unexpected(ExtractError::FileTooLarge)
+                                                                        : discard_bytes(state.gz.get(), size + padding);
 }
 
 [[nodiscard]] std::expected<void, ExtractError> process_longlink_entry(ExtractState& state, std::uint64_t file_size) {
-    return read_tar_payload(state, file_size).and_then([&](std::string raw_path) -> std::expected<void, ExtractError> {
-        const auto path = [&]() -> std::string {
-            auto sanitized_path = std::move(raw_path);
-            if (auto nul = sanitized_path.find('\0'); nul != std::string::npos) { sanitized_path.resize(nul); }
-            const auto last_valid = sanitized_path.find_last_not_of("\n\r");
-            sanitized_path.resize(last_valid != std::string::npos ? last_valid + 1 : 0);
-            return sanitized_path;
-        }();
+    return read_tar_payload(state, file_size)
+        .and_then([&state](std::string raw_path) -> std::expected<void, ExtractError> {
+            const auto path = [&raw_path]() -> std::string {
+                auto sanitized_path = std::move(raw_path);
+                if (auto nul = sanitized_path.find('\0'); nul != std::string::npos) { sanitized_path.resize(nul); }
+                const auto last_valid = sanitized_path.find_last_not_of("\n\r");
+                sanitized_path.resize(last_valid != std::string::npos ? last_valid + 1 : 0);
+                return sanitized_path;
+            }();
 
-        if (path.empty()) { return std::unexpected(ExtractError::InvalidHeader); }
-        state.pending_long_path = std::move(path);
-        return {};
-    });
+            if (path.empty()) { return std::unexpected(ExtractError::InvalidHeader); }
+            state.pending_long_path = std::move(path);
+            return {};
+        });
 }
 
 [[nodiscard]] bool is_metadata_entry_type(char type_flag) {
-    return type_flag == 'x' || type_flag == 'g' || type_flag == 'L';
+    return type_flag == 'x' || type_flag == 'g' || type_flag == 'L' || type_flag == 'K';
 }
 
 [[nodiscard]] std::expected<void, ExtractError> process_metadata_entry(
@@ -596,6 +627,8 @@ struct PaxMetadata {
             return process_pax_entry(state, type_flag, file_size);
         case 'L':
             return process_longlink_entry(state, file_size);
+        case 'K':
+            return skip_tar_data(state, file_size);
         default:
             return std::unexpected(ExtractError::InvalidHeader);
     }
@@ -622,69 +655,79 @@ struct ParsedEntryHeader {
         .type_flag                        = std::to_integer<char>(header_block[config::kTarTypeOffset]) };
 }
 
+[[nodiscard]] static ExtractError classify_file_creation_error(const std::error_code& ec) noexcept {
+    if (ec == std::errc::file_exists || ec == std::errc::too_many_symbolic_link_levels
+        || ec == std::errc::operation_not_supported || ec == std::errc::is_a_directory) {
+        return ExtractError::SymlinkDetected;
+    }
+    return ExtractError::WriteFileFailed;
+}
+
+[[nodiscard]] static ExtractError classify_commit_error(const std::error_code& ec) noexcept {
+    if (ec == std::errc::operation_not_supported || ec == std::errc::is_a_directory
+        || ec == std::errc::too_many_symbolic_link_levels) {
+        return ExtractError::SymlinkDetected;
+    }
+    return ExtractError::WriteFileFailed;
+}
+
+[[nodiscard]] static ExtractError classify_write_error(const std::error_code& ec) noexcept {
+    if (ec == std::errc::no_space_on_device || ec.value() == EDQUOT) { return ExtractError::DiskFull; }
+    return ExtractError::WriteFileFailed;
+}
+
+[[nodiscard]] std::expected<void, ExtractError> copy_file_contents(
+    ExtractState& state, SecureFileHandle& file, std::uint64_t size) {
+    std::array<std::byte, config::kTgzDecompressionBufferSize> buf;
+    for (std::uint64_t remaining = size; remaining > 0;) {
+        const auto to_read = toSize(std::min<std::uint64_t>(remaining, buf.size()));
+        auto read          = gzread_checked(state.gz.get(), std::span { buf }.first(to_read));
+        if (!read || *read == 0) { return std::unexpected(ExtractError::ReadFailed); }
+
+        auto write = file.write(std::span { buf }.first(toSize(*read)));
+        if (!write) { return std::unexpected(classify_write_error(write.error())); }
+
+        remaining -= toSize(*read);
+    }
+    return {};
+}
+
+[[nodiscard]] std::expected<void, ExtractError> skip_tar_padding(gzFile gz, std::uint64_t file_size) {
+    const auto padding = (config::kTarBlockSize - (file_size % config::kTarBlockSize)) % config::kTarBlockSize;
+    if (padding == 0) { return {}; }
+    return discard_bytes(gz, padding);
+}
+
+[[nodiscard]] std::expected<void, ExtractError> apply_executable_mode(SecureFileHandle& file) {
+    auto st = file.get_fd().stat();
+    if (!st) { return std::unexpected(ExtractError::WriteFileFailed); }
+
+    if (auto ch = file.get_fd().chmod((st->st_mode & mode_t { 07777 }) | S_IXUSR); !ch) {
+        return std::unexpected(ExtractError::WriteFileFailed);
+    }
+    return {};
+}
+
 [[nodiscard]] std::expected<void, ExtractError> extract_regular_file(
     ExtractState& state, const std::filesystem::path& file_path, std::uint64_t file_size, std::uint32_t file_mode) {
     if (file_path.has_parent_path()) {
-        if (auto parent_result = create_secure_directory(file_path.parent_path(), state); !parent_result) {
-            return std::unexpected(parent_result.error());
+        if (auto res = create_secure_directory(file_path.parent_path(), state); !res) {
+            return std::unexpected(res.error());
         }
     }
 
-    return SecureFileHandle::create(file_path)
-        .transform_error([](auto err) {
-            return (err == std::errc::file_exists || err == std::errc::too_many_symbolic_link_levels
-                       || err == std::errc::operation_not_supported || err == std::errc::is_a_directory)
-                ? ExtractError::SymlinkDetected
-                : ExtractError::WriteFileFailed;
-        })
-        .and_then([&state, file_size, file_mode](SecureFileHandle secure_file) -> std::expected<void, ExtractError> {
-            std::array<std::byte, config::kTgzDecompressionBufferSize> decompression_buffer;
-            for (std::uint64_t remaining_bytes = file_size; remaining_bytes > 0;) {
-                const auto read_result = gzread_checked(state.gz.get(),
-                    std::span { decompression_buffer }.first(
-                        toSize(std::min<std::uint64_t>(remaining_bytes, decompression_buffer.size()))));
-                if (!read_result || *read_result == 0) { return std::unexpected(ExtractError::ReadFailed); }
+    auto file = SecureFileHandle::create(file_path);
+    if (!file) { return std::unexpected(classify_file_creation_error(file.error())); }
 
-                if (auto write_result
-                    = secure_file.write(std::span { decompression_buffer }.first(toSize(*read_result)));
-                    !write_result) {
-                    return std::unexpected((write_result.error() == std::errc::no_space_on_device
-                                               || write_result.error().value() == EDQUOT)
-                            ? ExtractError::DiskFull
-                            : ExtractError::WriteFileFailed);
-                }
-                remaining_bytes -= toSize(*read_result);
-            }
+    if (auto copy = copy_file_contents(state, *file, file_size); !copy) { return copy; }
+    if (auto skip = skip_tar_padding(state.gz.get(), file_size); !skip) { return skip; }
 
-            const auto padding = (config::kTarBlockSize - (file_size % config::kTarBlockSize)) % config::kTarBlockSize;
-            if (padding > 0) {
-                if (auto skip_result = discard_bytes(state.gz.get(), padding); !skip_result) { return skip_result; }
-            }
+    if (file_mode & 0100) {
+        if (auto perm = apply_executable_mode(*file); !perm) { return perm; }
+    }
 
-            if (file_mode & 0100) {
-                auto stat_result = secure_file.get_fd().stat();
-                if (!stat_result) { return std::unexpected(ExtractError::WriteFileFailed); }
-                if (auto chmod_result = secure_file.get_fd().chmod((stat_result->st_mode & mode_t { 07777 }) | S_IXUSR);
-                    !chmod_result) {
-                    return std::unexpected(ExtractError::WriteFileFailed);
-                }
-            }
-
-            return secure_file.commit().transform_error([](auto write_error) {
-                return (write_error == std::errc::operation_not_supported || write_error == std::errc::is_a_directory
-                           || write_error == std::errc::too_many_symbolic_link_levels)
-                    ? ExtractError::SymlinkDetected
-                    : ExtractError::WriteFileFailed;
-            });
-        });
-}
-
-[[nodiscard]] std::expected<void, ExtractError> skip_tar_data(ExtractState& state, std::uint64_t size) {
-    if (size == 0) { return {}; }
-
-    const auto padding = (config::kTarBlockSize - (size % config::kTarBlockSize)) % config::kTarBlockSize;
-    return (size > std::numeric_limits<std::uint64_t>::max() - padding) ? std::unexpected(ExtractError::FileTooLarge)
-                                                                        : discard_bytes(state.gz.get(), size + padding);
+    if (auto commit = file->commit(); !commit) { return std::unexpected(classify_commit_error(commit.error())); }
+    return {};
 }
 
 struct EntryResolution {
@@ -833,27 +876,28 @@ std::expected<void, ExtractError> TgzExtractor::extract(
     std::array<std::byte, config::kTarBlockSize> block_buffer {};
 
     while (true) {
-        auto extract_result = gzread_checked(state.gz.get(), block_buffer)
-                                  .and_then([&](std::int32_t read_size) -> std::expected<bool, ExtractError> {
-                                      if (read_size == 0) { return std::unexpected(ExtractError::InvalidHeader); }
-                                      if (toSize(read_size) < config::kTarBlockSize) {
-                                          return std::unexpected(ExtractError::InvalidHeader);
-                                      }
+        auto read_result = gzread_checked(state.gz.get(), block_buffer);
+        if (!read_result) { return std::unexpected(read_result.error()); }
 
-                                      const bool is_empty_block = std::ranges::all_of(block_buffer,
-                                          [](std::byte byte_value) { return byte_value == std::byte { 0 }; });
-                                      if (is_empty_block) {
-                                          if (saw_first_zero_block) { return true; }
-                                          saw_first_zero_block = true;
-                                          return false;
-                                      }
+        const auto read_size = *read_result;
+        if (read_size == 0 || toSize(read_size) < config::kTarBlockSize) {
+            return std::unexpected(ExtractError::InvalidHeader);
+        }
 
-                                      if (saw_first_zero_block) { return std::unexpected(ExtractError::InvalidHeader); }
-                                      return process_tar_entry(state, block_buffer).transform([] { return false; });
-                                  });
+        const bool is_empty_block
+            = std::ranges::all_of(block_buffer, [](std::byte byte_value) { return byte_value == std::byte { 0 }; });
 
-        if (!extract_result) { return std::unexpected(extract_result.error()); }
-        if (*extract_result) { break; }
+        if (is_empty_block) {
+            if (saw_first_zero_block) { break; }
+            saw_first_zero_block = true;
+            continue;
+        }
+
+        if (saw_first_zero_block) { return std::unexpected(ExtractError::InvalidHeader); }
+
+        if (auto process_result = process_tar_entry(state, block_buffer); !process_result) {
+            return std::unexpected(process_result.error());
+        }
     }
 
     if (!gzeof(gz.get())) {
