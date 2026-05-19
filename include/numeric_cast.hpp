@@ -39,7 +39,7 @@ concept standard_integer_type = std::is_integral_v<std::remove_cvref_t<T>>
 template <class T>
 concept numeric_type = std::is_arithmetic_v<std::remove_cvref_t<T>> && (!std::is_same_v<std::remove_cvref_t<T>, bool>);
 
-namespace detail {
+namespace saturating_impl {
 
 /**
  * @brief Normalizes a character or integral type to a standard integer for std::cmp_* safety.
@@ -113,7 +113,7 @@ template <class T, class U>
     }
 }
 
-} // namespace detail
+} // namespace saturating_impl
 
 /**
  * @brief Performs a saturating conversion between standard integer types.
@@ -142,33 +142,33 @@ template <standard_integer_type T, standard_integer_type U> [[nodiscard]] conste
  */
 
 template <cast::numeric_type T> [[nodiscard]] constexpr auto toByte(T value) noexcept {
-    return cast::detail::saturating_cast_impl<std::int8_t>(value);
+    return cast::saturating_impl::saturating_cast_impl<std::int8_t>(value);
 }
 template <cast::numeric_type T> [[nodiscard]] constexpr auto toShort(T value) noexcept {
-    return cast::detail::saturating_cast_impl<std::int16_t>(value);
+    return cast::saturating_impl::saturating_cast_impl<std::int16_t>(value);
 }
 template <cast::numeric_type T> [[nodiscard]] constexpr auto toInt(T value) noexcept {
-    return cast::detail::saturating_cast_impl<std::int32_t>(value);
+    return cast::saturating_impl::saturating_cast_impl<std::int32_t>(value);
 }
 template <cast::numeric_type T> [[nodiscard]] constexpr auto toLong(T value) noexcept {
-    return cast::detail::saturating_cast_impl<std::int64_t>(value);
+    return cast::saturating_impl::saturating_cast_impl<std::int64_t>(value);
 }
 
 template <cast::numeric_type T> [[nodiscard]] constexpr auto toUByte(T value) noexcept {
-    return cast::detail::saturating_cast_impl<std::uint8_t>(value);
+    return cast::saturating_impl::saturating_cast_impl<std::uint8_t>(value);
 }
 template <cast::numeric_type T> [[nodiscard]] constexpr auto toUShort(T value) noexcept {
-    return cast::detail::saturating_cast_impl<std::uint16_t>(value);
+    return cast::saturating_impl::saturating_cast_impl<std::uint16_t>(value);
 }
 template <cast::numeric_type T> [[nodiscard]] constexpr auto toUInt(T value) noexcept {
-    return cast::detail::saturating_cast_impl<std::uint32_t>(value);
+    return cast::saturating_impl::saturating_cast_impl<std::uint32_t>(value);
 }
 template <cast::numeric_type T> [[nodiscard]] constexpr auto toULong(T value) noexcept {
-    return cast::detail::saturating_cast_impl<std::uint64_t>(value);
+    return cast::saturating_impl::saturating_cast_impl<std::uint64_t>(value);
 }
 
 template <cast::numeric_type T> [[nodiscard]] constexpr auto toChar(T value) noexcept {
-    return cast::detail::saturating_cast_impl<char>(value);
+    return cast::saturating_impl::saturating_cast_impl<char>(value);
 }
 
 /** @brief Bit-preserving cast to unsigned char (non-saturating). */
@@ -188,5 +188,5 @@ template <cast::numeric_type T> [[nodiscard]] constexpr auto toLongDouble(T valu
 
 /** @brief Specialization targeting std::size_t. */
 template <cast::numeric_type T> [[nodiscard]] constexpr auto toSize(T value) noexcept {
-    return cast::detail::saturating_cast_impl<std::size_t>(value);
+    return cast::saturating_impl::saturating_cast_impl<std::size_t>(value);
 }
