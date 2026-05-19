@@ -62,10 +62,17 @@ struct PinAttempt {
 
 [[nodiscard]] inline auto try_pin(cpu_set_t* mask, std::size_t mask_size, std::int32_t target_cpu) noexcept
     -> PinAttempt {
+    /**
+     * @brief Prevent out-of-bounds writes on sparse CPU topologies where active CPU IDs exceed mask capacity.
+     */
+    if (target_cpu < 0 || toUInt(target_cpu) >= mask_size * 8) {
+        return PinAttempt { .ec = std::make_error_code(std::errc::invalid_argument), .target_cpu = target_cpu };
+    }
     CPU_ZERO_S(mask_size, mask);
     CPU_SET_S(toUInt(target_cpu), mask_size, mask);
-    const std::int32_t rc = ::pthread_setaffinity_np(::pthread_self(), mask_size, mask);
-    return PinAttempt { .ec = rc ? posix::make_error(rc) : std::error_code {}, .target_cpu = target_cpu };
+    const auto res = posix::expect_success<posix::error_style::pthreads>(
+        ::pthread_setaffinity_np(::pthread_self(), mask_size, mask));
+    return PinAttempt { .ec = res ? std::error_code {} : res.error(), .target_cpu = target_cpu };
 }
 
 [[nodiscard]] inline auto sync_workers(const WorkerSyncCallback& worker_sync, const cpu_set_t* mask,
@@ -76,31 +83,24 @@ struct PinAttempt {
 }
 
 [[nodiscard]] inline auto sync_isolation(cpu_set_t* mask, std::size_t mask_size, std::uint32_t num_configured_cpus,
-    const WorkerSyncCallback& worker_sync) -> std::expected<SyncResult, IsolationError> {
-    const std::int32_t initial_cpu = ::sched_getcpu();
-    if (initial_cpu < 0) {
-        return std::unexpected(IsolationError { .ec = posix::make_error(errno), .context = "sched_getcpu" });
-    }
-
-    auto attempt = try_pin(mask, mask_size, initial_cpu);
-    if (attempt.ec) {
-        return std::unexpected(IsolationError { .ec = attempt.ec, .context = "pthread_setaffinity_np" });
+    const std::int32_t initial_cpu, const WorkerSyncCallback& worker_sync)
+    -> std::expected<SyncResult, IsolationError> {
+    const auto first_attempt = try_pin(mask, mask_size, initial_cpu);
+    if (first_attempt.ec) {
+        return std::unexpected(IsolationError { .ec = first_attempt.ec, .context = "pthread_setaffinity_np" });
     }
 
     /**
      * @brief Mitigate scheduling race conditions (TOCTOU) where the OS
      * migrates the thread immediately after or during the initial pin.
      */
-    const std::int32_t final_cpu = ::sched_getcpu();
-    if (final_cpu < 0) {
-        return std::unexpected(IsolationError { .ec = posix::make_error(errno), .context = "sched_getcpu" });
-    }
-    if (final_cpu != initial_cpu) {
-        auto retry_attempt = try_pin(mask, mask_size, final_cpu);
-        if (retry_attempt.ec) {
-            return std::unexpected(IsolationError { .ec = retry_attempt.ec, .context = "pthread_setaffinity_np" });
-        }
-        attempt = retry_attempt;
+    const auto final_cpu = posix::expect_result<posix::error_style::posix>(::sched_getcpu());
+    if (!final_cpu) { return std::unexpected(IsolationError { .ec = final_cpu.error(), .context = "sched_getcpu" }); }
+
+    const auto attempt
+        = (*final_cpu != first_attempt.target_cpu) ? try_pin(mask, mask_size, *final_cpu) : first_attempt;
+    if (attempt.ec) {
+        return std::unexpected(IsolationError { .ec = attempt.ec, .context = "pthread_setaffinity_np" });
     }
 
     const auto worker_res = sync_workers(worker_sync, mask, mask_size, num_configured_cpus, attempt.target_cpu);
@@ -125,24 +125,29 @@ struct PinAttempt {
  */
 [[nodiscard]] inline auto execute_strict_isolation(WorkerSyncCallback worker_sync = nullptr) noexcept
     -> std::expected<SyncResult, IsolationError> {
-    const std::int64_t processors_available = ::sysconf(_SC_NPROCESSORS_CONF);
-    const std::int32_t sysconf_err          = errno;
-    if (processors_available < 1) {
-        return std::unexpected(IsolationError {
-            .ec      = posix::make_error(processors_available < 0 ? (sysconf_err ? sysconf_err : EINVAL) : ENOTSUP),
-            .context = "sysconf" });
+    const auto processors_available = posix::expect_result<posix::error_style::posix>(::sysconf(_SC_NPROCESSORS_CONF));
+    if (!processors_available) {
+        return std::unexpected(IsolationError { .ec = processors_available.error(), .context = "sysconf" });
+    }
+    if (*processors_available < 1) {
+        return std::unexpected(IsolationError { .ec = posix::make_error(ENOTSUP), .context = "sysconf" });
     }
 
-    const std::uint32_t num_configured_cpus = toUInt(processors_available);
-    const std::size_t mask_size             = CPU_ALLOC_SIZE(num_configured_cpus);
-    cpu_set_ptr mask { CPU_ALLOC(num_configured_cpus) };
-    const std::int32_t alloc_err = errno;
-    if (!mask) {
-        return std::unexpected(
-            IsolationError { .ec = posix::make_error(alloc_err ? alloc_err : ENOMEM), .context = "CPU_ALLOC" });
+    const auto current_cpu = posix::expect_result<posix::error_style::posix>(::sched_getcpu());
+    if (!current_cpu) {
+        return std::unexpected(IsolationError { .ec = current_cpu.error(), .context = "sched_getcpu" });
     }
 
-    return isolation_impl::sync_isolation(mask.get(), mask_size, num_configured_cpus, worker_sync);
+    const std::uint32_t num_configured_cpus = toUInt(*processors_available);
+    const std::uint32_t current_cpu_val     = toUInt(*current_cpu);
+    const std::uint32_t max_cpu_needed
+        = num_configured_cpus > current_cpu_val ? num_configured_cpus : current_cpu_val + 1;
+    const std::size_t mask_size = CPU_ALLOC_SIZE(max_cpu_needed);
+    const auto raw_mask         = posix::expect_result<posix::error_style::pointer>(CPU_ALLOC(max_cpu_needed));
+    if (!raw_mask) { return std::unexpected(IsolationError { .ec = raw_mask.error(), .context = "CPU_ALLOC" }); }
+    cpu_set_ptr mask { *raw_mask };
+
+    return isolation_impl::sync_isolation(mask.get(), mask_size, num_configured_cpus, *current_cpu, worker_sync);
 }
 
 } // namespace affinity

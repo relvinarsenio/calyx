@@ -259,8 +259,8 @@ inline constexpr auto truncate_error
  */
 inline constexpr auto get_page_size = []() noexcept -> std::uint64_t {
     static const std::uint64_t size = []() {
-        const std::int64_t res = ::sysconf(_SC_PAGESIZE);
-        return (res > 0) ? toULong(res) : 4096ULL;
+        const auto res = posix::expect_result<posix::error_style::posix>(::sysconf(_SC_PAGESIZE));
+        return (res && *res > 0) ? toULong(*res) : 4096ULL;
     }();
     return size;
 };

@@ -1054,7 +1054,8 @@ private:
 #endif
 
 #ifdef _SC_IOV_MAX
-    const std::int64_t runtime_limit = ::sysconf(_SC_IOV_MAX);
+    const auto runtime_limit_res     = posix::expect_result<posix::error_style::posix>(::sysconf(_SC_IOV_MAX));
+    const std::int64_t runtime_limit = (runtime_limit_res && *runtime_limit_res > 0) ? *runtime_limit_res : -1L;
     if (runtime_limit > 0) {
         limit     = std::min(limit, toSize(runtime_limit));
         has_limit = true;
