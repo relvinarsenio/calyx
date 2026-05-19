@@ -1277,16 +1277,16 @@ struct IoParams {
  */
 [[nodiscard]] std::expected<void, std::string> setup_engine_affinity(
     std::optional<UringEngine>& engine, std::uint16_t max_queue_depth) {
-    const auto affinity_res = affinity::CoreIsolator::enforce_strict_isolation(
+    const auto affinity_res = affinity::CoreIsolator::execute_strict_isolation(
         [&engine, max_queue_depth](const cpu_set_t* mask, std::size_t size, [[maybe_unused]] std::uint32_t num_cpus,
-            std::int32_t active_cpu) noexcept -> std::expected<void, std::string> {
+            std::int32_t target_cpu) noexcept -> std::expected<void, std::string> {
             /**
              * @note Engine creation inside the affinity callback is intentional:
-             * the stabilized active_cpu is required for IORING_SETUP_SQ_AFF,
+             * the stabilized target_cpu is required for IORING_SETUP_SQ_AFF,
              * which explicitly hard-pins the SQPOLL kernel thread to that core.
              * SQPOLL threads do NOT inherit process CPU affinity.
              */
-            engine.emplace(max_queue_depth, active_cpu);
+            engine.emplace(max_queue_depth, target_cpu);
             if (!engine->is_valid()) {
                 return std::unexpected(format_sys_error(engine->get_error(), "io_uring_queue_init failed"));
             }
@@ -1306,10 +1306,10 @@ struct IoParams {
     }
 
     if (!affinity_res->main_thread_ok) {
-        print_warning(std::format("Failed to lock thread affinity to core {}", affinity_res->active_cpu));
+        print_warning(std::format("Failed to lock thread affinity to core {}", affinity_res->target_cpu));
     }
     if (!affinity_res->kernel_worker_ok) {
-        print_warning(std::format("Failed to sync kernel worker affinity to core {}", affinity_res->active_cpu));
+        print_warning(std::format("Failed to sync kernel worker affinity to core {}", affinity_res->target_cpu));
     }
     return {};
 }
