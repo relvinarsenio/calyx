@@ -1277,9 +1277,9 @@ struct IoParams {
  */
 [[nodiscard]] std::expected<void, std::string> setup_engine_affinity(
     std::optional<UringEngine>& engine, std::uint16_t max_queue_depth) {
-    const auto affinity_res = affinity::CoreIsolator::execute_strict_isolation(
-        [&engine, max_queue_depth](const cpu_set_t* mask, std::size_t size, [[maybe_unused]] std::uint32_t num_cpus,
-            std::int32_t target_cpu) noexcept -> std::expected<void, std::string> {
+    const auto affinity_res = affinity::execute_strict_isolation(
+        [&engine, max_queue_depth](const cpu_set_t* mask, std::size_t size, std::uint32_t,
+            std::int32_t target_cpu) noexcept -> std::expected<void, affinity::IsolationError> {
             /**
              * @note Engine creation inside the affinity callback is intentional:
              * the stabilized target_cpu is required for IORING_SETUP_SQ_AFF,
@@ -1288,29 +1288,23 @@ struct IoParams {
              */
             engine.emplace(max_queue_depth, target_cpu);
             if (!engine->is_valid()) {
-                return std::unexpected(format_sys_error(engine->get_error(), "io_uring_queue_init failed"));
+                return std::unexpected(
+                    affinity::IsolationError { .ec = engine->get_error(), .context = "io_uring_queue_init failed" });
             }
 
             /** @brief Register async IO worker affinity (io-wq). */
             if (auto res = engine->register_worker_affinity(mask, size); !res) {
-                return std::unexpected(format_sys_error(res.error(), "io_uring_register_iowq_aff failed"));
+                return std::unexpected(
+                    affinity::IsolationError { .ec = res.error(), .context = "io_uring_register_iowq_aff failed" });
             }
             return {};
         });
 
-    if (!affinity_res) { return std::unexpected(affinity_res.error()); }
-
-    /** @brief Safety Guard: Ensure engine was actually initialized (Rule of Repair). */
-    if (!engine.has_value()) {
-        return std::unexpected("Critical Failure: Thread isolation failed to initialize I/O engine");
+    if (!affinity_res) {
+        const auto& err = affinity_res.error();
+        return std::unexpected(format_sys_error(err.ec, err.context));
     }
 
-    if (!affinity_res->main_thread_ok) {
-        print_warning(std::format("Failed to lock thread affinity to core {}", affinity_res->target_cpu));
-    }
-    if (!affinity_res->kernel_worker_ok) {
-        print_warning(std::format("Failed to sync kernel worker affinity to core {}", affinity_res->target_cpu));
-    }
     return {};
 }
 
