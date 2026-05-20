@@ -28,8 +28,12 @@ To ensure the protection of your intellectual property and the long-term securit
 
 ### 🛡️ Coding Standards
 
-*   **Modern C++**: Use **C++23** features where applicable.
-*   **No Comments**: We prefer self-explanatory code. Do not insert comments unless absolutely critical for extremely complex logic.
+*   **Strict C++23 Standard**: Embrace and strictly implement the modern C++23 standard.
+*   **Fixed-Width Integers**: Use fixed-width integer types (e.g., `std::int32_t`, `std::uint32_t`, `std::size_t`) instead of bare types (like `int` or `long`), except when satisfying external C/kernel API contracts.
+*   **Documentation & Rationale**: 
+    *   Write self-documenting code. Never write comments explaining *how* the code works.
+    *   Explain the *why* (rationale) and *what* (high-level intent) behind complex decisions or non-obvious logic.
+    *   Use Doxygen-style documentation (`/** ... */`) for all public APIs and core infrastructure.
 *   **Safety First**: Always prioritize memory safety and Resource Management (RAII).
 *   **Structure**: Follow the existing modular organization in `src/core`, `src/io`, `src/net`, etc.
 
