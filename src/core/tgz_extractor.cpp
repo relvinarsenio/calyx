@@ -10,6 +10,7 @@
 #include "config.hpp"
 #include "file_descriptor.hpp"
 #include "numeric_cast.hpp"
+#include "random_engine.hpp"
 #include "utils.hpp"
 
 #include <algorithm>
@@ -319,7 +320,7 @@ public:
     }
 
     [[nodiscard]] static std::expected<SecureFileHandle, std::error_code> create(const std::filesystem::path& path) {
-        constexpr std::uint32_t kMaxTempCreateAttempts = 64;
+        constexpr std::uint32_t kMaxTempCreateAttempts = 16;
 
         auto lstat_result = posix::lstat(path);
         if (lstat_result) {
@@ -333,9 +334,10 @@ public:
         const auto dir      = path.has_parent_path() ? path.parent_path() : std::filesystem::path { "." };
         const auto filename = path.filename().string();
         const auto pid      = posix::getpid();
+        prng::Xoshiro256PlusPlus rng(toULong(pid));
 
-        for (auto attempt : std::views::iota(0u, kMaxTempCreateAttempts)) {
-            auto temp_path = dir / std::format(".{}.tmp.{}.{}", filename, pid, attempt);
+        for (auto _ : std::views::iota(0u, kMaxTempCreateAttempts)) {
+            auto temp_path = dir / std::format(".{}.tmp.{}.{:016x}", filename, pid, rng());
             auto opened    = posix::file::open(temp_path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, S_IRUSR | S_IWUSR);
 
             if (opened) {

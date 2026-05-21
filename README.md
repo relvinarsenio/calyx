@@ -2,7 +2,7 @@
 
 [![License: MPL 2.0](https://img.shields.io/badge/License-MPL%202.0-brightgreen.svg)](https://opensource.org/licenses/MPL-2.0)
 [![C++23 Standard](https://img.shields.io/badge/C%2B%2B-23-blue.svg)](https://en.cppreference.com/w/cpp/compiler_support/23)
-[![Static Binary](https://img.shields.io/badge/Build-Static--PIE-orange.svg)](#)
+![Static Binary](https://img.shields.io/badge/Build-Static--PIE-orange.svg)
 
 **Calyx** is a lightweight, all-in-one system benchmarking and diagnostic tool for Linux. It is designed as a high-performance, fully native C++23 alternative to classic scripts like `bench.sh` or `yabs.sh`.
 
