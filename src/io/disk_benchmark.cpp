@@ -1286,17 +1286,45 @@ struct IoParams {
              * the stabilized target_cpu is required for IORING_SETUP_SQ_AFF,
              * which explicitly hard-pins the SQPOLL kernel thread to that core.
              * SQPOLL threads do NOT inherit process CPU affinity.
+             *
+             * @note Guard against std::terminate(): uncaught exceptions escaping a
+             * noexcept lambda invoke terminate() rather than propagating to the caller.
+             * All construction failures are mapped to IsolationError so the caller can
+             * handle them gracefully instead of crashing the benchmark.
+             * IsolationError::context must be a static literal (see affinity.hpp).
              */
-            engine.emplace(max_queue_depth, target_cpu);
+            try {
+                engine.emplace(max_queue_depth, target_cpu);
+            } catch (const std::bad_alloc&) {
+                return std::unexpected(affinity::IsolationError {
+                    .ec      = std::make_error_code(std::errc::not_enough_memory),
+                    .context = "UringEngine construction",
+                });
+            } catch (const std::exception&) {
+                return std::unexpected(affinity::IsolationError {
+                    .ec      = std::make_error_code(std::errc::io_error),
+                    .context = "UringEngine construction",
+                });
+            } catch (...) {
+                return std::unexpected(affinity::IsolationError {
+                    .ec      = std::make_error_code(std::errc::state_not_recoverable),
+                    .context = "UringEngine construction",
+                });
+            }
+
             if (!engine->is_valid()) {
-                return std::unexpected(
-                    affinity::IsolationError { .ec = engine->get_error(), .context = "io_uring_queue_init failed" });
+                return std::unexpected(affinity::IsolationError {
+                    .ec      = engine->get_error(),
+                    .context = "io_uring_queue_init failed",
+                });
             }
 
             /** @brief Register async IO worker affinity (io-wq). */
             if (auto res = engine->register_worker_affinity(mask, size); !res) {
-                return std::unexpected(
-                    affinity::IsolationError { .ec = res.error(), .context = "io_uring_register_iowq_aff failed" });
+                return std::unexpected(affinity::IsolationError {
+                    .ec      = res.error(),
+                    .context = "io_uring_register_iowq_aff failed",
+                });
             }
             return {};
         });
