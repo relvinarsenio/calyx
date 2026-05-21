@@ -334,7 +334,7 @@ public:
         const auto dir      = path.has_parent_path() ? path.parent_path() : std::filesystem::path { "." };
         const auto filename = path.filename().string();
         const auto pid      = posix::getpid();
-        prng::Xoshiro256PlusPlus rng(toULong(pid));
+        prng::Xoshiro256PlusPlus rng(toULong(std::random_device {}()));
 
         for (auto _ : std::views::iota(0u, kMaxTempCreateAttempts)) {
             auto temp_path = dir / std::format(".{}.tmp.{}.{:016x}", filename, pid, rng());
