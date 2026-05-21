@@ -80,7 +80,7 @@ If you prefer to compile Calyx yourself, you can build a fully static, portable 
 ### Requirements
 *   **Operating System**: Linux (any distribution)
 *   **Kernel**: Version `5.10` or newer (required for modern disk benchmarks)
-*   **Docker**: Version `20.10` or newer
+*   **Docker**: Version `20.10` or newer (Version `23.0` or newer recommended)
 
 ### Build Steps
 1.  Clone the repository:
