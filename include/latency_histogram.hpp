@@ -7,7 +7,7 @@
  */
 #pragma once
 
-#include "mdspan.hpp"
+#include <experimental/mdspan>
 #include "utils.hpp"
 
 #include <algorithm>
@@ -67,8 +67,8 @@ class alignas(std::hardware_destructive_interference_size) LatencyHistogram {
      * @return A 2D view of the frequency distribution.
      */
     [[nodiscard]] constexpr auto view() const noexcept {
-        return stx::mdspan<const std::uint64_t, stx::extents<std::uint32_t, kGroups, kBinsPerGroup>,
-            stx::layout_right> { buckets_.data() };
+        return std::experimental::mdspan<const std::uint64_t, std::experimental::extents<std::uint32_t, kGroups, kBinsPerGroup>,
+            std::experimental::layout_right> { buckets_.data() };
     }
 
     /**
@@ -76,7 +76,7 @@ class alignas(std::hardware_destructive_interference_size) LatencyHistogram {
      * @return A 2D mdspan view (Groups x BinsPerGroup).
      */
     [[nodiscard]] constexpr auto view() noexcept {
-        return stx::mdspan<std::uint64_t, stx::extents<std::uint32_t, kGroups, kBinsPerGroup>, stx::layout_right> {
+        return std::experimental::mdspan<std::uint64_t, std::experimental::extents<std::uint32_t, kGroups, kBinsPerGroup>, std::experimental::layout_right> {
             buckets_.data()
         };
     }
@@ -163,7 +163,8 @@ public:
         std::uint64_t missing = cycles - expected_interval_cycles;
         while (missing >= expected_interval_cycles) {
             struct BatchUpdate {
-                std::size_t index;
+                std::uint32_t group;
+                std::uint32_t sub_bin;
                 std::uint64_t count;
                 std::uint64_t last_val;
                 std::uint64_t cycles_sum;
@@ -189,10 +190,10 @@ public:
                 const std::uint64_t sum_term   = missing + last_val;
                 const std::uint64_t cycles_sum = (count / 2) * sum_term + (count % 2) * (sum_term / 2);
 
-                return { toSize(group * kBinsPerGroup + sub_bin), count, last_val, cycles_sum };
+                return { group, sub_bin, count, last_val, cycles_sum };
             }();
 
-            buckets_[batch.index] += batch.count;
+            view()[batch.group, batch.sub_bin] += batch.count;
             count_ += batch.count;
             total_cycles_ += batch.cycles_sum;
             min_cycles_ = std::min(min_cycles_, batch.last_val);
