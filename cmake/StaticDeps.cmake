@@ -235,22 +235,3 @@ FetchContent_Declare(
     URL_HASH SHA256=e7592590187dd56f16558a08b36e90bf349e885330f3a3961048df302cc9dfa1
 )
 FetchContent_MakeAvailable(glaze)
-
-# =============================================================================
-# 6. mdspan - Build from source (Kokkos implementation)
-# =============================================================================
-message(STATUS "📦 Fetching mdspan...")
-
-FetchContent_Declare(
-    mdspan
-    URL https://github.com/kokkos/mdspan/archive/refs/tags/mdspan-0.6.0.tar.gz
-    URL_HASH SHA256=79f94d7f692cbabfbaff6cd0d3434704435c853ee5087b182965fa929a48a592
-)
-FetchContent_MakeAvailable(mdspan)
-
-# Suppress compiler warnings from mdspan headers by treating them as system includes
-if(TARGET mdspan)
-    set_target_properties(mdspan PROPERTIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "$<TARGET_PROPERTY:mdspan,INTERFACE_INCLUDE_DIRECTORIES>")
-endif()
-
-

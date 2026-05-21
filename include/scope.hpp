@@ -28,11 +28,11 @@ public:
     template <typename EFP>
         requires(!std::is_same_v<std::remove_cvref_t<EFP>, scope_exit>) && std::is_constructible_v<F, EFP>
         && (std::is_lvalue_reference_v<EFP> || !std::is_nothrow_constructible_v<F, EFP>)
-    explicit scope_exit(EFP&& f) noexcept(std::is_nothrow_constructible_v<F, EFP>)
+    explicit scope_exit(EFP&& f) noexcept(std::is_nothrow_constructible_v<F, EFP&>)
 #ifdef __cpp_exceptions
         try
 #endif
-        : func_(std::forward<EFP>(f)) {
+        : func_(f) {
     }
 #ifdef __cpp_exceptions
     catch (...) {

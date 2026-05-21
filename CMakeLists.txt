@@ -254,7 +254,6 @@ target_link_libraries(calyx
     OpenSSL::Crypto
     ZLIB::ZLIB
     Threads::Threads
-    mdspan
 )
 
 if(USE_IO_URING)
