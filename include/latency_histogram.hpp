@@ -7,7 +7,7 @@
  */
 #pragma once
 
-#include "mdpspan.hpp"
+#include "mdspan.hpp"
 #include "utils.hpp"
 
 #include <algorithm>
