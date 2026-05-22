@@ -731,7 +731,7 @@ public:
         if constexpr (integral<_OtherIndex> && !same_as<_OtherIndex, bool>) {
             return __i;
         } else {
-            return static_cast<index_type>(std::forward<_OtherIndexType>(__i));
+            return __checked_index_cast(std::forward<_OtherIndexType>(__i));
         }
     }
 };
@@ -802,10 +802,12 @@ _LIBCPP_HIDE_FROM_ABI constexpr bool __is_index_in_extent(_IndexType __extent, _
 template <integral _IndexType, class _From>
     requires(!integral<_From>)
 _LIBCPP_HIDE_FROM_ABI constexpr bool __is_index_in_extent(_IndexType __extent, _From __value) {
+    if (!__mdspan_detail::__is_representable_as<_IndexType>(__value)) { return false; }
+    auto __converted = static_cast<_IndexType>(__value);
     if constexpr (is_signed_v<_IndexType>) {
-        if (static_cast<_IndexType>(__value) < 0) { return false; }
+        if (__converted < 0) { return false; }
     }
-    return static_cast<_IndexType>(__value) < __extent;
+    return __converted < __extent;
 }
 
 template <size_t... _Idxs, class _Extents, class... _From>
@@ -1660,7 +1662,7 @@ public:
                     && is_constructible_v<mapping_type, extents_type> && is_default_constructible_v<accessor_type>)
     _LIBCPP_HIDE_FROM_ABI explicit constexpr mdspan(data_handle_type __p, _OtherIndexTypes... __exts)
         : __ptr_(std::move(__p))
-        , __map_(extents_type(static_cast<index_type>(std::move(__exts))...))
+        , __map_(extents_type(std::move(__exts)...))
         , __acc_ {} {}
 
     template <class _OtherIndexType, size_t _Size>
