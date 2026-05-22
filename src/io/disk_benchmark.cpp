@@ -401,6 +401,17 @@ public:
         init_error_ = init_result.error_or(std::error_code {});
 
         if (init_) {
+            /**
+             * @brief Rollback guard to ensure kernel resource cleanup on constructor failure.
+             * @details If subsequent dynamic allocations (e.g. std::vector::resize) or other
+             *          operations throw during constructor execution, this guard ensures the
+             *          successfully initialized io_uring ring and its registered fd are not leaked.
+             */
+            scope_exit rollback { [this]() noexcept {
+                if (ring_fd_registered_) { io_uring_unregister_ring_fd(&ring_); }
+                io_uring_queue_exit(&ring_);
+            } };
+
             requests_.resize(queue_depth);
             retry_slots_.resize(queue_depth);
             free_slots_.resize(queue_depth);
@@ -412,6 +423,8 @@ public:
                 ring_fd_registered_ = true;
             }
             probe_io_paths();
+
+            rollback.release();
         }
     }
 
