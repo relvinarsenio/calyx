@@ -14,14 +14,14 @@
 #include <mutex>
 #include <string>
 
-namespace detail {
+namespace curl_global_state {
 struct GlobalLibraryState {
     ~GlobalLibraryState() { curl_global_cleanup(); }
 };
 
 inline std::weak_ptr<GlobalLibraryState> global_state_weak;
 inline std::mutex global_state_mtx;
-} // namespace detail
+} // namespace curl_global_state
 
 class HttpContext {
 public:
@@ -38,23 +38,23 @@ public:
     HttpContext& operator=(HttpContext&&)      = delete;
 
     [[nodiscard]] static std::expected<std::shared_ptr<void>, std::string> ensure_initialized() {
-        std::lock_guard lock(detail::global_state_mtx);
+        std::lock_guard lock(curl_global_state::global_state_mtx);
 
-        if (auto state = detail::global_state_weak.lock(); state) { return state; }
+        if (auto state = curl_global_state::global_state_weak.lock(); state) { return state; }
 
         if (auto res = curl_global_init(CURL_GLOBAL_ALL); res != CURLE_OK) {
             return std::unexpected(std::format("Libcurl Initialization ({})", curl_easy_strerror(res)));
         }
 
-        std::shared_ptr<detail::GlobalLibraryState> state;
+        std::shared_ptr<curl_global_state::GlobalLibraryState> state;
         try {
-            state = std::make_shared<detail::GlobalLibraryState>();
+            state = std::make_shared<curl_global_state::GlobalLibraryState>();
         } catch (...) {
             curl_global_cleanup();
             return std::unexpected("Failed to allocate global HTTP context state");
         }
 
-        detail::global_state_weak = state;
+        curl_global_state::global_state_weak = state;
         return state;
     }
 

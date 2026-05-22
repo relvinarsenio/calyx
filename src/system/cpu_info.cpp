@@ -140,7 +140,8 @@ std::string SystemInfo::get_model_name() noexcept {
 }
 
 std::string SystemInfo::get_cpu_cores_freq() noexcept {
-    const std::int64_t cores           = std::max(1L, ::sysconf(_SC_NPROCESSORS_ONLN));
+    const auto cores_res     = posix::expect_result<posix::error_style::posix>(::sysconf(_SC_NPROCESSORS_ONLN));
+    const std::int64_t cores = (cores_res && *cores_res > 0) ? *cores_res : 1L;
     const auto& [max_khz, is_true_max] = probe::kMaxFreqProbe;
 
     if (max_khz > 0) {

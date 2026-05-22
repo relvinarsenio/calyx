@@ -322,7 +322,7 @@ static std::expected<void, std::string> ensure_not_pending(const std::shared_ptr
     return {};
 }
 
-namespace detail {
+namespace curl_helpers {
 [[nodiscard]] inline std::expected<curl::shared_handle, std::string> curl_easy_init_safe() noexcept {
     return posix::expect_result<posix::error_style::pointer>(curl_easy_init())
         .transform([](CURL* p) { return curl::shared_handle(p, curl_easy_cleanup); })
@@ -339,7 +339,7 @@ namespace detail {
         .transform([](CURLM* p) { return curl::unique_multi_handle(p); })
         .transform_error([](auto) { return std::string("Failed to create curl multi handle"); });
 }
-} // namespace detail
+} // namespace curl_helpers
 
 HttpClient::HttpClient(std::shared_ptr<void> token, curl::shared_handle handle) noexcept
     : token_(std::move(token))
@@ -347,9 +347,9 @@ HttpClient::HttpClient(std::shared_ptr<void> token, curl::shared_handle handle) 
 
 std::expected<HttpClient, std::string> HttpClient::create() {
     return HttpContext::ensure_initialized().and_then([](auto token) {
-        return detail::curl_easy_init_safe().transform([token = std::move(token)](curl::shared_handle handle) mutable {
-            return HttpClient(std::move(token), std::move(handle));
-        });
+        return curl_helpers::curl_easy_init_safe().transform(
+            [token = std::move(token)](
+                curl::shared_handle handle) mutable { return HttpClient(std::move(token), std::move(handle)); });
     });
 }
 
@@ -511,7 +511,7 @@ MultiHttpClient::MultiHttpClient(std::shared_ptr<void> token, curl::unique_multi
 
 std::expected<MultiHttpClient, std::string> MultiHttpClient::create() {
     return HttpContext::ensure_initialized().and_then([](auto token) {
-        return detail::curl_multi_init_safe().transform(
+        return curl_helpers::curl_multi_init_safe().transform(
             [token = std::move(token)](curl::unique_multi_handle handle) mutable {
                 return MultiHttpClient(std::move(token), std::move(handle));
             });
@@ -577,12 +577,12 @@ std::expected<void, std::string> MultiHttpClient::perform() {
     } };
 
     auto run_step = [this, &running]() -> std::expected<void, std::string> {
-        return detail::expect_multi(curl_multi_perform(handle_.get(), &running))
+        return curl_helpers::expect_multi(curl_multi_perform(handle_.get(), &running))
             .transform_error(
                 [](CURLMcode code) { return std::format("curl_multi_perform failed: {}", curl_multi_strerror(code)); })
             .and_then([this, &running]() -> std::expected<void, std::string> {
                 if (running > 0) {
-                    return detail::expect_multi(curl_multi_poll(handle_.get(), nullptr, 0, 100, nullptr))
+                    return curl_helpers::expect_multi(curl_multi_poll(handle_.get(), nullptr, 0, 100, nullptr))
                         .transform_error([](CURLMcode code) {
                             return std::format("curl_multi_poll failed: {}", curl_multi_strerror(code));
                         });

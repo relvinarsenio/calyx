@@ -80,7 +80,7 @@ struct BlockSize {
     return stx;
 }
 
-namespace detail {
+namespace sys_helpers {
 
 [[nodiscard]] inline auto block_size_from_statx([[maybe_unused]] const std::filesystem::path& path) noexcept
     -> std::optional<BlockSize> {
@@ -148,7 +148,7 @@ namespace detail {
     return !infinite && std::chrono::steady_clock::now() >= deadline;
 }
 
-} // namespace detail
+} // namespace sys_helpers
 
 /**
  * @brief Detect O_DIRECT alignment requirements for a filesystem path.
@@ -165,9 +165,9 @@ namespace detail {
  * @return      @c BlockSize with mem_align and offset_align values.
  */
 [[nodiscard]] inline auto get_block_size(const std::filesystem::path& path) noexcept -> BlockSize {
-    if (auto sizes = detail::block_size_from_statx(path)) { return *sizes; }
-    if (auto sizes = detail::block_size_from_ioctl(path)) { return *sizes; }
-    if (auto sizes = detail::block_size_from_statfs(path)) { return *sizes; }
+    if (auto sizes = sys_helpers::block_size_from_statx(path)) { return *sizes; }
+    if (auto sizes = sys_helpers::block_size_from_ioctl(path)) { return *sizes; }
+    if (auto sizes = sys_helpers::block_size_from_statfs(path)) { return *sizes; }
     return BlockSize {};
 }
 
@@ -187,17 +187,17 @@ enum class FAdvise : std::int32_t {
 };
 
 /**
- * @brief Break the mutual dependency between @c File and its @c detail:: read helpers.
+ * @brief Break the mutual dependency between @c File and its @c sys_helpers:: read helpers.
  *
- * @c File::read_all calls into @c detail::, but the helpers take @c File& —
+ * @c File::read_all calls into @c sys_helpers::, but the helpers take @c File& —
  * so both sides need each other.  Forward-declaring @c File and the helper
  * signatures here lets the compiler resolve the cycle.
  */
 class file;
-namespace detail {
+namespace sys_helpers {
 [[nodiscard]] auto read_regular_file(file& f, const struct ::stat& st) -> std::expected<std::string, std::error_code>;
 [[nodiscard]] auto read_stream_file(file& f) -> std::expected<std::string, std::error_code>;
-} // namespace detail
+} // namespace sys_helpers
 
 /**
  * @brief Type-safe RAII wrapper for POSIX file operations.
@@ -269,8 +269,8 @@ public:
         auto file_stats = file->stat();
         if (!file_stats) { return std::unexpected(file_stats.error()); }
 
-        if (file_stats->st_size > 0) { return detail::read_regular_file(*file, *file_stats); }
-        return detail::read_stream_file(*file);
+        if (file_stats->st_size > 0) { return sys_helpers::read_regular_file(*file, *file_stats); }
+        return sys_helpers::read_stream_file(*file);
     }
 
     /**
@@ -372,7 +372,7 @@ public:
     explicit operator bool() const noexcept { return static_cast<bool>(fd_); }
 };
 
-namespace detail {
+namespace sys_helpers {
 
 /**
  * @brief Pre-allocated read for regular files with a known st_size.
@@ -430,7 +430,7 @@ namespace detail {
     return content;
 }
 
-} // namespace detail
+} // namespace sys_helpers
 
 /// ─── Free Functions: Filesystem & System Info ────────────────────────────────
 
@@ -581,7 +581,7 @@ struct resolved_executable {
     posix::file_descriptor fd;
 };
 
-namespace detail {
+namespace sys_helpers {
 
 [[nodiscard]] inline auto verify_execute_access(const posix::file_descriptor& opened_fd,
     const std::filesystem::path& path) noexcept -> std::expected<void, std::error_code> {
@@ -691,21 +691,21 @@ namespace detail {
     return std::unexpected(last_err);
 }
 
-} // namespace detail
+} // namespace sys_helpers
 
 [[nodiscard]] inline auto resolve_executable(std::string_view cmd)
     -> std::expected<resolved_executable, std::error_code> {
     if (cmd.contains('/')) {
-        auto opened = detail::open_executable_file(cmd);
+        auto opened = sys_helpers::open_executable_file(cmd);
         if (!opened) { return std::unexpected(opened.error()); }
         return resolved_executable { std::string(cmd), std::move(*opened) };
     }
 
     std::string fallback_path;
-    auto path_env = detail::read_path_environment(fallback_path);
+    auto path_env = sys_helpers::read_path_environment(fallback_path);
     if (!path_env) { return std::unexpected(path_env.error()); }
 
-    return detail::resolve_from_path(*path_env, cmd);
+    return sys_helpers::resolve_from_path(*path_env, cmd);
 }
 
 /// ─── Pipe: RAII wrapper for pipe2(2) ─────────────────────────────────────────
@@ -970,17 +970,17 @@ enum class signal : std::int32_t {
  */
 [[nodiscard]] inline auto poll(std::span<::pollfd> fds, std::chrono::milliseconds timeout) noexcept
     -> std::expected<std::int32_t, std::error_code> {
-    auto [infinite, deadline] = detail::compute_poll_deadline(timeout);
+    auto [infinite, deadline] = sys_helpers::compute_poll_deadline(timeout);
 
     while (true) {
-        const std::int32_t timeout_ms = detail::compute_poll_timeout_ms(infinite, deadline);
+        const std::int32_t timeout_ms = sys_helpers::compute_poll_timeout_ms(infinite, deadline);
 
         const std::int32_t res = ::poll(fds.data(), toUInt(fds.size()), timeout_ms);
 
         if (res >= 0) { return res; }
         if (errno != EINTR) { return std::unexpected(posix::last_error()); }
         /// EINTR received — check if deadline has passed before retrying
-        if (detail::poll_deadline_reached(infinite, deadline)) {
+        if (sys_helpers::poll_deadline_reached(infinite, deadline)) {
             return 0; ///< Treat as timeout
         }
     }

@@ -7,6 +7,7 @@
  */
 #pragma once
 
+#include "mdspan.hpp"
 #include "utils.hpp"
 
 #include <algorithm>
@@ -60,11 +61,24 @@ class alignas(std::hardware_destructive_interference_size) LatencyHistogram {
     std::uint64_t max_cycles_ = 0;
 
     /**
-     * @brief Provides read-only access to the internal bucket distribution.
-     * @return A constant span representing the frequency distribution.
+     * @brief Provides read-only multidimensional access to the internal bucket distribution.
+     * @details Formalizes the (Groups x Bins) mapping into a first-class view to eliminate
+     * manual arithmetic errors and improve maintainability without runtime overhead.
+     * @return A 2D view of the frequency distribution.
      */
-    [[nodiscard]] constexpr auto buckets() const noexcept {
-        return std::span<const std::uint64_t, kGroups * kBinsPerGroup> { buckets_ };
+    [[nodiscard]] constexpr auto view() const noexcept {
+        return stx::mdspan<const std::uint64_t, stx::extents<std::uint32_t, kGroups, kBinsPerGroup>,
+            stx::layout_right> { buckets_.data() };
+    }
+
+    /**
+     * @brief Provides mutable multidimensional access to the internal bucket distribution.
+     * @return A 2D mdspan view (Groups x BinsPerGroup).
+     */
+    [[nodiscard]] constexpr auto view() noexcept {
+        return stx::mdspan<std::uint64_t, stx::extents<std::uint32_t, kGroups, kBinsPerGroup>, stx::layout_right> {
+            buckets_.data()
+        };
     }
 
     /**
@@ -128,7 +142,7 @@ public:
         const std::uint32_t shift    = toUInt(raw_shift & ~(raw_shift >> 31));
         const std::uint32_t sub_bin  = toUInt(((val ^ (1ULL << msb)) >> shift) & (kBinsPerGroup - 1));
 
-        buckets_[toSize(group * kBinsPerGroup + sub_bin)]++;
+        view()[group, sub_bin]++;
     }
 
     /**
@@ -149,7 +163,8 @@ public:
         std::uint64_t missing = cycles - expected_interval_cycles;
         while (missing >= expected_interval_cycles) {
             struct BatchUpdate {
-                std::size_t index;
+                std::uint32_t group;
+                std::uint32_t sub_bin;
                 std::uint64_t count;
                 std::uint64_t last_val;
                 std::uint64_t cycles_sum;
@@ -175,10 +190,10 @@ public:
                 const std::uint64_t sum_term   = missing + last_val;
                 const std::uint64_t cycles_sum = (count / 2) * sum_term + (count % 2) * (sum_term / 2);
 
-                return { toSize(group * kBinsPerGroup + sub_bin), count, last_val, cycles_sum };
+                return { group, sub_bin, count, last_val, cycles_sum };
             }();
 
-            buckets_[batch.index] += batch.count;
+            view()[batch.group, batch.sub_bin] += batch.count;
             count_ += batch.count;
             total_cycles_ += batch.cycles_sum;
             min_cycles_ = std::min(min_cycles_, batch.last_val);
@@ -252,25 +267,25 @@ public:
         /// IILE for complex initialization of the percentile duration (Assignment Mandate).
         const auto duration = [this, target, cycles_to_ns]() -> std::chrono::nanoseconds {
             std::uint64_t cumulative = 0;
+            for (auto [group, sub_bin] :
+                std::views::cartesian_product(std::views::iota(0u, kGroups), std::views::iota(0u, kBinsPerGroup))) {
+                const std::uint64_t freq = view()[group, sub_bin];
+                if (freq == 0) { continue; }
 
-            for (auto [i, bucket] : std::views::enumerate(buckets())) {
                 const std::uint64_t prev_cumulative = cumulative;
-                cumulative += bucket;
-                if (toDouble(cumulative) >= target) {
-                    const auto idx              = toSize(i);
-                    const std::uint32_t group   = toUInt(idx / kBinsPerGroup);
-                    const std::uint32_t sub_bin = toUInt(idx % kBinsPerGroup);
-                    const std::uint64_t base    = 1ULL << group;
-                    const std::uint64_t step    = (group >= kLog2BinsPerGroup) ? (base >> kLog2BinsPerGroup) : 1;
-                    const std::uint64_t lower   = base + (toULong(sub_bin) * step);
+                cumulative += freq;
 
-                    if (step == 1) [[likely]] { return to_nanoseconds(toDouble(lower), cycles_to_ns); }
+                if (toDouble(cumulative) < target) { continue; }
 
-                    const double fraction
-                        = (bucket > 0) ? (target - toDouble(prev_cumulative)) / toDouble(bucket) : 0.0;
-                    const double interpolated = toDouble(lower) + (fraction * toDouble(step - 1));
-                    return to_nanoseconds(interpolated, cycles_to_ns);
-                }
+                const std::uint64_t base  = 1ULL << group;
+                const std::uint64_t step  = (group >= kLog2BinsPerGroup) ? (base >> kLog2BinsPerGroup) : 1;
+                const std::uint64_t lower = base + (toULong(sub_bin) * step);
+
+                if (step == 1) [[likely]] { return to_nanoseconds(toDouble(lower), cycles_to_ns); }
+
+                const double fraction     = (target - toDouble(prev_cumulative)) / toDouble(freq);
+                const double interpolated = toDouble(lower) + (fraction * toDouble(step - 1));
+                return to_nanoseconds(interpolated, cycles_to_ns);
             }
             return get_max_duration(cycles_to_ns);
         }();
@@ -296,33 +311,31 @@ public:
 
         /// Pass 1: compute mean from bucket midpoints (consistent grouped-data mean).
         double weighted_sum = 0.0;
-        for (auto [i, freq] : std::views::enumerate(buckets())) {
+        for (auto [group, sub_bin] :
+            std::views::cartesian_product(std::views::iota(0u, kGroups), std::views::iota(0u, kBinsPerGroup))) {
+            const std::uint64_t freq = view()[group, sub_bin];
             if (freq == 0) { continue; }
 
-            const auto idx              = toSize(i);
-            const std::uint32_t group   = toUInt(idx / kBinsPerGroup);
-            const std::uint32_t sub_bin = toUInt(idx % kBinsPerGroup);
-            const std::uint64_t base    = 1ULL << group;
-            const std::uint64_t step    = (group >= kLog2BinsPerGroup) ? (base >> kLog2BinsPerGroup) : 1;
-            const double midpoint       = toDouble(base + toULong(sub_bin) * step) + toDouble(step - 1) * 0.5;
+            const std::uint64_t base = 1ULL << group;
+            const std::uint64_t step = (group >= kLog2BinsPerGroup) ? (base >> kLog2BinsPerGroup) : 1;
+            const double midpoint    = toDouble(base + toULong(sub_bin) * step) + toDouble(step - 1) * 0.5;
             weighted_sum += toDouble(freq) * midpoint;
         }
 
         const double mean = weighted_sum / sample_count;
         if (mean <= 0.0) [[unlikely]] { return 0.0; }
 
-        /// Pass 2: compute variance using the same midpoints.
+        /// Pass 2: compute variance using midpoints to determine the stability of measured latencies.
         double sum_sq_diff = 0.0;
-        for (auto [i, freq] : std::views::enumerate(buckets())) {
+        for (auto [group, sub_bin] :
+            std::views::cartesian_product(std::views::iota(0u, kGroups), std::views::iota(0u, kBinsPerGroup))) {
+            const std::uint64_t freq = view()[group, sub_bin];
             if (freq == 0) { continue; }
 
-            const auto idx              = toSize(i);
-            const std::uint32_t group   = toUInt(idx / kBinsPerGroup);
-            const std::uint32_t sub_bin = toUInt(idx % kBinsPerGroup);
-            const std::uint64_t base    = 1ULL << group;
-            const std::uint64_t step    = (group >= kLog2BinsPerGroup) ? (base >> kLog2BinsPerGroup) : 1;
-            const double midpoint       = toDouble(base + toULong(sub_bin) * step) + toDouble(step - 1) * 0.5;
-            const double diff           = midpoint - mean;
+            const std::uint64_t base = 1ULL << group;
+            const std::uint64_t step = (group >= kLog2BinsPerGroup) ? (base >> kLog2BinsPerGroup) : 1;
+            const double midpoint    = toDouble(base + toULong(sub_bin) * step) + toDouble(step - 1) * 0.5;
+            const double diff        = midpoint - mean;
             sum_sq_diff += toDouble(freq) * diff * diff;
         }
 

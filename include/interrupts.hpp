@@ -10,19 +10,19 @@
 #include <atomic>
 #include <csignal>
 
-namespace detail {
+namespace interrupt_state {
 inline std::atomic<bool> g_internal_state { false };
 }
 
 extern "C" inline void signal_handler(int) noexcept {
-    detail::g_internal_state.store(true, std::memory_order_relaxed);
+    interrupt_state::g_internal_state.store(true, std::memory_order_relaxed);
 }
 
 inline constexpr auto check_interrupted
-    = []() noexcept -> bool { return detail::g_internal_state.load(std::memory_order_relaxed); };
+    = []() noexcept -> bool { return interrupt_state::g_internal_state.load(std::memory_order_relaxed); };
 
 inline constexpr auto trigger_interrupt
-    = []() noexcept { detail::g_internal_state.store(true, std::memory_order_relaxed); };
+    = []() noexcept { interrupt_state::g_internal_state.store(true, std::memory_order_relaxed); };
 
 class SignalGuard {
 public:
