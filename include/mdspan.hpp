@@ -28,37 +28,52 @@
 #define _LIBCPP_BEGIN_NAMESPACE_STD \
     namespace stx { \
     using namespace std;
+#define _STX_SHIM_BEGIN_NAMESPACE_STD
 #endif
 #ifndef _LIBCPP_END_NAMESPACE_STD
 #define _LIBCPP_END_NAMESPACE_STD }
+#define _STX_SHIM_END_NAMESPACE_STD
 #endif
 #ifndef _LIBCPP_HIDE_FROM_ABI
 #define _LIBCPP_HIDE_FROM_ABI inline
+#define _STX_SHIM_HIDE_FROM_ABI
 #endif
 #ifndef _LIBCPP_NO_UNIQUE_ADDRESS
 #define _LIBCPP_NO_UNIQUE_ADDRESS [[no_unique_address]]
+#define _STX_SHIM_NO_UNIQUE_ADDRESS
 #endif
 #ifndef _LIBCPP_NODEBUG
 #define _LIBCPP_NODEBUG
+#define _STX_SHIM_NODEBUG
 #endif
 #ifndef _LIBCPP_ASSERT_VALID_ELEMENT_ACCESS
 #define _LIBCPP_ASSERT_VALID_ELEMENT_ACCESS(cond, msg) assert((cond) && msg)
+#define _STX_SHIM_ASSERT_VALID_ELEMENT_ACCESS
 #endif
 #ifndef _LIBCPP_ASSERT_UNCATEGORIZED
 #define _LIBCPP_ASSERT_UNCATEGORIZED(cond, msg) assert((cond) && msg)
+#define _STX_SHIM_ASSERT_UNCATEGORIZED
 #endif
 #ifndef _LIBCPP_PUSH_MACROS
 #define _LIBCPP_PUSH_MACROS
+#define _STX_SHIM_PUSH_MACROS
 #endif
 #ifndef _LIBCPP_POP_MACROS
 #define _LIBCPP_POP_MACROS
+#define _STX_SHIM_POP_MACROS
 #endif
 #ifndef _LIBCPP_STD_VER
+#if __cplusplus >= 202600L
 #define _LIBCPP_STD_VER 26
+#else
+#define _LIBCPP_STD_VER 26 // Force C++26 features for standalone compatibility
+#endif
+#define _STX_SHIM_STD_VER
 #endif
 
 #ifndef __libcpp_unreachable
 #define __libcpp_unreachable() __builtin_unreachable()
+#define _STX_SHIM_UNREACHABLE
 #endif
 
 // Define C++26 draft concept and helper templates used by libc++ mdspan deduction guides,
@@ -1843,5 +1858,51 @@ mdspan(typename _AccessorType::data_handle_type, const _MappingType&, const _Acc
 _LIBCPP_END_NAMESPACE_STD
 
 _LIBCPP_POP_MACROS
+
+// --- Cleanup compatibility layer shims to prevent polluting the preprocessor scope ---
+#ifdef _STX_SHIM_BEGIN_NAMESPACE_STD
+#undef _LIBCPP_BEGIN_NAMESPACE_STD
+#undef _STX_SHIM_BEGIN_NAMESPACE_STD
+#endif
+#ifdef _STX_SHIM_END_NAMESPACE_STD
+#undef _LIBCPP_END_NAMESPACE_STD
+#undef _STX_SHIM_END_NAMESPACE_STD
+#endif
+#ifdef _STX_SHIM_HIDE_FROM_ABI
+#undef _LIBCPP_HIDE_FROM_ABI
+#undef _STX_SHIM_HIDE_FROM_ABI
+#endif
+#ifdef _STX_SHIM_NO_UNIQUE_ADDRESS
+#undef _LIBCPP_NO_UNIQUE_ADDRESS
+#undef _STX_SHIM_NO_UNIQUE_ADDRESS
+#endif
+#ifdef _STX_SHIM_NODEBUG
+#undef _LIBCPP_NODEBUG
+#undef _STX_SHIM_NODEBUG
+#endif
+#ifdef _STX_SHIM_ASSERT_VALID_ELEMENT_ACCESS
+#undef _LIBCPP_ASSERT_VALID_ELEMENT_ACCESS
+#undef _STX_SHIM_ASSERT_VALID_ELEMENT_ACCESS
+#endif
+#ifdef _STX_SHIM_ASSERT_UNCATEGORIZED
+#undef _LIBCPP_ASSERT_UNCATEGORIZED
+#undef _STX_SHIM_ASSERT_UNCATEGORIZED
+#endif
+#ifdef _STX_SHIM_PUSH_MACROS
+#undef _LIBCPP_PUSH_MACROS
+#undef _STX_SHIM_PUSH_MACROS
+#endif
+#ifdef _STX_SHIM_POP_MACROS
+#undef _LIBCPP_POP_MACROS
+#undef _STX_SHIM_POP_MACROS
+#endif
+#ifdef _STX_SHIM_STD_VER
+#undef _LIBCPP_STD_VER
+#undef _STX_SHIM_STD_VER
+#endif
+#ifdef _STX_SHIM_UNREACHABLE
+#undef __libcpp_unreachable
+#undef _STX_SHIM_UNREACHABLE
+#endif
 
 #endif // _LIBCPP___MDSPAN_MDSPAN_H
