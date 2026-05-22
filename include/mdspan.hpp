@@ -15,6 +15,7 @@
 
 #include <array>
 #include <cassert>
+#include <cmath>
 #include <concepts>
 #include <cstddef>
 #include <limits>
@@ -123,8 +124,8 @@ template <__integral_constant_like _Tp> inline constexpr size_t __maybe_static_e
 //
 //===---------------------------------------------------------------------===//
 
-#ifndef _LIBCPP___MDSPAN_LAYOUTS_H
-#define _LIBCPP___MDSPAN_LAYOUTS_H
+#ifndef _STX___MDSPAN_LAYOUTS_H
+#define _STX___MDSPAN_LAYOUTS_H
 
 #if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
 #pragma GCC system_header
@@ -157,7 +158,7 @@ _LIBCPP_END_NAMESPACE_STD
 
 _LIBCPP_POP_MACROS
 
-#endif // _LIBCPP___MDSPAN_LAYOUTS_H
+#endif // _STX___MDSPAN_LAYOUTS_H
 
 // =============================================================================
 // FILE: include/__mdspan/default_accessor.h
@@ -178,8 +179,8 @@ _LIBCPP_POP_MACROS
 //
 //===---------------------------------------------------------------------===//
 
-#ifndef _LIBCPP___MDSPAN_DEFAULT_ACCESSOR_H
-#define _LIBCPP___MDSPAN_DEFAULT_ACCESSOR_H
+#ifndef _STX___MDSPAN_DEFAULT_ACCESSOR_H
+#define _STX___MDSPAN_DEFAULT_ACCESSOR_H
 
 #if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
 #pragma GCC system_header
@@ -219,7 +220,7 @@ _LIBCPP_END_NAMESPACE_STD
 
 _LIBCPP_POP_MACROS
 
-#endif // _LIBCPP___MDSPAN_DEFAULT_ACCESSOR_H
+#endif // _STX___MDSPAN_DEFAULT_ACCESSOR_H
 
 // =============================================================================
 // FILE: include/__mdspan/aligned_accessor.h
@@ -240,8 +241,8 @@ _LIBCPP_POP_MACROS
 //
 //===---------------------------------------------------------------------===//
 
-#ifndef _LIBCPP___MDSPAN_ALIGNED_ACCESSOR_H
-#define _LIBCPP___MDSPAN_ALIGNED_ACCESSOR_H
+#ifndef _STX___MDSPAN_ALIGNED_ACCESSOR_H
+#define _STX___MDSPAN_ALIGNED_ACCESSOR_H
 
 #if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
 #pragma GCC system_header
@@ -300,7 +301,7 @@ _LIBCPP_END_NAMESPACE_STD
 
 _LIBCPP_POP_MACROS
 
-#endif // _LIBCPP___MDSPAN_ALIGNED_ACCESSOR_H
+#endif // _STX___MDSPAN_ALIGNED_ACCESSOR_H
 
 // =============================================================================
 // FILE: include/__mdspan/extents.h
@@ -321,8 +322,8 @@ _LIBCPP_POP_MACROS
 //
 //===---------------------------------------------------------------------===//
 
-#ifndef _LIBCPP___MDSPAN_EXTENTS_H
-#define _LIBCPP___MDSPAN_EXTENTS_H
+#ifndef _STX___MDSPAN_EXTENTS_H
+#define _STX___MDSPAN_EXTENTS_H
 
 #include <array>
 #include <concepts>
@@ -515,10 +516,22 @@ _LIBCPP_HIDE_FROM_ABI constexpr bool __is_representable_as(_From __value) {
 template <integral _To, class _From>
     requires(!integral<_From>)
 _LIBCPP_HIDE_FROM_ABI constexpr bool __is_representable_as(_From __value) {
-    if constexpr (is_signed_v<_To>) {
-        if (static_cast<_To>(__value) < 0) { return false; }
+    if constexpr (std::is_floating_point_v<_From>) {
+        if (!std::isfinite(__value)) { return false; }
+        if (__value < static_cast<_From>(0)) { return false; }
+        constexpr _From __limit = []() {
+            _From __result = 1.0;
+            for (int __i = 0; __i < std::numeric_limits<_To>::digits; ++__i) {
+                __result *= static_cast<_From>(2);
+            }
+            return __result;
+        }();
+        if (__value >= __limit) { return false; }
+        return true;
+    } else {
+        if (__value < static_cast<_From>(0)) { return false; }
+        return true;
     }
-    return true;
 }
 
 } // namespace __mdspan_detail
@@ -560,6 +573,12 @@ private:
                 "extents ctor: arguments must be representable as index_type and nonnegative");
             return static_cast<index_type>(__value);
         } else {
+            // Rationale: Assert validity of non-integral values prior to static_cast to prevent casting out-of-range
+            // values.
+            if constexpr (!integral<_OtherType>) {
+                _LIBCPP_ASSERT_VALID_ELEMENT_ACCESS(__mdspan_detail::__is_representable_as<index_type>(__value),
+                    "extents ctor: arguments must be representable as index_type and nonnegative");
+            }
             auto __converted_val = static_cast<index_type>(std::forward<_OtherIndexType>(__value));
             if constexpr (is_signed_v<index_type>) {
                 _LIBCPP_ASSERT_VALID_ELEMENT_ACCESS(__converted_val >= 0,
@@ -809,7 +828,7 @@ _LIBCPP_END_NAMESPACE_STD
 
 _LIBCPP_POP_MACROS
 
-#endif // _LIBCPP___MDSPAN_EXTENTS_H
+#endif // _STX___MDSPAN_EXTENTS_H
 
 // =============================================================================
 // FILE: include/__mdspan/layout_left.h
@@ -830,8 +849,8 @@ _LIBCPP_POP_MACROS
 //
 //===---------------------------------------------------------------------===//
 
-#ifndef _LIBCPP___MDSPAN_LAYOUT_LEFT_H
-#define _LIBCPP___MDSPAN_LAYOUT_LEFT_H
+#ifndef _STX___MDSPAN_LAYOUT_LEFT_H
+#define _STX___MDSPAN_LAYOUT_LEFT_H
 
 #include <array>
 
@@ -1007,7 +1026,7 @@ _LIBCPP_END_NAMESPACE_STD
 
 _LIBCPP_POP_MACROS
 
-#endif // _LIBCPP___MDSPAN_LAYOUT_LEFT_H
+#endif // _STX___MDSPAN_LAYOUT_LEFT_H
 
 // =============================================================================
 // FILE: include/__mdspan/layout_right.h
@@ -1028,8 +1047,8 @@ _LIBCPP_POP_MACROS
 //
 //===---------------------------------------------------------------------===//
 
-#ifndef _LIBCPP___MDSPAN_LAYOUT_RIGHT_H
-#define _LIBCPP___MDSPAN_LAYOUT_RIGHT_H
+#ifndef _STX___MDSPAN_LAYOUT_RIGHT_H
+#define _STX___MDSPAN_LAYOUT_RIGHT_H
 
 #if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
 #pragma GCC system_header
@@ -1200,7 +1219,7 @@ _LIBCPP_END_NAMESPACE_STD
 
 _LIBCPP_POP_MACROS
 
-#endif // _LIBCPP___MDSPAN_LAYOUT_RIGHT_H
+#endif // _STX___MDSPAN_LAYOUT_RIGHT_H
 
 // =============================================================================
 // FILE: include/__mdspan/layout_stride.h
@@ -1221,8 +1240,8 @@ _LIBCPP_POP_MACROS
 //
 //===---------------------------------------------------------------------===//
 
-#ifndef _LIBCPP___MDSPAN_LAYOUT_STRIDE_H
-#define _LIBCPP___MDSPAN_LAYOUT_STRIDE_H
+#ifndef _STX___MDSPAN_LAYOUT_STRIDE_H
+#define _STX___MDSPAN_LAYOUT_STRIDE_H
 
 #include <array>
 #include <limits>
@@ -1540,7 +1559,7 @@ _LIBCPP_END_NAMESPACE_STD
 
 _LIBCPP_POP_MACROS
 
-#endif // _LIBCPP___MDSPAN_LAYOUT_STRIDE_H
+#endif // _STX___MDSPAN_LAYOUT_STRIDE_H
 
 // =============================================================================
 // FILE: include/__mdspan/mdspan.h
@@ -1561,8 +1580,8 @@ _LIBCPP_POP_MACROS
 //
 //===---------------------------------------------------------------------===//
 
-#ifndef _LIBCPP___MDSPAN_MDSPAN_H
-#define _LIBCPP___MDSPAN_MDSPAN_H
+#ifndef _STX___MDSPAN_MDSPAN_H
+#define _STX___MDSPAN_MDSPAN_H
 
 #include <array>
 #include <span>
@@ -1772,7 +1791,10 @@ public:
         }(make_index_sequence<rank()>());
     }
 
-    _LIBCPP_HIDE_FROM_ABI friend constexpr void swap(mdspan& __x, mdspan& __y) noexcept {
+    _LIBCPP_HIDE_FROM_ABI friend constexpr void swap(mdspan& __x, mdspan& __y) noexcept(
+        std::is_nothrow_swappable_v<data_handle_type> && std::is_nothrow_swappable_v<mapping_type>
+        && std::is_nothrow_swappable_v<accessor_type>) {
+        using std::swap;
         swap(__x.__ptr_, __y.__ptr_);
         swap(__x.__map_, __y.__map_);
         swap(__x.__acc_, __y.__acc_);
@@ -1905,4 +1927,4 @@ _LIBCPP_POP_MACROS
 #undef _STX_SHIM_UNREACHABLE
 #endif
 
-#endif // _LIBCPP___MDSPAN_MDSPAN_H
+#endif // _STX___MDSPAN_MDSPAN_H
