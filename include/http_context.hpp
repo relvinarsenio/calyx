@@ -16,7 +16,13 @@
 
 namespace curl_global_state {
 struct GlobalLibraryState {
+    GlobalLibraryState() = default;
     ~GlobalLibraryState() { curl_global_cleanup(); }
+
+    GlobalLibraryState(const GlobalLibraryState&)            = delete;
+    GlobalLibraryState& operator=(const GlobalLibraryState&) = delete;
+    GlobalLibraryState(GlobalLibraryState&&)                 = delete;
+    GlobalLibraryState& operator=(GlobalLibraryState&&)      = delete;
 };
 
 inline std::weak_ptr<GlobalLibraryState> global_state_weak;

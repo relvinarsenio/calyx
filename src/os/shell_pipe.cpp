@@ -23,8 +23,6 @@
 #include <thread>
 #include <vector>
 
-namespace {} // namespace
-
 auto ShellPipe::create(std::vector<std::string> args) -> std::expected<ShellPipe, std::error_code> {
     if (args.empty()) [[unlikely]] { return std::unexpected(std::make_error_code(std::errc::invalid_argument)); }
 
