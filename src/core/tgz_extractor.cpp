@@ -144,8 +144,8 @@ std::optional<std::uint64_t> parse_numeric(std::span<const std::byte> data) {
                 auto [index, byte_val] = enum_pair;
                 const auto byte_value  = (toSize(index) >= config::kTarChecksumOffset
                                             && toSize(index) < config::kTarChecksumOffset + config::kTarChecksumLength)
-                    ? std::byte { ' ' }
-                    : byte_val;
+                     ? std::byte { ' ' }
+                     : byte_val;
                 return { checksum_pair.first + std::to_integer<std::uint64_t>(byte_value),
                     checksum_pair.second + toLong(std::to_integer<std::int8_t>(byte_value)) };
             });
@@ -256,10 +256,9 @@ inline constexpr std::size_t kTarMaxMetadataSize = 64z * 1024z;
      * then records validated ancestor paths only after successful completion.
      */
     return create_secure_directory(normalized).transform([&state, &normalized] {
-        for (auto current_path = normalized; !current_path.empty() && current_path != current_path.parent_path();
-            current_path       = current_path.parent_path()) {
-            state.validated_dirs.insert(current_path);
-        }
+        std::filesystem::path current_path;
+        std::ranges::for_each(normalized,
+            [&state, &current_path](const auto& part) { state.validated_dirs.insert(current_path /= part); });
     });
 }
 
@@ -658,16 +657,16 @@ struct ParsedEntryHeader {
 }
 
 [[nodiscard]] static ExtractError classify_file_creation_error(const std::error_code& ec) noexcept {
-    if (ec == std::errc::file_exists || ec == std::errc::too_many_symbolic_link_levels
-        || ec == std::errc::operation_not_supported || ec == std::errc::is_a_directory) {
+    if (posix::is_any_of(ec, std::errc::file_exists, std::errc::too_many_symbolic_link_levels,
+            std::errc::operation_not_supported, std::errc::is_a_directory)) {
         return ExtractError::SymlinkDetected;
     }
     return ExtractError::WriteFileFailed;
 }
 
 [[nodiscard]] static ExtractError classify_commit_error(const std::error_code& ec) noexcept {
-    if (ec == std::errc::operation_not_supported || ec == std::errc::is_a_directory
-        || ec == std::errc::too_many_symbolic_link_levels) {
+    if (posix::is_any_of(ec, std::errc::operation_not_supported, std::errc::is_a_directory,
+            std::errc::too_many_symbolic_link_levels)) {
         return ExtractError::SymlinkDetected;
     }
     return ExtractError::WriteFileFailed;

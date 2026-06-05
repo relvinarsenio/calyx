@@ -53,6 +53,19 @@ using native_ioctl_req_t = int;
     return std::min(requested, kSsizeMax);
 }
 
+template <typename T>
+concept non_const = !std::is_const_v<T>;
+
+template <typename T>
+concept trivially_copyable = std::is_trivially_copyable_v<T>;
+
+template <typename T>
+concept standard_layout = std::is_standard_layout_v<T>;
+
+template <typename F>
+concept cancel_callback = std::is_nothrow_invocable_v<std::remove_reference_t<F>>
+    && std::convertible_to<std::invoke_result_t<std::remove_reference_t<F>>, bool>;
+
 /**
  * @brief RAII wrapper for a POSIX file descriptor.
  *
@@ -335,18 +348,14 @@ public:
      *
      * Invokes @p should_cancel between retries.
      */
-    template <typename CancelCallable>
-        requires std::is_nothrow_invocable_v<std::remove_reference_t<CancelCallable>>
-        && std::convertible_to<std::invoke_result_t<std::remove_reference_t<CancelCallable>>, bool>
+    template <cancel_callback CancelCallable>
     [[nodiscard]] auto read(std::span<std::byte> buffer, CancelCallable&& should_cancel) const noexcept
         -> std::expected<std::size_t, std::error_code> {
         return read_raw(fd_, buffer, std::forward<CancelCallable>(should_cancel));
     }
 
     /** @overload Automatically wraps arbitrary spans into byte spans. */
-    template <typename T>
-        requires(!std::is_const_v<T>)
-    [[nodiscard]] auto read(std::span<T> buffer) const noexcept {
+    template <non_const T> [[nodiscard]] auto read(std::span<T> buffer) const noexcept {
         return read(std::as_writable_bytes(buffer));
     }
 
@@ -361,18 +370,14 @@ public:
     /**
      * @brief Read exact with cancellation.
      */
-    template <typename CancelCallable>
-        requires std::is_nothrow_invocable_v<std::remove_reference_t<CancelCallable>>
-        && std::convertible_to<std::invoke_result_t<std::remove_reference_t<CancelCallable>>, bool>
+    template <cancel_callback CancelCallable>
     [[nodiscard]] auto read_exact(std::span<std::byte> buffer, CancelCallable&& should_cancel) const noexcept
         -> std::expected<std::size_t, std::error_code> {
         return read_exact_raw(fd_, buffer, std::forward<CancelCallable>(should_cancel));
     }
 
     /** @overload Automatically wraps arbitrary spans into byte spans. */
-    template <typename T>
-        requires(!std::is_const_v<T>)
-    [[nodiscard]] auto read_exact(std::span<T> buffer) const noexcept {
+    template <non_const T> [[nodiscard]] auto read_exact(std::span<T> buffer) const noexcept {
         return read_exact(std::as_writable_bytes(buffer));
     }
 
@@ -394,7 +399,7 @@ public:
     }
 
     /** @overload Automatically wraps arbitrary data into byte spans. */
-    template <typename T> [[nodiscard]] auto write(std::span<const T> data) const noexcept {
+    template <trivially_copyable T> [[nodiscard]] auto write(std::span<const T> data) const noexcept {
         return write(std::as_bytes(data));
     }
 
@@ -413,8 +418,7 @@ public:
      * @param value     The value to set.
      * @return          Success or the captured @c errno.
      */
-    template <typename T>
-        requires std::is_standard_layout_v<T>
+    template <standard_layout T>
     [[nodiscard]] auto setsockopt(std::int32_t level, std::int32_t optname, const T& value) const noexcept
         -> std::expected<void, std::error_code> {
         return setsockopt_raw(fd_, level, optname, value);
@@ -448,8 +452,7 @@ public:
     /**
      * @brief Type-safe raw @c ioctl(2) on an unowned file descriptor.
      */
-    template <typename T>
-        requires std::is_trivially_copyable_v<T>
+    template <trivially_copyable T>
     [[nodiscard]] static auto ioctl_raw(native_handle_type fd, std::integral auto req, T& arg) noexcept
         -> std::expected<void, std::error_code> {
         if (fd < 0) { return std::unexpected(bad_fd_error()); }
@@ -484,8 +487,7 @@ public:
      * @param arg   In/out argument that the kernel reads or writes.
      * @return      Success or an error code on failure.
      */
-    template <typename T>
-        requires std::is_trivially_copyable_v<T>
+    template <trivially_copyable T>
     [[nodiscard]] auto ioctl(std::integral auto req, T& arg) const noexcept -> std::expected<void, std::error_code> {
         return ioctl_raw(fd_, req, arg);
     }
@@ -519,9 +521,7 @@ public:
      * @return              Number of bytes read, a system error, or @c errc::operation_canceled.
      * @note                Automatically handles EINTR retries.
      */
-    template <typename CancelCallable>
-        requires std::is_nothrow_invocable_v<std::remove_reference_t<CancelCallable>>
-        && std::convertible_to<std::invoke_result_t<std::remove_reference_t<CancelCallable>>, bool>
+    template <cancel_callback CancelCallable>
     [[nodiscard]] static auto read_raw(native_handle_type fd, std::span<std::byte> buffer,
         CancelCallable&& should_cancel) noexcept -> std::expected<std::size_t, std::error_code> {
         if (fd < 0) { return std::unexpected(bad_fd_error()); }
@@ -554,9 +554,7 @@ public:
      * @param should_cancel Callback invoked between retries to check for cancellation.
      * @return              Number of bytes successfully read, or a system error.
      */
-    template <typename CancelCallable>
-        requires std::is_nothrow_invocable_v<std::remove_reference_t<CancelCallable>>
-        && std::convertible_to<std::invoke_result_t<std::remove_reference_t<CancelCallable>>, bool>
+    template <cancel_callback CancelCallable>
     [[nodiscard]] static auto read_exact_raw(native_handle_type fd, std::span<std::byte> buffer,
         CancelCallable&& should_cancel) noexcept -> std::expected<std::size_t, std::error_code> {
         std::size_t total_bytes = 0;
@@ -640,8 +638,7 @@ public:
      * @param value     The value to set.
      * @return          Success or the captured @c errno.
      */
-    template <typename T>
-        requires std::is_standard_layout_v<T>
+    template <standard_layout T>
     [[nodiscard]] static auto setsockopt_raw(native_handle_type fd, std::int32_t level, std::int32_t optname,
         const T& value) noexcept -> std::expected<void, std::error_code> {
         if (fd < 0) { return std::unexpected(bad_fd_error()); }
@@ -702,7 +699,7 @@ public:
 
 /** @brief Enable std::format and std::print for posix::file_descriptor. */
 template <> struct std::formatter<posix::file_descriptor> : std::formatter<std::int32_t> {
-    auto format(const posix::file_descriptor& fd, auto& ctx) const {
+    auto format(const posix::file_descriptor& fd, std::format_context& ctx) const {
         return std::formatter<std::int32_t>::format(fd.native_handle(), ctx);
     }
 };

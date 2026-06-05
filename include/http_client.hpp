@@ -7,6 +7,7 @@
  */
 #pragma once
 
+#include <concepts>
 #include <curl/curl.h>
 #include <expected>
 #include <filesystem>
@@ -17,6 +18,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -38,6 +40,10 @@ using unique_char_ptr     = std::unique_ptr<char, decltype([](char* p) {
 using unique_slist_ptr    = std::unique_ptr<struct curl_slist, decltype([](auto* p) {
     if (p) { curl_slist_free_all(p); }
 })>;
+
+template <typename T>
+concept scalar = std::is_scalar_v<T>;
+
 } // namespace curl
 
 class CurlHeaders {
@@ -104,7 +110,7 @@ public:
 private:
     explicit HttpClient(std::shared_ptr<void> token, curl::shared_handle handle) noexcept;
 
-    template <typename T>
+    template <curl::scalar T>
     [[nodiscard]] std::expected<void, std::string> set_option(CURLoption option, T value) noexcept {
         const auto res = curl_easy_setopt(handle_.get(), option, value);
         return res == CURLE_OK ? std::expected<void, std::string> {}

@@ -106,7 +106,10 @@ struct FileWriteContext {
     std::error_code last_error {};
 };
 
-template <typename T> [[nodiscard]] T& user_data_as(void* userdata) noexcept {
+template <typename T>
+concept object_type = std::is_object_v<T>;
+
+template <object_type T> [[nodiscard]] T& user_data_as(void* userdata) noexcept {
     return *static_cast<T*>(userdata);
 }
 

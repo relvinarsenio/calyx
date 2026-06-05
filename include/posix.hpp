@@ -44,6 +44,16 @@
 namespace posix {
 
 /**
+ * @brief Checks if a value matches any of the specified options.
+ */
+template <typename T, typename... Args>
+    requires(requires(const T& t, const Args& a) { t == a; } && ...)
+[[nodiscard]] constexpr bool is_any_of(const T& value, const Args&... args) noexcept(
+    (noexcept(std::declval<const T&>() == std::declval<const Args&>()) && ...)) {
+    return ((value == args) || ...);
+}
+
+/**
  * @brief Represents the alignment requirements for O_DIRECT I/O.
  *
  * Semantics match the Linux `statx(2)` DIOALIGN fields:
@@ -243,7 +253,7 @@ public:
             raw_fd = ::open(path.c_str(), flags | O_DIRECT | O_CLOEXEC, mode);
         } while (raw_fd == -1 && errno == EINTR);
 
-        bool fell_back = raw_fd < 0 && (errno == EINVAL || errno == EOPNOTSUPP || errno == ENOTSUP);
+        bool fell_back = raw_fd < 0 && is_any_of(errno, EINVAL, EOPNOTSUPP, ENOTSUP);
 
         if (fell_back) {
             do {

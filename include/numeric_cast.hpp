@@ -8,6 +8,7 @@
 #pragma once
 
 #include <cmath>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -41,28 +42,41 @@ concept numeric_type = std::is_arithmetic_v<std::remove_cvref_t<T>> && (!std::is
 
 namespace saturating_impl {
 
+template <std::integral T> struct std_int_mapper {
+    using type = T;
+};
+
+template <> struct std_int_mapper<char> {
+    using type = std::conditional_t<std::is_signed_v<char>, signed char, unsigned char>;
+};
+
+template <> struct std_int_mapper<wchar_t> {
+    using type
+        = std::conditional_t<std::is_signed_v<wchar_t>, std::make_signed_t<wchar_t>, std::make_unsigned_t<wchar_t>>;
+};
+
+template <> struct std_int_mapper<char8_t> {
+    using type = std::uint_least8_t;
+};
+
+template <> struct std_int_mapper<char16_t> {
+    using type = std::uint_least16_t;
+};
+
+template <> struct std_int_mapper<char32_t> {
+    using type = std::uint_least32_t;
+};
+
+template <std::integral T> using std_int_mapper_t = typename std_int_mapper<T>::type;
+
 /**
  * @brief Normalizes a character or integral type to a standard integer for std::cmp_* safety.
  *
  * Traditional C++ character types are often excluded from strict integer comparison utilities.
  * This helper ensures they are treated as their underlying signed or unsigned byte equivalents.
  */
-template <class T> constexpr auto to_std_int(T value) noexcept {
-    if constexpr (std::is_same_v<T, char>) {
-        return static_cast<std::conditional_t<std::is_signed_v<char>, signed char, unsigned char>>(value);
-    } else if constexpr (std::is_same_v<T, wchar_t>) {
-        return static_cast<
-            std::conditional_t<std::is_signed_v<wchar_t>, std::make_signed_t<wchar_t>, std::make_unsigned_t<wchar_t>>>(
-            value);
-    } else if constexpr (std::is_same_v<T, char8_t>) {
-        return static_cast<std::uint_least8_t>(value);
-    } else if constexpr (std::is_same_v<T, char16_t>) {
-        return static_cast<std::uint_least16_t>(value);
-    } else if constexpr (std::is_same_v<T, char32_t>) {
-        return static_cast<std::uint_least32_t>(value);
-    } else {
-        return value;
-    }
+template <std::integral T> constexpr auto to_std_int(T value) noexcept {
+    return static_cast<std_int_mapper_t<T>>(value);
 }
 
 /**
@@ -121,11 +135,6 @@ template <class T, class U>
  * This implementation is a polyfill for the C++26 std::saturate_cast (P0543R3).
  * It converts the value x to type T while clamping the result to the representable
  * range of T. This prevents undefined behavior associated with integer overflow.
- *
- * @tparam T The target standard integer type.
- * @tparam U The source standard integer type.
- * @param x The value to convert.
- * @return The converted value, saturated to the range of T.
  */
 template <standard_integer_type T, standard_integer_type U> [[nodiscard]] constexpr T saturate_cast(U x) noexcept {
     if (std::cmp_greater(x, std::numeric_limits<T>::max())) { return std::numeric_limits<T>::max(); }
@@ -141,52 +150,46 @@ template <standard_integer_type T, standard_integer_type U> [[nodiscard]] conste
  * @{
  */
 
-template <cast::numeric_type T> [[nodiscard]] constexpr auto toByte(T value) noexcept {
-    return cast::saturating_impl::saturating_cast_impl<std::int8_t>(value);
-}
-template <cast::numeric_type T> [[nodiscard]] constexpr auto toShort(T value) noexcept {
-    return cast::saturating_impl::saturating_cast_impl<std::int16_t>(value);
-}
-template <cast::numeric_type T> [[nodiscard]] constexpr auto toInt(T value) noexcept {
-    return cast::saturating_impl::saturating_cast_impl<std::int32_t>(value);
-}
-template <cast::numeric_type T> [[nodiscard]] constexpr auto toLong(T value) noexcept {
-    return cast::saturating_impl::saturating_cast_impl<std::int64_t>(value);
-}
+namespace cast {
 
-template <cast::numeric_type T> [[nodiscard]] constexpr auto toUByte(T value) noexcept {
-    return cast::saturating_impl::saturating_cast_impl<std::uint8_t>(value);
-}
-template <cast::numeric_type T> [[nodiscard]] constexpr auto toUShort(T value) noexcept {
-    return cast::saturating_impl::saturating_cast_impl<std::uint16_t>(value);
-}
-template <cast::numeric_type T> [[nodiscard]] constexpr auto toUInt(T value) noexcept {
-    return cast::saturating_impl::saturating_cast_impl<std::uint32_t>(value);
-}
-template <cast::numeric_type T> [[nodiscard]] constexpr auto toULong(T value) noexcept {
-    return cast::saturating_impl::saturating_cast_impl<std::uint64_t>(value);
-}
+/** @brief Functor template for saturating numeric conversions. */
+template <numeric_type TargetType> struct saturating_converter {
+    template <numeric_type T> [[nodiscard]] constexpr auto operator()(T value) const noexcept {
+        return saturating_impl::saturating_cast_impl<TargetType>(value);
+    }
+};
 
-template <cast::numeric_type T> [[nodiscard]] constexpr auto toChar(T value) noexcept {
-    return cast::saturating_impl::saturating_cast_impl<char>(value);
-}
+/** @brief Functor template for standard static conversions. */
+template <numeric_type TargetType> struct static_converter {
+    template <numeric_type T> [[nodiscard]] constexpr auto operator()(T value) const noexcept {
+        return static_cast<TargetType>(value);
+    }
+};
 
-/** @brief Bit-preserving cast to unsigned char (non-saturating). */
-[[nodiscard]] constexpr auto toUChar(char value) noexcept -> unsigned char {
-    return static_cast<unsigned char>(value);
-}
+/** @brief Functor for bit-preserving cast to unsigned char (non-saturating). */
+struct to_uchar_converter {
+    [[nodiscard]] constexpr auto operator()(char value) const noexcept -> unsigned char {
+        return static_cast<unsigned char>(value);
+    }
+};
 
-template <cast::numeric_type T> [[nodiscard]] constexpr auto toFloat(T value) noexcept {
-    return static_cast<float>(value);
-}
-template <cast::numeric_type T> [[nodiscard]] constexpr auto toDouble(T value) noexcept {
-    return static_cast<double>(value);
-}
-template <cast::numeric_type T> [[nodiscard]] constexpr auto toLongDouble(T value) noexcept {
-    return static_cast<long double>(value);
-}
+} // namespace cast
 
-/** @brief Specialization targeting std::size_t. */
-template <cast::numeric_type T> [[nodiscard]] constexpr auto toSize(T value) noexcept {
-    return cast::saturating_impl::saturating_cast_impl<std::size_t>(value);
-}
+inline constexpr cast::saturating_converter<std::int8_t> toByte {};
+inline constexpr cast::saturating_converter<std::int16_t> toShort {};
+inline constexpr cast::saturating_converter<std::int32_t> toInt {};
+inline constexpr cast::saturating_converter<std::int64_t> toLong {};
+
+inline constexpr cast::saturating_converter<std::uint8_t> toUByte {};
+inline constexpr cast::saturating_converter<std::uint16_t> toUShort {};
+inline constexpr cast::saturating_converter<std::uint32_t> toUInt {};
+inline constexpr cast::saturating_converter<std::uint64_t> toULong {};
+
+inline constexpr cast::saturating_converter<char> toChar {};
+inline constexpr cast::to_uchar_converter toUChar {};
+
+inline constexpr cast::static_converter<float> toFloat {};
+inline constexpr cast::static_converter<double> toDouble {};
+inline constexpr cast::static_converter<long double> toLongDouble {};
+
+inline constexpr cast::saturating_converter<std::size_t> toSize {};
