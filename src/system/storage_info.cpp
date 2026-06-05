@@ -7,6 +7,7 @@
  */
 #include "posix.hpp"
 #include "system_info.hpp"
+#include "system_probe.hpp"
 #include "utils.hpp"
 
 #include <algorithm>
