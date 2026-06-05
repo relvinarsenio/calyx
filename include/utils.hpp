@@ -21,6 +21,7 @@
 #include <cctype>
 #include <charconv>
 #include <chrono>
+#include <concepts>
 #include <cstdint>
 #include <cstdio>
 #include <expected>
@@ -267,32 +268,39 @@ inline constexpr auto get_page_size = []() noexcept -> std::uint64_t {
 
 /**
  * @brief Formats a byte count into a human-readable string (e.g., "1.2 MB").
+ * @details Evaluates the scale index and dynamic precision in a single allocation pass
+ *          without string mutations or float subtraction instability.
  */
 inline constexpr auto format_bytes = [](std::uint64_t bytes) -> std::string {
-    if (bytes == 0) { return "0 B"; }
-    static constexpr std::array kUnits = { "B", "KB", "MB", "GB", "TB" };
-    const std::size_t unit_index = std::min<std::size_t>(toSize(std::bit_width(bytes) - 1) / 10, kUnits.size() - 1);
-    const double scaled_value    = toDouble(bytes) / toDouble(1ULL << (unit_index * 10));
-    std::string s                = std::format("{:.1f}", scaled_value);
-    if (s.ends_with(".0")) { s.erase(s.size() - 2); }
-    return std::format("{} {}", s, kUnits[unit_index]);
+    static constexpr std::array kSuffixes = { "B", "KB", "MB", "GB", "TB" };
+
+    const std::size_t bits           = toSize(std::bit_width(bytes));
+    const std::size_t shift          = bits - toSize(bits ? 1 : 0);
+    const std::size_t suffix_index   = std::min<std::size_t>(shift / 10, kSuffixes.size() - 1);
+    const double scaled_value        = toDouble(bytes) / toDouble(1ULL << (suffix_index * 10));
+    const std::size_t decimal_places = std::min<std::size_t>(toSize(std::llround(scaled_value * 10.0) % 10), 1uz);
+    return std::format("{:.{}f} {}", scaled_value, decimal_places, kSuffixes[suffix_index]);
 };
 
 /**
  * @brief Formats a generic count with SI suffixes (e.g., "5.8 M").
+ * @details Avoids floating-point power approximations (std::pow) by using a compile-time
+ *          powers table and binary search to ensure precise boundary transitions.
  */
 inline constexpr auto format_count = [](std::uint64_t count) -> std::string {
-    if (count < 1000) { return std::to_string(count); }
-    static constexpr std::array kUnits = { "", "K", "M", "G", "T" };
-    double scaled                      = toDouble(count);
-    std::size_t unit                   = 0;
-    while (scaled >= 1000.0 && unit < kUnits.size() - 1) {
-        scaled /= 1000.0;
-        unit++;
-    }
-    std::string s = std::format("{:.1f}", scaled);
-    if (s.ends_with(".0")) { s.erase(s.size() - 2); }
-    return std::format("{}{}", s, kUnits[unit]);
+    static constexpr std::array kSuffixes   = { "", "K", "M", "G", "T" };
+    static constexpr auto kPowersOfThousand = []() {
+        std::array<std::uint64_t, kSuffixes.size()> powers {};
+        std::ranges::generate(powers, [current = 1ULL]() mutable { return std::exchange(current, current * 1'000); });
+        return powers;
+    }();
+
+    const auto upper_bound_it = std::upper_bound(kPowersOfThousand.begin(), kPowersOfThousand.end(), count);
+    const std::size_t suffix_index
+        = toSize(std::max<std::ptrdiff_t>(std::distance(kPowersOfThousand.begin(), upper_bound_it) - 1, 0));
+    const double scaled_value        = toDouble(count) / toDouble(kPowersOfThousand[suffix_index]);
+    const std::size_t decimal_places = std::min<std::size_t>(toSize(std::llround(scaled_value * 10.0) % 10), 1uz);
+    return std::format("{:.{}f}{}", scaled_value, decimal_places, kSuffixes[suffix_index]);
 };
 
 inline constexpr auto check_disk_space
@@ -346,7 +354,8 @@ inline constexpr auto capitalize = [](std::string_view text) noexcept -> std::st
     return result_string;
 };
 
-template <typename T> [[nodiscard]] std::expected<T, std::errc> parse_number(std::string_view input_view) noexcept {
+template <cast::numeric_type T>
+[[nodiscard]] std::expected<T, std::errc> parse_number(std::string_view input_view) noexcept {
     T value {};
     auto [end_pointer, error_status] = std::from_chars(input_view.data(), input_view.data() + input_view.size(), value);
     if (error_status == std::errc()) {
@@ -382,9 +391,13 @@ inline std::expected<std::size_t, posix::file_descriptor::write_failure> write_a
     return write_all(fd, std::as_bytes(std::span { data.data(), data.size() }));
 }
 
+template <typename T>
+concept writeable_data = std::convertible_to<T, std::span<const std::byte>> || std::convertible_to<T, std::string_view>;
+
+template <writeable_data T>
 inline std::expected<std::size_t, posix::file_descriptor::write_failure> write_all(
-    const posix::file_descriptor& fd, auto&& data) {
-    return write_all(fd.native_handle(), std::forward<decltype(data)>(data));
+    const posix::file_descriptor& fd, T&& data) {
+    return write_all(fd.native_handle(), std::forward<T>(data));
 }
 
 inline constexpr auto write_file
@@ -398,9 +411,8 @@ inline constexpr auto write_file
  * @param parser Callable that takes std::string_view and returns T.
  * @param fallback Value returned if the file cannot be read.
  */
-template <typename T, typename Parser>
-    requires std::invocable<Parser, std::string_view>
-    && std::convertible_to<std::invoke_result_t<Parser, std::string_view>, T>
+template <typename T, std::invocable<std::string_view> Parser>
+    requires std::convertible_to<std::invoke_result_t<Parser, std::string_view>, T>
 inline T parse_file_or(const std::filesystem::path& path, Parser&& parser, T fallback) {
     auto content = read_file(path);
     if (!content) { return fallback; }
