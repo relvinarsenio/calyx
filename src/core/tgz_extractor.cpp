@@ -256,8 +256,8 @@ inline constexpr std::size_t kTarMaxMetadataSize = 64z * 1024z;
      * then records validated ancestor paths only after successful completion.
      */
     return create_secure_directory(normalized).transform([&state, &normalized] {
-        std::filesystem::path current_path;
-        std::ranges::for_each(normalized,
+        std::filesystem::path current_path = normalized.root_path();
+        std::ranges::for_each(normalized.relative_path(),
             [&state, &current_path](const auto& part) { state.validated_dirs.insert(current_path /= part); });
     });
 }
