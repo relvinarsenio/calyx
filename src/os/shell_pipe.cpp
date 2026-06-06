@@ -14,8 +14,6 @@
 #include "utils.hpp"
 
 #include <algorithm>
-#include <array>
-#include <cerrno>
 #include <chrono>
 #include <expected>
 #include <format>

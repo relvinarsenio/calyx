@@ -30,11 +30,9 @@
 
 #include <algorithm>
 #include <array>
-#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <curl/curl.h>
-#include <fcntl.h>
 #include <filesystem>
 #include <format>
 #include <functional>
@@ -44,8 +42,6 @@
 #include <random>
 #include <ranges>
 #include <span>
-#include <sys/socket.h>
-#include <unistd.h>
 namespace {
 
 using prng::Xoshiro256PlusPlus;

@@ -21,13 +21,11 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
-#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <expected>
-#include <fcntl.h>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -38,9 +36,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <sys/utsname.h>
 #include <system_error>
-#include <unistd.h>
 #include <vector>
 
 extern unsigned char cacert_pem[];
@@ -422,12 +418,9 @@ SpeedTest::SpeedTest(HttpClient& http, const std::filesystem::path& base_dir)
 }
 
 std::expected<SpeedTest, std::string> SpeedTest::create(HttpClient& client) {
-    return std::expected<std::string, std::string> { (fs::temp_directory_path() / "calyx_XXXXXX").string() }.and_then(
-        [&client](std::string temp_template) -> std::expected<SpeedTest, std::string> {
-            return mkdtemp(temp_template.data())
-                ? std::expected<SpeedTest, std::string> { SpeedTest(client, temp_template) }
-                : std::unexpected(format_sys_error(errno, "Failed to create secure temp dir"));
-        });
+    return posix::make_temp_dir((fs::temp_directory_path() / "calyx_XXXXXX").string())
+        .transform([&client](std::string dir) { return SpeedTest(client, std::move(dir)); })
+        .transform_error([](std::error_code ec) { return format_sys_error(ec, "Failed to create secure temp dir"); });
 }
 
 SpeedTest::~SpeedTest() {

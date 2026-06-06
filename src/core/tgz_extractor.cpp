@@ -15,10 +15,8 @@
 
 #include <algorithm>
 #include <array>
-#include <cerrno>
 #include <charconv>
 #include <cstdint>
-#include <fcntl.h>
 #include <flat_set>
 #include <format>
 #include <limits>
@@ -26,8 +24,6 @@
 #include <optional>
 #include <ranges>
 #include <span>
-#include <sys/stat.h>
-#include <unistd.h>
 #include <utility>
 #include <vector>
 #include <zlib.h>

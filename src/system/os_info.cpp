@@ -17,7 +17,6 @@
 #include <ranges>
 #include <string>
 #include <string_view>
-#include <sys/sysinfo.h>
 
 std::string SystemInfo::get_virtualization() noexcept {
     return probe::kVirtualizationProbe;

@@ -31,8 +31,6 @@
 #include "arm_info.hpp"
 
 #include <ranges>
-#include <sys/utsname.h>
-#include <unistd.h>
 
 namespace {
 

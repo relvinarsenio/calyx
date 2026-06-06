@@ -19,12 +19,10 @@
 #include <array>
 #include <atomic>
 #include <bit>
-#include <cerrno>
 #include <chrono>
 #include <concepts>
 #include <cstdint>
 #include <cstring>
-#include <fcntl.h>
 #include <filesystem>
 #include <format>
 #include <limits>
@@ -36,10 +34,8 @@
 #include <random>
 #include <ranges>
 #include <span>
-#include <sys/resource.h>
 #include <sys/uio.h>
 #include <tuple>
-#include <unistd.h>
 #include <vector>
 
 #ifdef USE_IO_URING
