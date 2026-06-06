@@ -11,16 +11,9 @@
 #include <algorithm>
 #include <array>
 #include <bit>
-#include <cctype>
-#include <charconv>
 #include <cstdint>
-#include <cstring>
 #include <filesystem>
 #include <format>
-#include <mutex>
-#include <numeric>
-#include <span>
-#include <spanstream>
 #include <string>
 #include <string_view>
 
@@ -52,13 +45,7 @@ const std::string kCpuModel = []() -> std::string {
     }
 #endif
 
-    auto dt_model = []() -> std::optional<std::string> {
-        const std::string_view content = probe::kDtModelProbe;
-        if (content.empty()) return std::nullopt;
-        return std::string(content);
-    }();
-
-    if (dt_model && !dt_model->empty()) return *dt_model;
+    if (!probe::kDtModelProbe.empty()) { return probe::kDtModelProbe; }
 
 #if !defined(__i386__) && !defined(__x86_64__)
     if (auto arm_name = resolve_arm_model_name()) return *arm_name;
@@ -67,8 +54,7 @@ const std::string kCpuModel = []() -> std::string {
     const auto& cpuinfo                              = probe::kCpuInfoProbe;
     constexpr std::array<std::string_view, 5z> kKeys = { "model name", "model", "hardware", "cpu", "processor" };
 
-    auto lines
-        = std::views::split(cpuinfo, '\n') | std::views::transform([](auto raw) { return std::string_view(raw); });
+    auto lines = cpuinfo | split_to_sv('\n');
 
     auto matches = std::views::cartesian_product(kKeys, lines) | std::views::filter([](auto pair) {
         auto [key, line] = pair;

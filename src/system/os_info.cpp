@@ -48,10 +48,7 @@ std::string SystemInfo::get_arch() noexcept {
 }
 
 std::string SystemInfo::get_kernel() noexcept {
-    static const std::string instance = []() -> std::string {
-        if (const auto& uname_res = probe::kUnameProbe) { return uname_res->release; }
-        return "Unknown";
-    }();
+    static const std::string instance = probe::kUnameProbe ? probe::kUnameProbe->release : std::string("Unknown");
     return instance;
 }
 
@@ -64,7 +61,7 @@ std::string SystemInfo::get_uptime() noexcept {
     using namespace std::chrono;
 
     struct sysinfo sys_info {};
-    if (sysinfo(&sys_info) != 0) { return "Unknown"; }
+    if (!posix::expect_result<posix::error_style::posix>(::sysinfo(&sys_info))) { return "Unknown"; }
 
     auto total    = seconds(sys_info.uptime);
     auto up_days  = floor<days>(total);
@@ -93,6 +90,7 @@ std::string SystemInfo::get_uptime() noexcept {
 
 std::string SystemInfo::get_load_avg() noexcept {
     std::array<double, 3> loads {};
-    return getloadavg(loads.data(), 3) != -1 ? std::format("{:.2f}, {:.2f}, {:.2f}", loads[0], loads[1], loads[2])
-                                             : std::string { "Unknown" };
+    return posix::expect_result<posix::error_style::posix>(::getloadavg(loads.data(), 3))
+        ? std::format("{:.2f}, {:.2f}, {:.2f}", loads[0], loads[1], loads[2])
+        : std::string { "Unknown" };
 }
