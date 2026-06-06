@@ -123,25 +123,18 @@ private:
 
     [[nodiscard]] auto update_fcntl_flag(std::int32_t get_cmd, std::int32_t set_cmd, std::int32_t flag,
         bool enable) const noexcept -> std::expected<void, std::error_code> {
-        if (auto valid = ensure_valid_fd(); !valid) { return std::unexpected(valid.error()); }
-
-        std::int32_t current_flags;
-        do {
-            current_flags = ::fcntl(fd_, get_cmd, 0);
-        } while (current_flags == -1 && errno == EINTR);
-
-        if (current_flags == -1) { return std::unexpected(posix::last_error()); }
-
-        std::int32_t updated_flags = enable ? (current_flags | flag) : (current_flags & ~flag);
-        if (updated_flags == current_flags) { return {}; }
-
-        std::int32_t set_res;
-        do {
-            set_res = ::fcntl(fd_, set_cmd, updated_flags);
-        } while (set_res == -1 && errno == EINTR);
-
-        if (set_res == -1) { return std::unexpected(posix::last_error()); }
-        return {};
+        return ensure_valid_fd()
+            .and_then([fd = fd_, get_cmd]() noexcept {
+                return eintr_loop<error_style::posix>([fd, get_cmd]() noexcept { return ::fcntl(fd, get_cmd, 0); });
+            })
+            .and_then([fd = fd_, set_cmd, flag, enable](
+                          std::int32_t current_flags) noexcept -> std::expected<void, std::error_code> {
+                const std::int32_t updated_flags = enable ? (current_flags | flag) : (current_flags & ~flag);
+                if (updated_flags == current_flags) { return {}; }
+                return eintr_loop<error_style::posix>([fd, set_cmd, updated_flags]() noexcept {
+                    return ::fcntl(fd, set_cmd, updated_flags);
+                }).transform([](auto) noexcept {});
+            });
     }
 
 public:
@@ -174,11 +167,9 @@ public:
      */
     [[nodiscard]] static auto open(const std::filesystem::path& path, std::int32_t flags, mode_t mode = 0) noexcept
         -> std::expected<file_descriptor, std::error_code> {
-        std::int32_t fd;
-        do {
-            fd = ::open(path.c_str(), flags | O_CLOEXEC, mode);
-        } while (fd == -1 && errno == EINTR);
-        return from_raw(fd);
+        return eintr_loop<error_style::posix>([&path, flags, mode]() noexcept {
+            return ::open(path.c_str(), flags | O_CLOEXEC, mode);
+        }).transform([](auto fd) noexcept { return file_descriptor(fd); });
     }
 
     /**
@@ -186,11 +177,9 @@ public:
      */
     [[nodiscard]] static auto open_at(native_handle_type dir_fd, const std::filesystem::path& path, std::int32_t flags,
         mode_t mode = 0) noexcept -> std::expected<file_descriptor, std::error_code> {
-        native_handle_type fd;
-        do {
-            fd = ::openat(dir_fd, path.c_str(), flags | O_CLOEXEC, mode);
-        } while (fd == -1 && errno == EINTR);
-        return from_raw(fd);
+        return eintr_loop<error_style::posix>([dir_fd, &path, flags, mode]() noexcept {
+            return ::openat(dir_fd, path.c_str(), flags | O_CLOEXEC, mode);
+        }).transform([](auto fd) noexcept { return file_descriptor(fd); });
     }
 
     /**
@@ -230,15 +219,13 @@ public:
      */
     [[nodiscard]] auto duplicate(bool close_on_exec = true) const noexcept
         -> std::expected<file_descriptor, std::error_code> {
-        if (auto valid = ensure_valid_fd(); !valid) { return std::unexpected(valid.error()); }
-
-        std::int32_t copied_fd;
-        do {
-            copied_fd = close_on_exec ? ::fcntl(fd_, F_DUPFD_CLOEXEC, 0) : ::dup(fd_);
-        } while (copied_fd == -1 && errno == EINTR);
-
-        if (copied_fd < 0) { return std::unexpected(posix::last_error()); }
-        return file_descriptor(copied_fd);
+        return ensure_valid_fd()
+            .and_then([fd = fd_, close_on_exec]() noexcept {
+                return eintr_loop<error_style::posix>([fd, close_on_exec]() noexcept {
+                    return close_on_exec ? ::fcntl(fd, F_DUPFD_CLOEXEC, 0) : ::dup(fd);
+                });
+            })
+            .transform([](auto fd) noexcept { return file_descriptor(fd); });
     }
 
     /**
@@ -253,17 +240,11 @@ public:
     [[nodiscard]] auto redirect_to(native_handle_type target_fd, bool close_on_exec = true) const noexcept
         -> std::expected<void, std::error_code> {
         if (auto valid = ensure_valid_fd(); !valid) { return std::unexpected(valid.error()); }
-
         if (fd_ == target_fd) { return set_cloexec(close_on_exec); }
-
         /** @note @c dup3 is atomic and allows setting @c O_CLOEXEC. */
-        std::int32_t res;
-        do {
-            res = ::dup3(fd_, target_fd, close_on_exec ? O_CLOEXEC : 0);
-        } while (res == -1 && errno == EINTR);
-
-        if (res == -1) { return std::unexpected(posix::last_error()); }
-        return {};
+        return eintr_loop<error_style::posix>([fd = fd_, target_fd, close_on_exec]() noexcept {
+            return ::dup3(fd, target_fd, close_on_exec ? O_CLOEXEC : 0);
+        }).transform([](auto) noexcept {});
     }
 
     /**
@@ -292,15 +273,12 @@ public:
 
     /** @brief File metadata via fstat(2). */
     [[nodiscard]] auto stat() const noexcept -> std::expected<struct ::stat, std::error_code> {
-        if (auto valid = ensure_valid_fd(); !valid) { return std::unexpected(valid.error()); }
         struct ::stat st {};
-        std::int32_t res;
-        do {
-            res = ::fstat(fd_, &st);
-        } while (res == -1 && errno == EINTR);
-
-        if (res == -1) { return std::unexpected(posix::last_error()); }
-        return st;
+        return ensure_valid_fd()
+            .and_then([fd = fd_, &st]() noexcept {
+                return eintr_loop<error_style::posix>([fd, &st]() noexcept { return ::fstat(fd, &st); });
+            })
+            .transform([&st](auto) noexcept { return st; });
     }
 
     /**
@@ -308,26 +286,19 @@ public:
      * @param mode New permission bits (e.g. @c S_IRWXU | @c S_IRGRP).
      */
     [[nodiscard]] auto chmod(mode_t mode) const noexcept -> std::expected<void, std::error_code> {
-        if (auto valid = ensure_valid_fd(); !valid) { return std::unexpected(valid.error()); }
-        std::int32_t res;
-        do {
-            res = ::fchmod(fd_, mode);
-        } while (res == -1 && errno == EINTR);
-
-        if (res == -1) { return std::unexpected(posix::last_error()); }
-        return {};
+        return ensure_valid_fd()
+            .and_then([fd = fd_, mode]() noexcept {
+                return eintr_loop<error_style::posix>([fd, mode]() noexcept { return ::fchmod(fd, mode); });
+            })
+            .transform([](auto) noexcept {});
     }
 
     /** @brief Reposition the file offset via lseek(2). */
     [[nodiscard]] auto seek(off_t offset, std::int32_t whence) const noexcept -> std::expected<off_t, std::error_code> {
-        if (auto valid = ensure_valid_fd(); !valid) { return std::unexpected(valid.error()); }
-        off_t res;
-        do {
-            res = ::lseek(fd_, offset, whence);
-        } while (res == -1 && errno == EINTR);
-
-        if (res == -1) { return std::unexpected(posix::last_error()); }
-        return res;
+        return ensure_valid_fd().and_then([fd = fd_, offset, whence]() noexcept {
+            return eintr_loop<error_style::posix>(
+                [fd, offset, whence]() noexcept { return ::lseek(fd, offset, whence); });
+        });
     }
 
     /** @brief Retrieve the current file offset via lseek(2). */
@@ -440,13 +411,9 @@ public:
     [[nodiscard]] static auto ioctl_raw(native_handle_type fd, std::integral auto req) noexcept
         -> std::expected<void, std::error_code> {
         if (fd < 0) { return std::unexpected(bad_fd_error()); }
-        std::int32_t res;
-        do {
-            res = ::ioctl(fd, static_cast<native_ioctl_req_t>(req));
-        } while (res == -1 && errno == EINTR);
-
-        if (res == -1) { return std::unexpected(posix::last_error()); }
-        return {};
+        return eintr_loop<error_style::posix>([fd, req]() noexcept {
+            return ::ioctl(fd, static_cast<native_ioctl_req_t>(req));
+        }).transform([](auto) noexcept {});
     }
 
     /**
@@ -456,13 +423,9 @@ public:
     [[nodiscard]] static auto ioctl_raw(native_handle_type fd, std::integral auto req, T& arg) noexcept
         -> std::expected<void, std::error_code> {
         if (fd < 0) { return std::unexpected(bad_fd_error()); }
-        std::int32_t res;
-        do {
-            res = ::ioctl(fd, static_cast<native_ioctl_req_t>(req), &arg);
-        } while (res == -1 && errno == EINTR);
-
-        if (res == -1) { return std::unexpected(posix::last_error()); }
-        return {};
+        return eintr_loop<error_style::posix>([fd, req, &arg]() noexcept {
+            return ::ioctl(fd, static_cast<native_ioctl_req_t>(req), &arg);
+        }).transform([](auto) noexcept {});
     }
 
     /**
@@ -642,26 +605,18 @@ public:
     [[nodiscard]] static auto setsockopt_raw(native_handle_type fd, std::int32_t level, std::int32_t optname,
         const T& value) noexcept -> std::expected<void, std::error_code> {
         if (fd < 0) { return std::unexpected(bad_fd_error()); }
-        std::int32_t res;
-        do {
-            res = ::setsockopt(fd, level, optname, std::addressof(value), sizeof(T));
-        } while (res == -1 && errno == EINTR);
-
-        if (res != 0) { return std::unexpected(posix::last_error()); }
-        return {};
+        return eintr_loop<error_style::posix>([fd, level, optname, &value]() noexcept {
+            return ::setsockopt(fd, level, optname, std::addressof(value), sizeof(T));
+        }).transform([](auto) noexcept {});
     }
 
     /** @overload Support for raw pointer/size for special cases or buffers. */
     [[nodiscard]] static auto setsockopt_raw(native_handle_type fd, std::int32_t level, std::int32_t optname,
         const void* optval, socklen_t optlen) noexcept -> std::expected<void, std::error_code> {
         if (fd < 0) { return std::unexpected(bad_fd_error()); }
-        std::int32_t res;
-        do {
-            res = ::setsockopt(fd, level, optname, optval, optlen);
-        } while (res == -1 && errno == EINTR);
-
-        if (res != 0) { return std::unexpected(posix::last_error()); }
-        return {};
+        return eintr_loop<error_style::posix>([fd, level, optname, optval, optlen]() noexcept {
+            return ::setsockopt(fd, level, optname, optval, optlen);
+        }).transform([](auto) noexcept {});
     }
 
     /**
@@ -673,10 +628,7 @@ public:
      */
     [[nodiscard]] static auto sync_raw(native_handle_type fd) noexcept -> std::expected<void, std::error_code> {
         if (fd < 0) { return std::unexpected(bad_fd_error()); }
-        while (true) {
-            if (::fsync(fd) == 0) { return {}; }
-            if (errno != EINTR) { return std::unexpected(posix::last_error()); }
-        }
+        return eintr_loop<error_style::posix>([fd]() noexcept { return ::fsync(fd); }).transform([](auto) noexcept {});
     }
 
     /**
@@ -688,10 +640,8 @@ public:
      */
     [[nodiscard]] static auto datasync_raw(native_handle_type fd) noexcept -> std::expected<void, std::error_code> {
         if (fd < 0) { return std::unexpected(bad_fd_error()); }
-        while (true) {
-            if (::fdatasync(fd) == 0) { return {}; }
-            if (errno != EINTR) { return std::unexpected(posix::last_error()); }
-        }
+        return eintr_loop<error_style::posix>([fd]() noexcept { return ::fdatasync(fd); }).transform([](auto) noexcept {
+        });
     }
 };
 

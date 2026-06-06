@@ -20,9 +20,6 @@
 #include <optional>
 #include <ranges>
 #include <string>
-#include <sys/sysinfo.h>
-#include <sys/utsname.h>
-#include <unistd.h>
 
 #if defined(__i386__) || defined(__x86_64__)
 #include <cpuid.h>

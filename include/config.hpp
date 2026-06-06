@@ -74,8 +74,8 @@ inline constexpr std::uint8_t kUiTableUlWidth      = 18;
 inline constexpr std::uint8_t kUiTableLatencyWidth = 12;
 inline constexpr std::uint8_t kUiTableLossWidth    = 8;
 inline constexpr std::size_t kMaxErrorDisplayLen   = (kTermWidth > toSize(kUiTableNodeWidth) + (sizeof("Error: ") - 1))
-    ? kTermWidth - toSize(kUiTableNodeWidth) - (sizeof("Error: ") - 1)
-    : 0;
+      ? kTermWidth - toSize(kUiTableNodeWidth) - (sizeof("Error: ") - 1)
+      : 0;
 
 /** @brief Basename for the temporary disk benchmark file. */
 inline constexpr std::string_view kTestFilename = "calyx_test_file";

@@ -25,7 +25,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <expected>
-#include <fcntl.h>
 #include <filesystem>
 #include <format>
 #include <optional>
@@ -34,12 +33,8 @@
 #include <span>
 #include <string>
 #include <string_view>
-#include <sys/ioctl.h>
-#include <sys/stat.h>
-#include <sys/types.h>
 #include <thread>
 #include <type_traits>
-#include <unistd.h>
 #include <utility>
 
 namespace tsc {

@@ -138,4 +138,76 @@ template <error_style Style, valid_error_style_type<Style> T>
     return expect_result<Style>(res).transform([](auto) {});
 }
 
+/**
+ * @concept eintr_retryable
+ * @brief Identifies @c error_style values whose EINTR sentinel can be retried.
+ *
+ * @c pthreads and @c pointer styles are excluded — they cannot return EINTR.
+ */
+template <error_style Style>
+concept eintr_retryable = Style == error_style::posix || Style == error_style::linux_internal;
+
+/**
+ * @concept posix_syscall
+ * @brief Nullary callable returning a signed integer (raw syscall result).
+ */
+template <typename F>
+concept posix_syscall = std::invocable<F> && std::signed_integral<std::invoke_result_t<F>>;
+
+/** @brief EINTR sentinel policy types, specialized per @c error_style. */
+namespace eintr {
+
+/** @brief Primary template — intentionally undefined; only specializations are valid. */
+template <error_style Style>
+    requires eintr_retryable<Style>
+struct sentinel;
+
+/** @brief posix(2): failure sentinel is @c -1, error code in @c errno. */
+template <> struct sentinel<error_style::posix> {
+    template <std::signed_integral T> [[nodiscard]] static constexpr auto check(T res) noexcept -> bool {
+        return res == -1 && errno == EINTR;
+    }
+};
+
+/** @brief linux_internal: return value directly encodes the negated errno. */
+template <> struct sentinel<error_style::linux_internal> {
+    template <std::signed_integral T> [[nodiscard]] static constexpr auto check(T res) noexcept -> bool {
+        return res == static_cast<T>(-EINTR);
+    }
+};
+
+} // namespace eintr
+
+/**
+ * @brief Compile-time EINTR check dispatched by @c error_style via @ref eintr::sentinel.
+ *
+ * @c posix: sentinel is @c -1, error in @c errno.
+ * @c linux_internal: the return value encodes the negated errno directly.
+ */
+template <error_style Style, std::signed_integral T>
+    requires eintr_retryable<Style>
+[[nodiscard]] constexpr auto is_eintr(T res) noexcept -> bool {
+    return eintr::sentinel<Style>::check(res);
+}
+
+/**
+ * @brief Execute a syscall with automatic EINTR retry.
+ *
+ * Separates retry policy from result interpretation (@ref expect_result).
+ * The EINTR sentinel is resolved at compile time via @ref is_eintr.
+ *
+ * @note Mark the lambda @c noexcept to preserve the wrapper's @c noexcept guarantee.
+ */
+template <error_style Style, posix_syscall F>
+    requires eintr_retryable<Style>
+[[nodiscard]] inline auto eintr_loop(F&& f) noexcept(noexcept(std::invoke(std::declval<F>())))
+    -> std::expected<std::invoke_result_t<F>, std::error_code> {
+    using res_t = std::invoke_result_t<F>;
+    res_t res;
+    do {
+        res = std::invoke(std::forward<F>(f));
+    } while (is_eintr<Style>(res));
+    return expect_result<Style>(res);
+}
+
 } // namespace posix
