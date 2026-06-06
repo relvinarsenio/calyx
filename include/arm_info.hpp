@@ -39,8 +39,9 @@ inline constexpr auto cpu_has_flag = [](std::string_view flag) -> bool {
     constexpr std::array<std::string_view, 2> kKeys = { "flags", "Features" };
 
     auto flag_words = std::views::split(cpuinfo, '\n')
-        | std::views::transform([](auto raw) { return std::string_view(raw); }) | std::views::filter([&](auto line) {
-              return std::ranges::any_of(kKeys, [&](auto key) { return is_starts_with_ic(line, key); });
+        | std::views::transform([](auto raw) { return std::string_view(raw); })
+        | std::views::filter([&kKeys](auto line) {
+              return std::ranges::any_of(kKeys, [line](auto key) { return is_starts_with_ic(line, key); });
           })
         | std::views::take(1) | std::views::transform([](auto line) {
               auto colon = line.find(':');
@@ -52,7 +53,7 @@ inline constexpr auto cpu_has_flag = [](std::string_view flag) -> bool {
           })
         | std::views::join;
 
-    return std::ranges::any_of(flag_words, [&](auto word) { return !word.empty() && word == flag; });
+    return std::ranges::any_of(flag_words, [flag](auto word) { return !word.empty() && word == flag; });
 };
 
 /**

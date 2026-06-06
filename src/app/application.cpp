@@ -144,18 +144,18 @@ struct NetworkMetadata {
 
         auto execution_status
             = std::expected<void, std::string> {}
-                  .and_then([&] {
+                  .and_then([&multi_client, &ipv4_client, &ipv6_client, &metadata_client] {
                       return (multi_client && ipv4_client && ipv6_client && metadata_client)
                           ? std::expected<void, std::string> {}
                           : std::unexpected("Network client initialization failed");
                   })
-                  .and_then([&] { return ipv4_client->prepare_connectivity_check(config::kPingTargetIPv4); })
-                  .and_then([&] { return ipv6_client->prepare_connectivity_check(config::kPingTargetIPv6); })
-                  .and_then([&] { return metadata_client->prepare_get(config::kUrlCloudflareMeta); })
-                  .and_then([&] { return multi_client->add_handle(*ipv4_client); })
-                  .and_then([&] { return multi_client->add_handle(*ipv6_client); })
-                  .and_then([&] { return multi_client->add_handle(*metadata_client); })
-                  .and_then([&] {
+                  .and_then([&ipv4_client] { return ipv4_client->prepare_connectivity_check(config::kPingTargetIPv4); })
+                  .and_then([&ipv6_client] { return ipv6_client->prepare_connectivity_check(config::kPingTargetIPv6); })
+                  .and_then([&metadata_client] { return metadata_client->prepare_get(config::kUrlCloudflareMeta); })
+                  .and_then([&multi_client, &ipv4_client] { return multi_client->add_handle(*ipv4_client); })
+                  .and_then([&multi_client, &ipv6_client] { return multi_client->add_handle(*ipv6_client); })
+                  .and_then([&multi_client, &metadata_client] { return multi_client->add_handle(*metadata_client); })
+                  .and_then([&multi_client, st] {
                       if (st.stop_requested()) { return std::expected<void, std::string> {}; }
                       return multi_client->perform();
                   });
@@ -299,7 +299,7 @@ std::string build_zswap_secondary_info(const ZSwapStats& stats) {
               { "Capped", stats.pool_limit_hit, color::kRed } });
 
     return metrics | std::views::filter([](const auto& item) { return std::get<1>(item) > 0; })
-        | std::views::transform([&](const auto& item) {
+        | std::views::transform([page_size](const auto& item) {
               return std::format(" {}: {}", std::get<0>(item),
                   color::colorize(format_bytes(std::get<1>(item) * page_size), std::get<2>(item)));
           })
@@ -456,7 +456,7 @@ std::expected<void, std::string> run_disk_benchmarks() {
 
 std::expected<void, std::string> run_speed_test(HttpClient& http) {
     return SpeedTest::create(http)
-        .and_then([&](SpeedTest st) -> std::expected<SpeedTest, std::string> {
+        .and_then([](SpeedTest st) -> std::expected<SpeedTest, std::string> {
             return st.install().transform([owned_st = std::move(st)]() mutable { return std::move(owned_st); });
         })
         .transform([](SpeedTest st) {

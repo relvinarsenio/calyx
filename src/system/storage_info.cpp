@@ -21,10 +21,6 @@
 #include <ranges>
 #include <string>
 #include <string_view>
-#include <sys/stat.h>
-#include <sys/statvfs.h>
-#include <sys/sysinfo.h>
-#include <sys/sysmacros.h>
 #include <vector>
 
 namespace {
@@ -92,7 +88,7 @@ MemInfo SystemInfo::get_memory_status() noexcept {
 
     info = parse_file_or(
         "/proc/meminfo",
-        [&](std::string_view content) {
+        [&info](std::string_view content) {
             auto mem_lines = content | split_to_sv('\n');
 
             auto extract_mem_value = [](std::string_view line) -> std::optional<std::uint64_t> {

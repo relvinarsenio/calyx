@@ -160,7 +160,8 @@ std::string_view create_progress_bar_sv(std::size_t percent) {
     const std::string_view empty_char = use_ascii ? "-" : "\u2591";
 
     std::ranges::for_each(std::views::iota(0uz, std::size_t { config::kProgressBarWidth }),
-        [&](std::size_t index) { bar_buffer += (index < filled) ? fill_char : empty_char; });
+        [filled, fill_char, empty_char](
+            std::size_t index) { bar_buffer += (index < filled) ? fill_char : empty_char; });
 
     return bar_buffer;
 }
@@ -194,7 +195,7 @@ void render_speed_results(const SpeedTestResult& result) {
             color::kReset);
     };
 
-    std::ranges::for_each(result.entries, [&](const auto& entry) {
+    std::ranges::for_each(result.entries, [&print_entry_error, &print_success](const auto& entry) {
         if (!entry.success) {
             print_entry_error(entry);
         } else {
