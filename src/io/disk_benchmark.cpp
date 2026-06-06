@@ -1187,12 +1187,13 @@ void BufferRegistrar::fail_buffer_registration(std::error_code error_code) noexc
 [[nodiscard]] std::expected<std::size_t, std::string> calculate_final_mask(
     std::uint64_t write_block_size, std::uint64_t read_block_size) noexcept {
     if (write_block_size == 0 || read_block_size == 0) { return 0; }
-    const std::size_t gcd_val = std::gcd(write_block_size, read_block_size);
-    std::size_t lcm_val       = write_block_size / gcd_val;
-    if (__builtin_mul_overflow(lcm_val, read_block_size, &lcm_val)) {
+    const std::size_t gcd_val     = std::gcd(write_block_size, read_block_size);
+    const std::size_t lcm_partial = toSize(write_block_size / gcd_val);
+    const auto lcm_val            = safe_arith<overflow_op::mul>(lcm_partial, toSize(read_block_size));
+    if (!lcm_val) {
         return std::unexpected("Invalid configuration: block size combination results in alignment overflow");
     }
-    return lcm_val;
+    return *lcm_val;
 }
 
 /**
@@ -1252,12 +1253,11 @@ struct IoParams {
 [[nodiscard]] std::expected<Buffers, std::string> allocate_io_buffers(std::uint64_t write_mem_stride,
     std::size_t alignment, const DiskBenchmark::BenchmarkConfig& config, std::uint64_t read_block_size,
     const auto& round_up) {
-    std::size_t write_buf_total = 0;
-    if (__builtin_mul_overflow(write_mem_stride, toSize(config.write_queue_depth), &write_buf_total)) {
-        return std::unexpected("Overflow in write buffer total size calculation");
-    }
+    const auto write_buf_total
+        = safe_arith<overflow_op::mul>(toSize(write_mem_stride), toSize(config.write_queue_depth));
+    if (!write_buf_total) { return std::unexpected("Overflow in write buffer total size calculation"); }
 
-    const auto write_buf_alloc_opt = round_up(write_buf_total, get_page_size());
+    const auto write_buf_alloc_opt = round_up(*write_buf_total, get_page_size());
     if (!write_buf_alloc_opt) { return std::unexpected("Overflow in write buffer allocation alignment"); }
     const auto write_buf_alloc = *write_buf_alloc_opt;
     auto write_buf_opt         = AlignedBuffer::create(write_buf_alloc, alignment);
