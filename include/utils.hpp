@@ -156,27 +156,68 @@ inline void cpu_pause() noexcept {
 
 } // namespace tsc
 
-/**
- * @brief Safely multiply two unsigned 64-bit integers with overflow checking.
- * @return The result if no overflow occurred, otherwise @c std::nullopt.
- */
-inline constexpr auto safe_mul
-    = [](std::uint64_t left_value, std::uint64_t right_value) noexcept -> std::optional<std::uint64_t> {
-    std::uint64_t result {};
-    if (__builtin_mul_overflow(left_value, right_value, &result)) { return std::nullopt; }
-    return result;
+/** @brief Compile-time tag for selecting the arithmetic operation in @ref safe_arith. */
+enum class overflow_op {
+    add,
+    mul,
+    sub
 };
 
-/**
- * @brief Safely add two unsigned 64-bit integers with overflow checking.
- * @return The result if no overflow occurred, otherwise @c std::nullopt.
- */
-inline constexpr auto safe_add
-    = [](std::uint64_t left_value, std::uint64_t right_value) noexcept -> std::optional<std::uint64_t> {
-    std::uint64_t result {};
-    if (__builtin_add_overflow(left_value, right_value, &result)) { return std::nullopt; }
-    return result;
+namespace overflow_impl {
+
+/** @brief Primary template — intentionally undefined; forces an explicit specialization per operation. */
+template <overflow_op Op> struct builtin_overflow;
+
+/** @brief Dispatches to @c __builtin_add_overflow. */
+template <> struct builtin_overflow<overflow_op::add> {
+    template <cast::standard_integer_type T> [[nodiscard]] static constexpr bool apply(T lhs, T rhs, T* out) noexcept {
+        return __builtin_add_overflow(lhs, rhs, out);
+    }
 };
+
+/** @brief Dispatches to @c __builtin_mul_overflow. */
+template <> struct builtin_overflow<overflow_op::mul> {
+    template <cast::standard_integer_type T> [[nodiscard]] static constexpr bool apply(T lhs, T rhs, T* out) noexcept {
+        return __builtin_mul_overflow(lhs, rhs, out);
+    }
+};
+
+/** @brief Dispatches to @c __builtin_sub_overflow. */
+template <> struct builtin_overflow<overflow_op::sub> {
+    template <cast::standard_integer_type T> [[nodiscard]] static constexpr bool apply(T lhs, T rhs, T* out) noexcept {
+        return __builtin_sub_overflow(lhs, rhs, out);
+    }
+};
+
+} // namespace overflow_impl
+
+/**
+ * @brief Overflow-checked arithmetic on unsigned integers.
+ *
+ * The operation is selected at compile time via @ref overflow_impl::builtin_overflow specialization.
+ * No runtime branching occurs for the operation itself — only the mandatory overflow sentinel check remains.
+ *
+ * @tparam Op  The arithmetic operation to perform (@ref overflow_op).
+ * @tparam T   Any standard integer type (signed or unsigned, per @ref cast::standard_integer_type).
+ * @return The result, or @c std::nullopt on overflow.
+ */
+template <overflow_op Op, cast::standard_integer_type T>
+[[nodiscard]] constexpr auto safe_arith(T lhs, T rhs) noexcept -> std::optional<T> {
+    T result {};
+    return overflow_impl::builtin_overflow<Op>::apply(lhs, rhs, &result) ? std::nullopt : std::optional<T> { result };
+}
+
+/** @brief Safely multiply two @c uint64_t values with overflow checking. */
+inline constexpr auto safe_mul
+    = [](std::uint64_t lhs, std::uint64_t rhs) noexcept { return safe_arith<overflow_op::mul>(lhs, rhs); };
+
+/** @brief Safely add two @c uint64_t values with overflow checking. */
+inline constexpr auto safe_add
+    = [](std::uint64_t lhs, std::uint64_t rhs) noexcept { return safe_arith<overflow_op::add>(lhs, rhs); };
+
+/** @brief Safely subtract two @c uint64_t values with overflow checking. */
+inline constexpr auto safe_sub
+    = [](std::uint64_t lhs, std::uint64_t rhs) noexcept { return safe_arith<overflow_op::sub>(lhs, rhs); };
 
 namespace fs = std::filesystem;
 

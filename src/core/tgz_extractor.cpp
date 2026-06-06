@@ -743,9 +743,8 @@ struct EntryActionContext {
     EntryAction action, std::uint64_t final_size, std::uint64_t total_extracted_size) {
     if (action == EntryAction::Forbidden) { return std::unexpected(ExtractError::SymlinkDetected); }
     if (final_size > config::kTgzMaxFileSize) { return std::unexpected(ExtractError::FileTooLarge); }
-    if (final_size > config::kTgzMaxTotalSize - total_extracted_size) {
-        return std::unexpected(ExtractError::ArchiveTooLarge);
-    }
+    const auto remaining_budget = safe_sub(config::kTgzMaxTotalSize, total_extracted_size);
+    if (!remaining_budget || final_size > *remaining_budget) { return std::unexpected(ExtractError::ArchiveTooLarge); }
     return {};
 }
 
