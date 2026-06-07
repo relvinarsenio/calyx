@@ -450,18 +450,24 @@ inline constexpr auto lookup_arm_name = [](std::int32_t impl, std::int32_t part)
  */
 inline constexpr auto parse_cpuinfo_hex
     = [](const std::string& cpuinfo, std::string_view key) -> std::optional<std::int32_t> {
-    for (auto line :
-        std::views::split(cpuinfo, '\n') | std::views::transform([](auto raw) { return std::string_view(raw); })) {
-        if (!is_starts_with_ic(line, key)) { continue; }
-        auto colon = line.find(':');
-        if (colon == std::string_view::npos) { continue; }
+    /** @brief Per-line parser: returns the hex value if the line matches @p key, otherwise std::nullopt. */
+    const auto try_parse = [key](std::string_view line) -> std::optional<std::int32_t> {
+        if (!is_starts_with_ic(line, key)) { return std::nullopt; }
+        const auto colon = line.find(':');
+        if (colon == std::string_view::npos) { return std::nullopt; }
         auto val_str = trim_sv(line.substr(colon + 1));
         if (val_str.starts_with("0x") || val_str.starts_with("0X")) { val_str.remove_prefix(2); }
         std::int32_t val = 0;
         auto [ptr, ec]   = std::from_chars(val_str.data(), val_str.data() + val_str.size(), val, 16);
-        if (ec == std::errc {}) { return val; }
-    }
-    return std::nullopt;
+        return (ec == std::errc {}) ? std::optional { val } : std::nullopt;
+    };
+
+    /** @brief Pipeline: split by newline → parse each line → keep valid results → take the first match. */
+    auto matches = cpuinfo | split_to_sv('\n') | std::views::transform(try_parse)
+        | std::views::filter([](const auto& opt) { return opt.has_value(); }) | std::views::take(1);
+
+    const auto it = std::ranges::begin(matches);
+    return (it != std::ranges::end(matches)) ? *it : std::nullopt;
 };
 
 /**
