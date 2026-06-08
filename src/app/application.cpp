@@ -239,7 +239,7 @@ void print_labeled_info(std::string_view label, std::string_view value, std::str
 
 void print_feature_status(std::string_view label, bool enabled) {
     std::println(" {:<{}} : {}", label, config::kAppInfoLabelWidth,
-        enabled ? color::colorize("✓ Enabled", color::kGreen) : color::colorize("✗ Disabled", color::kRed));
+        enabled ? color::colorize("\u2713 Enabled", color::kGreen) : color::colorize("\u2717 Disabled", color::kRed));
 }
 
 void print_size_usage(std::string_view label, std::uint64_t total, std::uint64_t used) {
@@ -526,7 +526,7 @@ std::expected<void, std::string> Application::run(int argc, char* argv[]) {
     if (!http) { return std::unexpected(std::format("\n[!] HttpClient create failed: {}", http.error())); }
     auto start_time = high_resolution_clock::now();
 
-    std::print("\033c");
+    std::println("\x1b[H\x1b[2J\x1b[3J");
     print_centered_header(std::format("Calyx - Linux System Benchmarking Utility (v{})", config::kAppVersion));
     std::println(" {:<{}} : {} ({})", "Author", config::kAppAuthorLabelWidth, "Alfie Ardinata", config::kUrlMaintainer);
     std::println(" {:<{}} : {}", "GitHub", config::kAppAuthorLabelWidth, config::kUrlGithub);

@@ -76,9 +76,11 @@ inline const std::string kCpuCacheProbe = []() -> std::string {
         const char s { (p != std::string_view::npos) ? toChar(std::toupper(toInt(toUChar(rem[p])))) : 'K' };
         static constexpr auto kUnits = std::to_array<std::pair<char, std::uint64_t>>(
             { { 'G', 1024ULL * 1024 * 1024 }, { 'M', 1024ULL * 1024 }, { 'K', 1024ULL }, { 'B', 1ULL } });
-        auto unit_it = std::ranges::find_if(kUnits, [s](auto p) { return p.first == s; });
-        return format_bytes(
-            (unit_it != kUnits.end() ? unit_it->second : (p == std::string_view::npos ? 1024ULL : 1ULL)) * val);
+        auto unit_it                   = std::ranges::find_if(kUnits, [s](auto p) { return p.first == s; });
+        const std::uint64_t multiplier = (unit_it != kUnits.end()) ? unit_it->second
+            : (p == std::string_view::npos)                        ? 1024ULL
+                                                                   : 1ULL;
+        return format_bytes(multiplier * val);
     };
 
     struct CacheEntry {
@@ -164,7 +166,7 @@ inline const FreqInfo kMaxFreqProbe = []() -> FreqInfo {
             const auto max_f { parse_file_or<std::uint64_t>(
                 e.path() / "cpufreq/cpuinfo_max_freq",
                 [](auto s) { return parse_number<std::uint64_t>(trim_sv(s)).value_or(0ULL); }, 0ULL) };
-            if (max_f > 0) return std::optional<FreqInfo> { FreqInfo { max_f, true } };
+            if (max_f > 0) { return FreqInfo { max_f, true }; }
 
             if (auto online = read_file(e.path() / "online"); online && trim_sv(*online) == "0") {
                 return std::nullopt;
@@ -173,7 +175,7 @@ inline const FreqInfo kMaxFreqProbe = []() -> FreqInfo {
             const auto scale_f { parse_file_or<std::uint64_t>(
                 e.path() / "cpufreq/scaling_max_freq",
                 [](auto s) { return parse_number<std::uint64_t>(trim_sv(s)).value_or(0ULL); }, 0ULL) };
-            if (scale_f > 0) return std::optional<FreqInfo> { FreqInfo { scale_f, false } };
+            if (scale_f > 0) { return FreqInfo { scale_f, false }; }
 
             return std::nullopt;
         };
@@ -214,13 +216,11 @@ inline const std::string kVirtualizationProbe = []() -> std::string {
         return "QEMU (Emulated)";
     }
 
-    {
-        std::array<char, 4096> exe_path {};
-        if (auto len = posix::readlink("/proc/self/exe", exe_path); len && *len < exe_path.size()) {
-            if (const std::string_view exe_sv(exe_path.data(), *len);
-                exe_sv.contains("/usr/bin/qemu") || exe_sv.contains("/bin/qemu-")) {
-                return "QEMU (Emulated)";
-            }
+    std::array<char, 4096> exe_path {};
+    if (auto len = posix::readlink("/proc/self/exe", exe_path); len && *len < exe_path.size()) {
+        if (const std::string_view exe_sv(exe_path.data(), *len);
+            exe_sv.contains("/usr/bin/qemu") || exe_sv.contains("/bin/qemu-")) {
+            return "QEMU (Emulated)";
         }
     }
 
@@ -232,17 +232,20 @@ inline const std::string kVirtualizationProbe = []() -> std::string {
     if (fs::exists("/run/.containerenv", ec)) { return "Podman"; }
     if (fs::exists("/proc/user_beancounters", ec)) { return "OpenVZ"; }
 
-    {
-        if (auto env1 = read_file("/proc/1/environ")) {
-            auto parts = *env1 | split_to_sv('\0');
-            if (std::ranges::any_of(parts, [](auto s) { return s == "container=lxc"sv; })) { return "LXC"; }
-            if (std::ranges::any_of(parts, [](auto s) {
-                    return s.starts_with("WSL_DISTRO_NAME=") || s.starts_with("WSL_INTEROP=")
-                        || s.starts_with("WSLENV=");
-                })) {
+    if (auto env1 = read_file("/proc/1/environ")) {
+        const auto classify = [](std::string_view part) -> std::string_view {
+            if (part == "container=lxc"sv) { return "LXC"; }
+            if (part.starts_with("WSL_DISTRO_NAME=") || part.starts_with("WSL_INTEROP=")
+                || part.starts_with("WSLENV=")) {
                 return "WSL";
             }
-        }
+            return {};
+        };
+
+        auto matches = *env1 | split_to_sv('\0') | std::views::transform(classify)
+            | std::views::filter([](std::string_view tag) { return !tag.empty(); }) | std::views::take(1);
+
+        if (auto it = std::ranges::begin(matches); it != std::ranges::end(matches)) { return std::string(*it); }
     }
 
     // --- Tier 3: Kernel Scope (OS/Subsystem) ---
@@ -352,13 +355,11 @@ inline const std::string kVirtualizationProbe = []() -> std::string {
         }
     }
 
-    {
-        if (auto dt_model = parse_file_or<std::string>(
-                "/proc/device-tree/model", [](auto s) { return std::string { trim_sv(s) }; }, std::string {});
-            !dt_model.empty()) {
-            if (dt_model.contains("QEMU")) return "QEMU";
-            if (dt_model.contains("KVM")) return "KVM";
-        }
+    if (auto dt_model = parse_file_or<std::string>(
+            "/proc/device-tree/model", [](auto s) { return std::string { trim_sv(s) }; }, std::string {});
+        !dt_model.empty()) {
+        if (dt_model.contains("QEMU")) { return "QEMU"; }
+        if (dt_model.contains("KVM")) { return "KVM"; }
     }
 
     return hv_bit ? "Dedicated (Virtual)" : "Dedicated";

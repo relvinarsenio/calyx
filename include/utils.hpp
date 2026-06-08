@@ -14,6 +14,7 @@
 #include "posix.hpp"
 #include "posix_error.hpp"
 #include "scope.hpp"
+#include "tsc.hpp"
 
 #include <algorithm>
 #include <array>
@@ -33,128 +34,8 @@
 #include <span>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <type_traits>
 #include <utility>
-
-namespace tsc {
-
-/**
- * @brief Providing hardware-level hint for spin-waiting.
- */
-inline void cpu_pause() noexcept {
-#if defined(__x86_64__)
-    __builtin_ia32_pause();
-#elif defined(__aarch64__)
-    __asm__ __volatile__("yield" ::: "memory");
-#else
-    std::this_thread::yield();
-#endif
-}
-
-/**
- * @brief Read the hardware cycle counter (non-serializing).
- * @return 64-bit cycle count.
- */
-[[nodiscard]] inline std::uint64_t rdtsc() noexcept {
-#if defined(__x86_64__)
-    std::uint32_t lo {}, hi {};
-    __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi)::"memory");
-    return (toULong(hi) << 32) | toULong(lo);
-#elif defined(__aarch64__)
-    std::uint64_t val {};
-    __asm__ __volatile__("isb; mrs %0, cntvct_el0" : "=r"(val)::"memory");
-    return val;
-#else
-    return toULong(std::chrono::steady_clock::now().time_since_epoch().count());
-#endif
-}
-
-/**
- * @brief Serialized start-of-interval cycle read.
- * @details Per Intel SDM Vol. 2 (RDTSC guidance): LFENCE before RDTSC
- * ensures all prior instructions and loads complete before the timestamp.
- * This is the recommended pattern for the start of a timed interval.
- */
-[[nodiscard]] inline std::uint64_t rdtsc_ordered() noexcept {
-#if defined(__x86_64__)
-    std::uint32_t lo {}, hi {};
-    __asm__ __volatile__("lfence\n\trdtsc" : "=a"(lo), "=d"(hi)::"memory");
-    return (toULong(hi) << 32) | toULong(lo);
-#elif defined(__aarch64__)
-    std::uint64_t val {};
-    __asm__ __volatile__("isb; mrs %0, cntvct_el0" : "=r"(val)::"memory");
-    return val;
-#else
-    return toULong(std::chrono::steady_clock::now().time_since_epoch().count());
-#endif
-}
-
-/**
- * @brief Read the hardware cycle counter with partial serialization.
- * @details Per Intel SDM Vol. 2: RDTSCP waits for all prior instructions to
- * complete, but does NOT prevent subsequent instructions from starting before
- * the timestamp is read. Use rdtscp_ordered() when a full end-of-interval
- * barrier is required.
- * @return 64-bit cycle count.
- */
-[[nodiscard]] inline std::uint64_t rdtscp() noexcept {
-#if defined(__x86_64__)
-    std::uint32_t lo {}, hi {};
-    __asm__ __volatile__("rdtscp" : "=a"(lo), "=d"(hi)::"rcx", "memory");
-    return (toULong(hi) << 32) | toULong(lo);
-#elif defined(__aarch64__)
-    std::uint64_t val {};
-    __asm__ __volatile__("isb; mrs %0, cntvct_el0; isb" : "=r"(val)::"memory");
-    return val;
-#else
-    return rdtsc();
-#endif
-}
-
-/**
- * @brief Serialized end-of-interval cycle read.
- * @details Per Intel SDM Vol. 2: RDTSCP waits for all prior instructions,
- * then LFENCE prevents subsequent instructions from executing speculatively
- * before the timestamp is captured. This is the recommended pattern for
- * the end of a timed interval.
- */
-[[nodiscard]] inline std::uint64_t rdtscp_ordered() noexcept {
-#if defined(__x86_64__)
-    std::uint32_t lo {}, hi {};
-    __asm__ __volatile__("rdtscp\n\tlfence" : "=a"(lo), "=d"(hi)::"rcx", "memory");
-    return (toULong(hi) << 32) | toULong(lo);
-#elif defined(__aarch64__)
-    std::uint64_t val {};
-    __asm__ __volatile__("isb; mrs %0, cntvct_el0; isb" : "=r"(val)::"memory");
-    return val;
-#else
-    return rdtsc();
-#endif
-}
-
-/**
- * @brief Calibrate the cycle frequency against a steady clock.
- * @param duration Duration to calibrate for (default 10ms).
- * @return Cycles per nanosecond.
- */
-[[nodiscard]] inline double calibrate(std::chrono::nanoseconds duration = std::chrono::milliseconds(10)) noexcept {
-    const auto t0 = std::chrono::steady_clock::now();
-    const auto c0 = rdtsc_ordered();
-
-    // Busy wait for better precision than sleep
-    while (std::chrono::steady_clock::now() - t0 < duration) {
-        cpu_pause();
-    }
-
-    const auto t1 = std::chrono::steady_clock::now();
-    const auto c1 = rdtscp_ordered();
-
-    const auto elapsed_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
-    return toDouble(c1 - c0) / toDouble(elapsed_ns);
-}
-
-} // namespace tsc
 
 /** @brief Compile-time tag for selecting the arithmetic operation in @ref safe_arith. */
 enum class overflow_op {
