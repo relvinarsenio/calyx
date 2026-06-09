@@ -19,8 +19,10 @@
 #include "system_info.hpp"
 #include "utils.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <expected>
 #include <filesystem>
 #include <format>
 #include <future>

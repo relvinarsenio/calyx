@@ -12,7 +12,6 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <expected>
 #include <filesystem>
 #include <format>
 #include <optional>

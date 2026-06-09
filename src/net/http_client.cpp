@@ -31,17 +31,19 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
-#include <cstdio>
 #include <curl/curl.h>
+#include <expected>
 #include <filesystem>
 #include <format>
-#include <functional>
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <netinet/ip6.h>
 #include <random>
 #include <ranges>
 #include <span>
+#include <string>
+#include <string_view>
+#include <system_error>
 namespace {
 
 using prng::Xoshiro256PlusPlus;

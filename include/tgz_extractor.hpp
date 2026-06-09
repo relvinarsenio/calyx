@@ -7,13 +7,9 @@
  */
 #pragma once
 
-#include "config.hpp"
-
-#include <cstdint>
 #include <expected>
 #include <filesystem>
-#include <string>
-#include <utility>
+#include <string_view>
 
 namespace archive {
 

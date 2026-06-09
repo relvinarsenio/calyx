@@ -13,7 +13,6 @@
 #include <chrono>
 #include <cstdint>
 #include <format>
-#include <optional>
 #include <ranges>
 #include <string>
 #include <string_view>

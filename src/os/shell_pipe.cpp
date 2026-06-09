@@ -11,13 +11,19 @@
 #include "file_descriptor.hpp"
 #include "interrupts.hpp"
 #include "posix.hpp"
+#include "scope.hpp"
 #include "utils.hpp"
 
-#include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <expected>
 #include <format>
+#include <optional>
 #include <ranges>
+#include <span>
+#include <string>
+#include <string_view>
+#include <system_error>
 #include <thread>
 #include <vector>
 

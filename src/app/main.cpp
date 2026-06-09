@@ -9,6 +9,7 @@
 #include "utils.hpp"
 
 #include <expected>
+#include <string>
 
 int main(int argc, char* argv[]) {
     Application app;

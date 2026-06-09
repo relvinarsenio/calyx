@@ -20,23 +20,20 @@
 
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <chrono>
 #include <cstdint>
-#include <cstdlib>
-#include <cstring>
 #include <expected>
 #include <filesystem>
 #include <format>
-#include <fstream>
 #include <glaze/glaze.hpp>
+#include <optional>
 #include <print>
 #include <ranges>
 #include <span>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <variant>
 #include <vector>
 
 extern unsigned char cacert_pem[];

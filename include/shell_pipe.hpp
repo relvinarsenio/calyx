@@ -10,8 +10,8 @@
 #include "file_descriptor.hpp"
 
 #include <chrono>
+#include <cstdint>
 #include <expected>
-#include <optional>
 #include <stop_token>
 #include <string>
 #include <system_error>

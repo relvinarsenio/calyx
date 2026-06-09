@@ -17,15 +17,17 @@
 #include <array>
 #include <charconv>
 #include <cstdint>
+#include <expected>
+#include <filesystem>
 #include <flat_set>
 #include <format>
 #include <limits>
-#include <memory>
 #include <optional>
 #include <ranges>
 #include <span>
+#include <string>
+#include <string_view>
 #include <utility>
-#include <vector>
 #include <zlib.h>
 
 namespace archive {
