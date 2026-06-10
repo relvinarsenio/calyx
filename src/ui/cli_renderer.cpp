@@ -208,8 +208,8 @@ void render_speed_results(const SpeedTestResult& result) {
     constexpr auto is_error   = [](const auto& entry) { return !entry.success; };
     constexpr auto is_success = [](const auto& entry) { return entry.success; };
 
-    std::ranges::for_each(result.entries | std::views::filter(is_error), print_entry_error);
     std::ranges::for_each(result.entries | std::views::filter(is_success), print_success);
+    std::ranges::for_each(result.entries | std::views::filter(is_error), print_entry_error);
 }
 
 SpinnerCallback make_spinner_callback() {
