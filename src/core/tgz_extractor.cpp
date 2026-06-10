@@ -592,9 +592,9 @@ struct PaxMetadata {
 [[nodiscard]] std::expected<void, ExtractError> skip_tar_data(ExtractState& state, std::uint64_t size) {
     if (size == 0) { return {}; }
 
-    const auto padding = (config::kTarBlockSize - (size % config::kTarBlockSize)) % config::kTarBlockSize;
-    return (size > std::numeric_limits<std::uint64_t>::max() - padding) ? std::unexpected(ExtractError::FileTooLarge)
-                                                                        : discard_bytes(state.gz.get(), size + padding);
+    const auto padding     = (config::kTarBlockSize - (size % config::kTarBlockSize)) % config::kTarBlockSize;
+    const auto total_bytes = safe_add(size, padding);
+    return !total_bytes ? std::unexpected(ExtractError::FileTooLarge) : discard_bytes(state.gz.get(), *total_bytes);
 }
 
 [[nodiscard]] std::expected<void, ExtractError> process_longlink_entry(ExtractState& state, std::uint64_t file_size) {
@@ -774,23 +774,28 @@ struct EntryActionContext {
 
 [[nodiscard]] std::expected<void, ExtractError> process_entry_action(
     ExtractState& state, const EntryActionContext& context) {
-    const auto update_state = [&state, &context] { state.total_extracted_size += context.final_size; };
+    const auto update_state = [&state, &context]() -> std::expected<void, ExtractError> {
+        const auto sum = safe_add(state.total_extracted_size, context.final_size);
+        if (!sum) { return std::unexpected(ExtractError::ArchiveTooLarge); }
+        state.total_extracted_size = *sum;
+        return {};
+    };
 
     switch (context.action) {
         case EntryAction::Directory:
             return create_secure_directory(context.safe_path, state)
                 .and_then([&state, &context] { return skip_tar_data(state, context.final_size); })
-                .transform(update_state);
+                .and_then(update_state);
 
         case EntryAction::Regular:
             if (auto res = check_disk_space(state.dest_dir, context.final_size); !res) {
                 return std::unexpected(ExtractError::DiskFull);
             }
             return extract_regular_file(state, context.safe_path, context.final_size, context.file_mode)
-                .transform(update_state);
+                .and_then(update_state);
 
         case EntryAction::Skip:
-            return skip_tar_data(state, context.final_size).transform(update_state);
+            return skip_tar_data(state, context.final_size).and_then(update_state);
 
         case EntryAction::Forbidden:
             return std::unexpected(ExtractError::SymlinkDetected);

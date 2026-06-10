@@ -120,7 +120,8 @@ std::size_t write_string_callback(void* ptr, std::size_t size, std::size_t nmemb
     auto& ctx = user_data_as<StringWriteContext>(userdata);
     auto& out = ctx.output.get();
 
-    if (*total_opt > out.max_size() - out.size()) { return 0; }
+    const auto space_left = safe_sub(out.max_size(), out.size());
+    if (!space_left || *total_opt > *space_left) { return 0; }
 
     try {
         out.append(static_cast<const char*>(ptr), toSize(*total_opt));

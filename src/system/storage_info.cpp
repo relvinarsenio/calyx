@@ -104,8 +104,7 @@ struct MountMatch {
     if (std::ranges::copy(line | tokenize_sv(' ') | std::views::take(kFixedFields), fixed.begin()).out != fixed.end()) {
         return std::move(result);
     }
-    std::string_view major_minor = fixed[2];
-    std::string_view mount_point = fixed[4];
+    auto [mount_id, parent_id, major_minor, root_dir, mount_point] = fixed;
 
     auto sep_pos = line.find(" - ");
     if (sep_pos == std::string_view::npos) { return std::move(result); }

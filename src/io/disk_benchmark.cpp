@@ -1479,8 +1479,7 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(const Ben
         const std::uint64_t rem = val % align;
         if (rem == 0) { return val; }
         const std::uint64_t diff = align - rem;
-        if (val > std::numeric_limits<std::uint64_t>::max() - diff) { return std::nullopt; }
-        return val + diff;
+        return safe_add(val, diff);
     };
 
     const auto write_block_size_opt = round_up(config.write_block_size, hw.offset_align);

@@ -270,7 +270,7 @@ void display_system_section() {
 }
 
 std::string build_zswap_metadata(const ZSwapStats& stats, std::uint64_t total_mem) {
-    const std::uint64_t max_pool_bytes = (total_mem * stats.max_pool_percent) / 100;
+    const std::uint64_t max_pool_bytes = safe_mul(total_mem, stats.max_pool_percent).value_or(0uz) / 100uz;
     if (stats.zpool.empty()) {
         return std::format(
             "{}, limit: {} ({}%)", stats.compressor, format_bytes(max_pool_bytes), stats.max_pool_percent);
@@ -300,12 +300,13 @@ std::string build_zswap_secondary_info(const ZSwapStats& stats) {
         { { "Spilled", stats.written_back, color::kCyan }, { "Rejected", stats.reject_reclaim_fail, color::kRed },
               { "Capped", stats.pool_limit_hit, color::kRed } });
 
-    return metrics | std::views::filter([](const auto& item) { return std::get<1>(item) > 0; })
-        | std::views::transform([page_size](const auto& item) {
-              return std::format(" {}: {}", std::get<0>(item),
-                  color::colorize(format_bytes(std::get<1>(item) * page_size), std::get<2>(item)));
-          })
-        | std::views::join_with(std::string_view(" ")) | std::ranges::to<std::string>();
+    return metrics | std::views::filter([](const auto& item) {
+        return std::get<1>(item) > 0;
+    }) | std::views::transform([page_size](const auto& item) {
+        return std::format(" {}: {}", std::get<0>(item),
+            color::colorize(format_bytes(safe_mul(std::get<1>(item), page_size).value_or(0uz)), std::get<2>(item)));
+    }) | std::views::join_with(std::string_view(" "))
+        | std::ranges::to<std::string>();
 }
 
 void print_regular_swap(std::string_view label, const SwapEntry& swap) {
@@ -360,7 +361,8 @@ void display_storage_memory() {
     const auto [total_swap, used_swap] = std::ranges::fold_left(
         swaps, std::pair { std::uint64_t { 0 }, std::uint64_t { 0 } }, [](auto acc, const auto& swap) {
             if (swap.is_zswap) { return acc; }
-            return std::pair { acc.first + swap.size, acc.second + swap.used };
+            return std::pair { safe_add(acc.first, swap.size).value_or(0uz),
+                safe_add(acc.second, swap.used).value_or(0uz) };
         });
 
     print_size_usage("Total Swap", total_swap, used_swap);
@@ -400,7 +402,13 @@ void display_storage_memory() {
 }
 
 [[nodiscard]] std::expected<DiskIORunResult, std::string> run_single_disk_benchmark(std::uint32_t run_number) {
-    const auto label       = std::format(" I/O Speed (Run #{})", run_number);
+    const auto label = std::format(" I/O Speed (Run #{})", run_number);
+
+    scope_exit clear_line { [] {
+        std::print("\r\x1b[2K");
+        std::fflush(stdout);
+    } };
+
     const auto progress_cb = ui::make_progress_callback(config::kIoLabelWidth);
 
     DiskBenchmark::BenchmarkConfig io_config {
@@ -412,11 +420,6 @@ void display_storage_memory() {
         .alignment         = config::kIoAlignment,
         .label             = label,
     };
-
-    scope_exit clear_line { [] {
-        std::print("\r\x1b[2K");
-        std::fflush(stdout);
-    } };
 
     const auto result
         = DiskBenchmark::run_io_test(io_config, progress_cb, {}, []() noexcept { return check_interrupted(); });
