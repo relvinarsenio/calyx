@@ -9,6 +9,7 @@ RUN --mount=type=cache,target=/var/cache/apk \
     ccache \
     clang \
     cmake \
+    gcc \
     libstdc++ \
     libstdc++-dev \
     liburing-dev \
