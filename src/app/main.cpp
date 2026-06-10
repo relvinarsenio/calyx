@@ -8,10 +8,12 @@
 #include "application.hpp"
 #include "utils.hpp"
 
+#include <clocale>
 #include <expected>
 #include <string>
 
 int main(int argc, char* argv[]) {
+    std::setlocale(LC_ALL, "");
     Application app;
     return app.run(argc, argv)
         .transform([]() { return 0; })
