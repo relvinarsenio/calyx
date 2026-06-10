@@ -17,10 +17,12 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <format>
 #include <langinfo.h>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <print>
 #include <ranges>
@@ -78,9 +80,24 @@ template <FixedString Pattern> struct StringMatcher {
     return supported;
 }
 
+/**
+ * @brief Thread-safe CLI progress spinner.
+ *
+ * This spinner uses two distinct synchronization domains:
+ * 1. An atomic handshake (spinning_ and active_ via std::atomic::wait/notify) to park/resume
+ *    the worker thread during idle periods.
+ * 2. A mutex and condition variable (mtx_ and stop_cv_) to guard text/timestamp updates and
+ *    enable interruptible, low-latency frame delays.
+ *
+ * These domains are kept separate because std::atomic does not support timed waits, and
+ * using a mutex-guarded condition variable for the outer idle state would require holding
+ * locks or checking predicates in a way that introduces spurious wakeup complexity.
+ */
 class UiSpinner {
-    std::string_view text_;
+    std::string text_;
     std::chrono::steady_clock::time_point start_;
+    mutable std::mutex mtx_;
+    std::condition_variable stop_cv_;
     std::span<const std::string_view> frames_ {};
     std::atomic<bool> spinning_ { false };
     std::atomic<bool> active_ { false };
@@ -90,6 +107,7 @@ class UiSpinner {
         std::stop_callback wake { st, [this] {
                                      spinning_.store(true, std::memory_order_release);
                                      spinning_.notify_one();
+                                     stop_cv_.notify_all();
                                  } };
         std::size_t idx = 0uz;
 
@@ -106,11 +124,19 @@ class UiSpinner {
             } };
 
             while (spinning_.load(std::memory_order_acquire) && !st.stop_requested()) {
-                const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start_).count();
-                const auto frame     = frames_[idx++ % frames_.size()];
-                std::print("\r {:<{}} {} {:4.1f}s", text_, config::kProgressBarWidth, frame, elapsed);
+                const auto [snapshot, start_time] = [this] {
+                    std::lock_guard lk(mtx_);
+                    return std::pair { text_, start_ };
+                }();
+                const double elapsed
+                    = std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time).count();
+                const auto frame = frames_[idx++ % frames_.size()];
+                std::print("\r {:<{}} {} {:4.1f}s", snapshot, config::kProgressBarWidth, frame, elapsed);
                 std::fflush(stdout);
-                std::this_thread::sleep_for(std::chrono::milliseconds(config::kUiSpinnerDelayMs));
+
+                std::unique_lock lk(mtx_);
+                stop_cv_.wait_for(lk, std::chrono::milliseconds(config::kUiSpinnerDelayMs),
+                    [this, &st] { return !spinning_.load(std::memory_order_relaxed) || st.stop_requested(); });
             }
         }
     }
@@ -133,16 +159,30 @@ public:
 
     ~UiSpinner() { stop(); }
 
-    void start(std::string_view text) noexcept {
+    void start(std::string_view text) {
         if (spinning_.load(std::memory_order_relaxed)) { stop(); }
-        text_  = text;
-        start_ = std::chrono::steady_clock::now();
+        {
+            std::lock_guard lk(mtx_);
+            text_  = text;
+            start_ = std::chrono::steady_clock::now();
+        }
         spinning_.store(true, std::memory_order_release);
         spinning_.notify_one();
     }
 
     void stop() noexcept {
-        if (spinning_.exchange(false, std::memory_order_release)) { active_.wait(true, std::memory_order_acquire); }
+        /**
+         * @brief Avoid lost wakeup race conditions on the condition variable.
+         */
+        const bool was_spinning = [this] {
+            std::lock_guard lk(mtx_);
+            return spinning_.exchange(false, std::memory_order_relaxed);
+        }();
+
+        if (was_spinning) {
+            stop_cv_.notify_all();
+            active_.wait(true, std::memory_order_acquire);
+        }
     }
 };
 
@@ -226,13 +266,14 @@ SpinnerCallback make_spinner_callback() {
     };
 }
 
-std::move_only_function<void(std::size_t, std::size_t, std::string_view) const noexcept> make_progress_callback(
+std::move_only_function<void(std::size_t, std::size_t, std::string_view) const> make_progress_callback(
     std::uint8_t label_width) {
 
     struct SharedState {
         std::atomic<std::size_t> current { 0uz };
         std::atomic<std::size_t> total { 0uz };
-        std::atomic<std::string_view> label {};
+        std::string label;
+        mutable std::mutex label_mtx;
     };
     auto state = std::make_shared<SharedState>();
 
@@ -245,7 +286,11 @@ std::move_only_function<void(std::size_t, std::size_t, std::string_view) const n
                 std::print("\r\x1b[2K");
                 std::fflush(stdout);
             } else {
-                render_progress_line(state->label.load(std::memory_order_acquire), 100uz, label_width);
+                const std::string lbl = [&state]() {
+                    std::lock_guard lk(state->label_mtx);
+                    return state->label;
+                }();
+                render_progress_line(lbl, 100uz, label_width);
             }
         } };
 
@@ -261,15 +306,22 @@ std::move_only_function<void(std::size_t, std::size_t, std::string_view) const n
             }
 
             const std::size_t percent = safe_mul(curr, 100uz).value_or(0uz) / tot;
-            render_progress_line(state->label.load(std::memory_order_acquire), percent, label_width);
+            const std::string lbl     = [&state]() {
+                std::lock_guard lk(state->label_mtx);
+                return state->label;
+            }();
+            render_progress_line(lbl, percent, label_width);
             last_current = curr;
             std::this_thread::sleep_for(std::chrono::milliseconds(config::kUiUpdateIntervalMs));
         }
     });
 
     return [state = std::move(state), jth = std::make_shared<std::jthread>(std::move(ui_thread))](
-               std::size_t current, std::size_t total, std::string_view label) noexcept {
-        state->label.store(label, std::memory_order_release);
+               std::size_t current, std::size_t total, std::string_view label) {
+        {
+            std::lock_guard lk(state->label_mtx);
+            state->label = label;
+        }
         state->total.store(total, std::memory_order_release);
         state->current.store(current, std::memory_order_release);
     };

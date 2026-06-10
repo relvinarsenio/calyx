@@ -182,8 +182,7 @@ struct IoContext {
     std::span<std::byte> write_buffer;
     std::span<AlignedBuffer> read_buffers;
     std::stop_token stop;
-    std::reference_wrapper<
-        const std::move_only_function<void(std::size_t, std::size_t, std::string_view) const noexcept>>
+    std::reference_wrapper<const std::move_only_function<void(std::size_t, std::size_t, std::string_view) const>>
         progress_cb;
     std::reference_wrapper<const std::move_only_function<bool() const noexcept>> interrupt_cb;
     std::uint64_t total_blocks {};
@@ -1227,8 +1226,7 @@ struct IoParams {
     std::span<std::byte> write_buffer;
     std::span<AlignedBuffer> read_buffers;
     std::stop_token stop;
-    std::reference_wrapper<
-        const std::move_only_function<void(std::size_t, std::size_t, std::string_view) const noexcept>>
+    std::reference_wrapper<const std::move_only_function<void(std::size_t, std::size_t, std::string_view) const>>
         progress_cb;
     std::reference_wrapper<const std::move_only_function<bool() const noexcept>> interrupt_cb;
     std::uint64_t total_bytes;
@@ -1444,7 +1442,7 @@ struct IoParams {
 } // namespace
 
 std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(const BenchmarkConfig& config,
-    const std::move_only_function<void(std::size_t, std::size_t, std::string_view) const noexcept>& progress_cb,
+    const std::move_only_function<void(std::size_t, std::size_t, std::string_view) const>& progress_cb,
     std::stop_token stop, const std::move_only_function<bool() const noexcept>& interrupt_cb) {
     using namespace std::chrono;
 

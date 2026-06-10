@@ -36,7 +36,7 @@ SpinnerCallback make_spinner_callback();
  * @param label_width The width of the text label displayed alongside the bar.
  * @return A move-only function that updates progress based on (current, total, label).
  */
-std::move_only_function<void(std::size_t, std::size_t, std::string_view) const noexcept> make_progress_callback(
+std::move_only_function<void(std::size_t, std::size_t, std::string_view) const> make_progress_callback(
     std::uint8_t label_width);
 
 /**
