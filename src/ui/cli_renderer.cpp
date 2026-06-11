@@ -9,6 +9,7 @@
 
 #include "color.hpp"
 #include "config.hpp"
+#include "interrupts.hpp"
 #include "scope.hpp"
 #include "speed_test.hpp"
 #include "utils.hpp"
@@ -32,6 +33,16 @@
 #include <thread>
 
 namespace ui {
+
+TerminalGuard::TerminalGuard() noexcept {
+    std::print("{}", cursor::hide);
+    std::fflush(stdout);
+}
+
+TerminalGuard::~TerminalGuard() noexcept {
+    std::print("{}{}", style::reset, cursor::show);
+    std::fflush(stdout);
+}
 
 namespace {
 
@@ -79,112 +90,6 @@ template <FixedString Pattern> struct StringMatcher {
     static const bool supported = detect_utf8();
     return supported;
 }
-
-/**
- * @brief Thread-safe CLI progress spinner.
- *
- * This spinner uses two distinct synchronization domains:
- * 1. An atomic handshake (spinning_ and active_ via std::atomic::wait/notify) to park/resume
- *    the worker thread during idle periods.
- * 2. A mutex and condition variable (mtx_ and stop_cv_) to guard text/timestamp updates and
- *    enable interruptible, low-latency frame delays.
- *
- * These domains are kept separate because std::atomic does not support timed waits, and
- * using a mutex-guarded condition variable for the outer idle state would require holding
- * locks or checking predicates in a way that introduces spurious wakeup complexity.
- */
-class UiSpinner {
-    std::string text_;
-    std::chrono::steady_clock::time_point start_;
-    mutable std::mutex mtx_;
-    std::condition_variable stop_cv_;
-    std::span<const std::string_view> frames_ {};
-    std::atomic<bool> spinning_ { false };
-    std::atomic<bool> active_ { false };
-    std::jthread worker_;
-
-    void worker_loop(std::stop_token st) {
-        std::stop_callback wake { st, [this] {
-                                     spinning_.store(true, std::memory_order_release);
-                                     spinning_.notify_one();
-                                     stop_cv_.notify_all();
-                                 } };
-        std::size_t idx = 0uz;
-
-        while (!st.stop_requested()) {
-            spinning_.wait(false, std::memory_order_acquire);
-            if (st.stop_requested() || !spinning_.load(std::memory_order_acquire)) { continue; }
-
-            active_.store(true, std::memory_order_relaxed);
-            scope_exit cleanup_active { [this] {
-                std::print("\r\x1b[2K");
-                std::fflush(stdout);
-                active_.store(false, std::memory_order_release);
-                active_.notify_one();
-            } };
-
-            while (spinning_.load(std::memory_order_acquire) && !st.stop_requested()) {
-                const auto [snapshot, start_time] = [this] {
-                    std::lock_guard lk(mtx_);
-                    return std::pair { text_, start_ };
-                }();
-                const double elapsed
-                    = std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time).count();
-                const auto frame = frames_[idx++ % frames_.size()];
-                std::print("\r {:<{}} {} {:4.1f}s", snapshot, config::kProgressBarWidth, frame, elapsed);
-                std::fflush(stdout);
-
-                std::unique_lock lk(mtx_);
-                stop_cv_.wait_for(lk, std::chrono::milliseconds(config::kUiSpinnerDelayMs),
-                    [this, &st] { return !spinning_.load(std::memory_order_relaxed) || st.stop_requested(); });
-            }
-        }
-    }
-
-public:
-    UiSpinner(const UiSpinner&)            = delete;
-    UiSpinner& operator=(const UiSpinner&) = delete;
-    UiSpinner(UiSpinner&&)                 = delete;
-    UiSpinner& operator=(UiSpinner&&)      = delete;
-
-    UiSpinner() {
-        static constexpr std::array<std::string_view, 10uz> kUtfFrames
-            = { "\u280B", "\u2819", "\u2839", "\u2838", "\u283C", "\u2834", "\u2826", "\u2827", "\u2807", "\u280F" };
-        static constexpr std::array<std::string_view, 4uz> kAsciiFrames = { "|", "/", "-", "\\" };
-
-        frames_ = (config::kUiForceAscii || !supports_utf8()) ? std::span<const std::string_view>(kAsciiFrames)
-                                                              : std::span<const std::string_view>(kUtfFrames);
-        worker_ = std::jthread([this](std::stop_token st) { worker_loop(std::move(st)); });
-    }
-
-    ~UiSpinner() { stop(); }
-
-    void start(std::string_view text) {
-        if (spinning_.load(std::memory_order_relaxed)) { stop(); }
-        {
-            std::lock_guard lk(mtx_);
-            text_  = text;
-            start_ = std::chrono::steady_clock::now();
-        }
-        spinning_.store(true, std::memory_order_release);
-        spinning_.notify_one();
-    }
-
-    void stop() noexcept {
-        /**
-         * @brief Avoid lost wakeup race conditions on the condition variable.
-         */
-        const bool was_spinning = [this] {
-            std::lock_guard lk(mtx_);
-            return spinning_.exchange(false, std::memory_order_relaxed);
-        }();
-
-        if (was_spinning) {
-            stop_cv_.notify_all();
-            active_.wait(true, std::memory_order_acquire);
-        }
-    }
-};
 
 [[nodiscard]] std::string format_speed(double mbps) {
     if (mbps >= config::kMbpsToGbpsThreshold) {
@@ -252,19 +157,70 @@ void render_speed_results(const SpeedTestResult& result) {
     std::ranges::for_each(result.entries | std::views::filter(is_error), print_entry_error);
 }
 
-SpinnerCallback make_spinner_callback() {
-    auto spinner = std::make_unique<UiSpinner>();
-    return [spinner = std::move(spinner)](SpinnerEvent ev, std::string_view label) noexcept {
-        switch (ev) {
-            case SpinnerEvent::Start:
-                spinner->start(label);
-                break;
-            case SpinnerEvent::Stop:
-                spinner->stop();
-                break;
+/**
+ * @brief Internal execution context for the CLI progress spinner.
+ *
+ * Encapsulates the background rendering state and synchronization primitives,
+ * isolating heavy threading dependencies from the public API header.
+ */
+struct ScopedSpinner::Impl {
+    std::string text_;
+    std::chrono::steady_clock::time_point start_;
+    mutable std::mutex mtx_;
+    std::condition_variable stop_cv_;
+    std::span<const std::string_view> frames_ {};
+    std::jthread worker_;
+
+    void worker_loop(std::stop_token st) {
+        std::size_t idx = 0uz;
+
+        scope_exit cleanup_active { [] {
+            std::print("\r{}", style::clear_line);
+            std::fflush(stdout);
+        } };
+
+        while (!st.stop_requested()) {
+            const auto [snapshot, start_time] = [this] {
+                std::lock_guard lk(mtx_);
+                return std::pair { text_, start_ };
+            }();
+            const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time).count();
+            const auto frame     = frames_[idx++ % frames_.size()];
+            std::print("{}\r {:<{}} {} {:4.1f}s{}", term::sync_start, snapshot, config::kProgressBarWidth, frame,
+                elapsed, term::sync_end);
+            std::fflush(stdout);
+
+            std::unique_lock lk(mtx_);
+            stop_cv_.wait_for(lk, std::chrono::milliseconds(config::kUiSpinnerDelayMs),
+                [&st] { return st.stop_requested() || check_interrupted(); });
         }
-    };
+    }
+
+    explicit Impl(std::span<const std::string_view> frames, std::string_view text)
+        : text_(text)
+        , start_(std::chrono::steady_clock::now())
+        , frames_(frames)
+        , worker_([this](std::stop_token st) { worker_loop(st); }) {}
+
+    ~Impl() noexcept {
+        worker_.request_stop();
+        stop_cv_.notify_all();
+    }
+};
+
+ScopedSpinner::ScopedSpinner(std::string_view label) {
+    static constexpr std::array<std::string_view, 10uz> kUtfFrames
+        = { "\u280B", "\u2819", "\u2839", "\u2838", "\u283C", "\u2834", "\u2826", "\u2827", "\u2807", "\u280F" };
+    static constexpr std::array<std::string_view, 4uz> kAsciiFrames = { "|", "/", "-", "\\" };
+
+    auto frames = (config::kUiForceAscii || !supports_utf8()) ? std::span<const std::string_view>(kAsciiFrames)
+                                                              : std::span<const std::string_view>(kUtfFrames);
+    impl_       = std::make_unique<Impl>(frames, label);
 }
+
+ScopedSpinner::~ScopedSpinner() noexcept                          = default;
+ScopedSpinner::ScopedSpinner(ScopedSpinner&&) noexcept            = default;
+ScopedSpinner& ScopedSpinner::operator=(ScopedSpinner&&) noexcept = default;
 
 std::move_only_function<void(std::size_t, std::size_t, std::string_view) const> make_progress_callback(
     std::uint8_t label_width) {
@@ -283,7 +239,7 @@ std::move_only_function<void(std::size_t, std::size_t, std::string_view) const> 
             const std::size_t tot  = state->total.load(std::memory_order_acquire);
 
             if (tot == 0uz || curr < tot) {
-                std::print("\r\x1b[2K");
+                std::print("\r{}", style::clear_line);
                 std::fflush(stdout);
             } else {
                 const std::string lbl = [&state]() {
@@ -331,7 +287,8 @@ void render_progress_line(std::string_view label, std::size_t percent, std::uint
     percent                    = std::clamp(percent, 0uz, 100uz);
     const std::string_view bar = create_progress_bar_sv(percent);
 
-    std::print("\r\x1b[2K {:<{}} [{}] {:3}%", label, label_width, bar, percent);
+    std::print("{}\r{} {:<{}} [{}] {:3}%{}", term::sync_start, style::clear_line, label, label_width, bar, percent,
+        term::sync_end);
     std::fflush(stdout);
 }
 

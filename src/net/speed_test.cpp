@@ -7,6 +7,7 @@
  */
 #include "speed_test.hpp"
 
+#include "cli_renderer.hpp"
 #include "color.hpp"
 #include "config.hpp"
 #include "file_descriptor.hpp"
@@ -148,29 +149,6 @@ private:
     }
 };
 
-class SpinnerScope {
-    SpinnerCallback& cb_;
-    std::string_view label_;
-    bool active_ = false;
-
-public:
-    SpinnerScope(SpinnerCallback& cb, std::string_view label)
-        : cb_(cb)
-        , label_(label) {
-        active_ = static_cast<bool>(cb_);
-        if (active_) { cb_(SpinnerEvent::Start, label_); }
-    }
-
-    ~SpinnerScope() noexcept {
-        if (active_) { cb_(SpinnerEvent::Stop, label_); }
-    }
-
-    SpinnerScope(const SpinnerScope&)            = delete;
-    SpinnerScope& operator=(const SpinnerScope&) = delete;
-    SpinnerScope(SpinnerScope&&)                 = delete;
-    SpinnerScope& operator=(SpinnerScope&&)      = delete;
-};
-
 std::string sanitize_error(std::string_view msg) {
     const auto trimmed = [msg]() {
         auto first_line     = msg.substr(0, msg.find('\n'));
@@ -276,7 +254,6 @@ struct EntryFallbackContext {
 struct NodeRunContext {
     const std::string& cli_path;
     std::string_view cert_path;
-    SpinnerCallback& spinner_cb;
     SpeedTestResult& result;
 };
 
@@ -323,7 +300,7 @@ void apply_entry_fallback_errors(EntryFallbackContext context) {
 }
 
 NodeExecutionResult run_speed_test_for_node(const Node& node, NodeRunContext context) {
-    SpinnerScope spinner(context.spinner_cb, node.name);
+    ui::ScopedSpinner spinner(node.name);
 
     auto cmd_args = build_speedtest_command_args(context.cli_path, context.cert_path, node.id);
 
@@ -459,7 +436,7 @@ std::expected<void, std::string> SpeedTest::install() {
         });
 }
 
-SpeedTestResult SpeedTest::run(SpinnerCallback& spinner_cb) {
+SpeedTestResult SpeedTest::run() {
     SpeedTestResult result;
     result.entries.reserve(kServers.size());
 
@@ -482,10 +459,9 @@ SpeedTestResult SpeedTest::run(SpinnerCallback& spinner_cb) {
 
         auto node_result = run_speed_test_for_node(node,
             NodeRunContext {
-                .cli_path   = cli_path,
-                .cert_path  = cert.get_path(),
-                .spinner_cb = spinner_cb,
-                .result     = result,
+                .cli_path  = cli_path,
+                .cert_path = cert.get_path(),
+                .result    = result,
             });
 
         result.entries.push_back(std::move(node_result.entry));

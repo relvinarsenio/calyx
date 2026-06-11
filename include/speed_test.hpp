@@ -15,12 +15,6 @@
 #include <functional>
 #include <string_view>
 
-enum class SpinnerEvent {
-    Start,
-    Stop
-};
-using SpinnerCallback = std::move_only_function<void(SpinnerEvent, std::string_view) noexcept>;
-
 class SpeedTest {
     HttpClient& http_;
 
@@ -42,7 +36,7 @@ public:
     [[nodiscard]] static std::expected<SpeedTest, std::string> create(HttpClient& h);
 
     [[nodiscard]] std::expected<void, std::string> install();
-    [[nodiscard]] SpeedTestResult run(SpinnerCallback& spinner_cb);
+    [[nodiscard]] SpeedTestResult run();
 
     [[nodiscard]] std::filesystem::path get_base_dir() const { return base_dir_; }
 };

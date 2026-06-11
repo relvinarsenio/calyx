@@ -19,6 +19,52 @@
  * @brief Provides functions for rendering speed test results and progress bars to the terminal.
  */
 namespace ui {
+
+/**
+ * @brief Escape sequences for text styling (Color, Bold, etc.)
+ */
+namespace style {
+inline constexpr std::string_view reset      = "\x1b[0m";
+inline constexpr std::string_view bold       = "\x1b[1m";
+inline constexpr std::string_view unbold     = "\x1b[22m";
+inline constexpr std::string_view italic     = "\x1b[3m";
+inline constexpr std::string_view unitalic   = "\x1b[23m";
+inline constexpr std::string_view dim        = "\x1b[2m";
+inline constexpr std::string_view undim      = "\x1b[22m";
+inline constexpr std::string_view underline  = "\x1b[4m";
+inline constexpr std::string_view clear_line = "\x1b[2K";
+} // namespace style
+
+/**
+ * @brief Escape sequences for cursor movement.
+ */
+namespace cursor {
+inline constexpr std::string_view hide = "\x1b[?25l";
+inline constexpr std::string_view show = "\x1b[?25h";
+} // namespace cursor
+
+/**
+ * @brief Escape sequences for terminal state management.
+ */
+namespace term {
+inline constexpr std::string_view sync_start = "\x1b[?2026h";
+inline constexpr std::string_view sync_end   = "\x1b[?2026l";
+} // namespace term
+
+/**
+ * @brief RAII Guard to ensure terminal is in a clean state during and after UI execution.
+ * @details Hides cursor on construction, shows cursor on destruction.
+ */
+class TerminalGuard {
+public:
+    TerminalGuard() noexcept;
+    ~TerminalGuard() noexcept;
+
+    TerminalGuard(const TerminalGuard&)            = delete;
+    TerminalGuard& operator=(const TerminalGuard&) = delete;
+    TerminalGuard(TerminalGuard&&)                 = delete;
+    TerminalGuard& operator=(TerminalGuard&&)      = delete;
+};
 /**
  * @brief Renders the final results of a speed test in a formatted table.
  * @param result The SpeedTestResult object containing measured speeds and latencies.
@@ -26,10 +72,22 @@ namespace ui {
 void render_speed_results(const SpeedTestResult& result);
 
 /**
- * @brief Creates a callback function that renders a spinner for indeterminate progress.
- * @return A SpinnerCallback that can be invoked during long-running operations.
+ * @brief RAII Spinner that displays a progress animation in a background thread.
+ * @details Starts spinning on construction, stops and cleans up terminal on destruction.
  */
-SpinnerCallback make_spinner_callback();
+class ScopedSpinner {
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+
+public:
+    explicit ScopedSpinner(std::string_view label);
+    ~ScopedSpinner() noexcept;
+
+    ScopedSpinner(const ScopedSpinner&)            = delete;
+    ScopedSpinner& operator=(const ScopedSpinner&) = delete;
+    ScopedSpinner(ScopedSpinner&&) noexcept;
+    ScopedSpinner& operator=(ScopedSpinner&&) noexcept;
+};
 
 /**
  * @brief Creates a callback function for rendering a deterministic progress bar.

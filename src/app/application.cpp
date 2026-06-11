@@ -465,8 +465,7 @@ std::expected<void, std::string> run_speed_test(HttpClient& http) {
             return st.install().transform([owned_st = std::move(st)]() mutable { return std::move(owned_st); });
         })
         .transform([](SpeedTest st) {
-            auto spinner_cb   = ui::make_spinner_callback();
-            auto speed_result = st.run(spinner_cb);
+            auto speed_result = st.run();
             ui::render_speed_results(speed_result);
         })
         .or_else([](const std::string& err) -> std::expected<void, std::string> { return std::unexpected(err); });
