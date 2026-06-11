@@ -185,7 +185,7 @@ struct ScopedSpinner::Impl {
             std::fflush(stdout);
         } };
 
-        while (!st.stop_requested()) {
+        while (!st.stop_requested() && !check_interrupted()) {
             const auto [snapshot, start_time] = [this] {
                 std::lock_guard lk(mtx_);
                 return std::pair { text_, start_ };
@@ -258,7 +258,7 @@ std::move_only_function<void(std::size_t, std::size_t, std::string_view) const> 
 
         std::size_t last_current = std::numeric_limits<std::size_t>::max();
 
-        while (!st.stop_requested()) {
+        while (!st.stop_requested() && !check_interrupted()) {
             const std::size_t curr = state->current.load(std::memory_order_acquire);
             const std::size_t tot  = state->total.load(std::memory_order_acquire);
 
