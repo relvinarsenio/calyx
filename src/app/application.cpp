@@ -405,7 +405,7 @@ void display_storage_memory() {
     const auto label = std::format(" I/O Speed (Run #{})", run_number);
 
     scope_exit clear_line { [] {
-        std::print("\r\x1b[2K");
+        std::print("\r{}", ui::style::clear_line);
         std::fflush(stdout);
     } };
 

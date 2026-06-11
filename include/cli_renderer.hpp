@@ -24,15 +24,18 @@ namespace ui {
  * @brief Escape sequences for text styling (Color, Bold, etc.)
  */
 namespace style {
-inline constexpr std::string_view reset      = "\x1b[0m";
-inline constexpr std::string_view bold       = "\x1b[1m";
-inline constexpr std::string_view unbold     = "\x1b[22m";
-inline constexpr std::string_view italic     = "\x1b[3m";
-inline constexpr std::string_view unitalic   = "\x1b[23m";
-inline constexpr std::string_view dim        = "\x1b[2m";
-inline constexpr std::string_view undim      = "\x1b[22m";
-inline constexpr std::string_view underline  = "\x1b[4m";
-inline constexpr std::string_view clear_line = "\x1b[2K";
+inline constexpr std::string_view reset    = "\x1b[0m";
+inline constexpr std::string_view bold     = "\x1b[1m";
+inline constexpr std::string_view italic   = "\x1b[3m";
+inline constexpr std::string_view unitalic = "\x1b[23m";
+inline constexpr std::string_view dim      = "\x1b[2m";
+/**
+ * @brief Resets text intensity to normal (neither bold nor dim).
+ * @note ESC[22m turns off both bold (extra intensity) and dim (faint/reduced intensity) per ANSI standard.
+ */
+inline constexpr std::string_view normal_intensity = "\x1b[22m";
+inline constexpr std::string_view underline        = "\x1b[4m";
+inline constexpr std::string_view clear_line       = "\x1b[2K";
 } // namespace style
 
 /**
@@ -56,6 +59,8 @@ inline constexpr std::string_view sync_end   = "\x1b[?2026l";
  * @details Hides cursor on construction, shows cursor on destruction.
  */
 class TerminalGuard {
+    bool active_ = false;
+
 public:
     TerminalGuard() noexcept;
     ~TerminalGuard() noexcept;
@@ -65,6 +70,7 @@ public:
     TerminalGuard(TerminalGuard&&)                 = delete;
     TerminalGuard& operator=(TerminalGuard&&)      = delete;
 };
+
 /**
  * @brief Renders the final results of a speed test in a formatted table.
  * @param result The SpeedTestResult object containing measured speeds and latencies.

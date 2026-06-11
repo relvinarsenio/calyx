@@ -9,6 +9,7 @@
 
 #include "color.hpp"
 #include "config.hpp"
+#include "file_descriptor.hpp"
 #include "interrupts.hpp"
 #include "scope.hpp"
 #include "speed_test.hpp"
@@ -35,13 +36,18 @@
 namespace ui {
 
 TerminalGuard::TerminalGuard() noexcept {
-    std::print("{}", cursor::hide);
-    std::fflush(stdout);
+    if (posix::file_descriptor::is_tty(posix::file_descriptor::stdout_fd)) {
+        active_ = true;
+        std::print("{}", cursor::hide);
+        std::fflush(stdout);
+    }
 }
 
 TerminalGuard::~TerminalGuard() noexcept {
-    std::print("{}{}", style::reset, cursor::show);
-    std::fflush(stdout);
+    if (active_) {
+        std::print("{}{}", style::reset, cursor::show);
+        std::fflush(stdout);
+    }
 }
 
 namespace {

@@ -263,8 +263,11 @@ public:
         return update_fcntl_flag(F_GETFD, F_SETFD, FD_CLOEXEC, enable);
     }
 
+    /** @brief Check if a raw file descriptor is associated with a terminal (TTY). */
+    [[nodiscard]] static auto is_tty(native_handle_type fd) noexcept -> bool { return fd >= 0 && ::isatty(fd) == 1; }
+
     /** @brief Check if this descriptor is associated with a terminal (TTY). */
-    [[nodiscard]] auto is_tty() const noexcept -> bool { return fd_ >= 0 && ::isatty(fd_) == 1; }
+    [[nodiscard]] auto is_tty() const noexcept -> bool { return is_tty(fd_); }
 
     /** @brief Retrieve the size of the file in bytes via fstat(2). */
     [[nodiscard]] auto get_size() const noexcept -> std::expected<off_t, std::error_code> {
