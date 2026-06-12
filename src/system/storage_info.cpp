@@ -63,10 +63,21 @@ namespace {
 }
 
 [[nodiscard]] std::optional<std::uint64_t> extract_mem_available(std::string_view line) {
-    if (!line.starts_with("MemAvailable:")) { return std::nullopt; }
-    auto value_part = trim_sv(line.substr(line.find(':') + 1));
-    if (auto res = parse_number<std::uint64_t>(value_part)) { return *res; }
-    return std::nullopt;
+    constexpr std::string_view kPrefix = "MemAvailable:";
+    if (!line.starts_with(kPrefix)) { return std::nullopt; }
+
+    return std::optional<std::string_view> { line.substr(kPrefix.size()) }
+        .transform(trim_sv)
+        .transform([](std::string_view val) noexcept -> std::string_view {
+            constexpr std::string_view kSuffix = "kB";
+            return trim_sv(
+                val.ends_with(kSuffix) ? val.substr(0uz, safe_sub(val.size(), kSuffix.size()).value_or(0uz)) : val);
+        })
+        .and_then([](std::string_view val) noexcept -> std::optional<std::uint64_t> {
+            const auto res = parse_number<std::uint64_t>(val);
+            return res ? std::optional { *res } : std::nullopt;
+        })
+        .and_then([](std::uint64_t val) noexcept -> std::optional<std::uint64_t> { return safe_mul(val, 1024ULL); });
 }
 
 [[nodiscard]] std::optional<SwapEntry> parse_swap_line(std::string_view line) {
@@ -161,7 +172,7 @@ MemInfo SystemInfo::get_memory_status() noexcept {
             | std::views::transform([](auto mem_result) { return *mem_result; }) | std::views::take(1);
 
         if (auto first_value = available_mem.begin(); first_value != available_mem.end()) {
-            info.available = safe_mul(*first_value, 1024ULL).value_or(0);
+            info.available = *first_value;
         }
     }
 
