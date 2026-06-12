@@ -184,6 +184,34 @@ inline constexpr auto get_page_size = []() noexcept -> std::uint64_t {
     return size;
 };
 
+namespace format_impl {
+
+/**
+ * @brief Aggregates the mutable state of scaled formatting variables.
+ * @details Grouped into a single structure to avoid passing multiple output references
+ *          in formatting helper signatures.
+ */
+struct format_state {
+    double scaled_value;
+    std::size_t decimal_places;
+    std::size_t suffix_index;
+};
+
+inline constexpr auto adjust_overflow = [](format_state& state, double base, std::size_t max_suffixes) noexcept {
+    constexpr std::array kFactors = { 1.0, 10.0 };
+    const double factor           = kFactors[state.decimal_places];
+    const double rounded          = std::round(state.scaled_value * factor) / factor;
+
+    const bool overflow = (rounded >= base) && (toSize(safe_add(state.suffix_index, 1uz).value_or(0uz)) < max_suffixes);
+    state.suffix_index  = toSize(safe_add(state.suffix_index, toSize(+overflow)).value_or(state.suffix_index));
+
+    const std::array kScaleValues = { state.scaled_value, rounded / base };
+    state.scaled_value            = kScaleValues[toSize(+overflow)];
+    state.decimal_places          = std::min<std::size_t>(toSize(std::llround(state.scaled_value * 10.0) % 10), 1uz);
+};
+
+} // namespace format_impl
+
 /**
  * @brief Formats a byte count into a human-readable string (e.g., "1.2 MB").
  * @details Evaluates the scale index and dynamic precision in a single allocation pass
@@ -192,12 +220,16 @@ inline constexpr auto get_page_size = []() noexcept -> std::uint64_t {
 inline constexpr auto format_bytes = [](std::uint64_t bytes) -> std::string {
     static constexpr std::array kSuffixes = { "B", "KB", "MB", "GB", "TB" };
 
-    const std::size_t bits           = toSize(std::bit_width(bytes));
-    const std::size_t shift          = bits - toSize(bits ? 1 : 0);
-    const std::size_t suffix_index   = std::min<std::size_t>(shift / 10, kSuffixes.size() - 1);
-    const double scaled_value        = toDouble(bytes) / toDouble(1ULL << (suffix_index * 10));
-    const std::size_t decimal_places = std::min<std::size_t>(toSize(std::llround(scaled_value * 10.0) % 10), 1uz);
-    return std::format("{:.{}f} {}", scaled_value, decimal_places, kSuffixes[suffix_index]);
+    const std::size_t bits     = toSize(std::bit_width(bytes));
+    const std::size_t shift    = toSize(safe_sub(bits, toSize(+(bits > 0))).value_or(0uz));
+    std::size_t suffix_index   = std::min<std::size_t>(shift / 10uz, kSuffixes.size() - 1uz);
+    double scaled_value        = toDouble(bytes) / toDouble(1ULL << toSize(safe_mul(suffix_index, 10uz).value_or(0uz)));
+    std::size_t decimal_places = std::min<std::size_t>(toSize(std::llround(scaled_value * 10.0) % 10), 1uz);
+
+    format_impl::format_state state { scaled_value, decimal_places, suffix_index };
+    format_impl::adjust_overflow(state, 1024.0, kSuffixes.size());
+
+    return std::format("{:.{}f} {}", state.scaled_value, state.decimal_places, kSuffixes[state.suffix_index]);
 };
 
 /**
@@ -214,11 +246,15 @@ inline constexpr auto format_count = [](std::uint64_t count) -> std::string {
     }();
 
     const auto upper_bound_it = std::upper_bound(kPowersOfThousand.begin(), kPowersOfThousand.end(), count);
-    const std::size_t suffix_index
-        = toSize(std::max<std::ptrdiff_t>(std::distance(kPowersOfThousand.begin(), upper_bound_it) - 1, 0));
-    const double scaled_value        = toDouble(count) / toDouble(kPowersOfThousand[suffix_index]);
-    const std::size_t decimal_places = std::min<std::size_t>(toSize(std::llround(scaled_value * 10.0) % 10), 1uz);
-    return std::format("{:.{}f}{}", scaled_value, decimal_places, kSuffixes[suffix_index]);
+    std::size_t suffix_index
+        = toSize(safe_sub(toSize(std::distance(kPowersOfThousand.begin(), upper_bound_it)), 1uz).value_or(0uz));
+    double scaled_value        = toDouble(count) / toDouble(kPowersOfThousand[suffix_index]);
+    std::size_t decimal_places = std::min<std::size_t>(toSize(std::llround(scaled_value * 10.0) % 10), 1uz);
+
+    format_impl::format_state state { scaled_value, decimal_places, suffix_index };
+    format_impl::adjust_overflow(state, 1000.0, kSuffixes.size());
+
+    return std::format("{:.{}f}{}", state.scaled_value, state.decimal_places, kSuffixes[state.suffix_index]);
 };
 
 inline constexpr auto check_disk_space
