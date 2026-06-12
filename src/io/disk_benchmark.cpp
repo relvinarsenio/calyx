@@ -25,6 +25,7 @@
 #include <format>
 #include <limits>
 #include <new>
+#include <numeric>
 #include <optional>
 #include <print>
 #include <ranges>

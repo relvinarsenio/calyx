@@ -14,6 +14,7 @@
 #include "scope.hpp"
 #include "utils.hpp"
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <expected>

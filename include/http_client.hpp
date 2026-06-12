@@ -11,6 +11,7 @@
 #include <curl/curl.h>
 #include <expected>
 #include <filesystem>
+#include <format>
 #include <memory>
 #include <optional>
 #include <string>
