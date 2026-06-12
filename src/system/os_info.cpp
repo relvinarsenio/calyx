@@ -10,6 +10,7 @@
 #include "system_probe.hpp"
 #include "utils.hpp"
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <format>
@@ -88,8 +89,19 @@ std::string SystemInfo::get_uptime() noexcept {
 }
 
 std::string SystemInfo::get_load_avg() noexcept {
-    std::array<double, 3> loads {};
+    std::array<double, 3uz> loads {};
     return posix::expect_result<posix::error_style::posix>(::getloadavg(loads.data(), 3))
-        ? std::format("{:.2f}, {:.2f}, {:.2f}", loads[0], loads[1], loads[2])
-        : std::string { "Unknown" };
+        .and_then([](int n_samples) noexcept -> std::expected<int, std::error_code> {
+            return n_samples > 0 ? std::expected<int, std::error_code> { n_samples }
+                                 : std::unexpected(std::make_error_code(std::errc::invalid_argument));
+        })
+        .transform([&loads](int n_samples) {
+            constexpr std::string_view kDelimiter = ", ";
+            return std::views::iota(0uz, 3uz)
+                | std::views::transform([&loads, limit = toSize(n_samples)](std::size_t idx) {
+                      return idx < limit ? std::format("{:.2f}", loads[idx]) : std::string("N/A");
+                  })
+                | std::views::join_with(kDelimiter) | std::ranges::to<std::string>();
+        })
+        .value_or("N/A");
 }
