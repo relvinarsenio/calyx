@@ -17,12 +17,12 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
-#include <cstdlib>
 #include <expected>
 #include <format>
 #include <optional>
 #include <ranges>
 #include <span>
+#include <spawn.h>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -55,6 +55,7 @@ namespace sp_impl {
     const std::size_t max_output_size = config::kPipeMaxOutputBytes;
     std::array<char, config::kPipeBufferSize> buffer {};
     std::size_t total_read = 0;
+    bool truncated         = false;
 
     while (true) {
         if (is_stopped()) { return std::string { config::kInterruptMsg }; }
@@ -73,6 +74,8 @@ namespace sp_impl {
         const std::size_t bytes = *read_res;
         if (bytes == 0) { break; }
 
+        if (truncated) { continue; }
+
         const auto new_total = safe_add(total_read, bytes);
         if (new_total && *new_total <= max_output_size) {
             result.output.append(buffer.data(), bytes);
@@ -83,7 +86,7 @@ namespace sp_impl {
         const auto remaining = safe_sub(max_output_size, total_read).value_or(0uz);
         if (remaining > 0) { result.output.append(buffer.data(), remaining); }
         result.output.append("\n[Output truncated (too large)]");
-        break;
+        truncated = true;
     }
     return std::nullopt;
 }
@@ -181,47 +184,55 @@ void handle_wait_error(std::error_code ec, ShellPipeResult& result) {
     }
 }
 
-/**
- * @brief Resets signal dispositions in the child to default.
- */
-void reset_child_signals() noexcept {
-    struct sigaction sa {};
-    sa.sa_handler = SIG_DFL;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;
+/** @brief Inits file actions to redirect stdout and stderr to the pipe write end. */
+[[nodiscard]] auto configure_spawn_file_actions(posix_spawn_file_actions_t& actions,
+    posix::file_descriptor::native_handle_type write_fd) noexcept -> std::expected<void, std::error_code> {
+    return posix::expect_success<posix::error_style::pthreads>(posix_spawn_file_actions_init(&actions))
+        .and_then([&actions, write_fd]() noexcept -> std::expected<void, std::error_code> {
+            posix_spawn_file_actions_adddup2(&actions, write_fd, STDOUT_FILENO);
+            posix_spawn_file_actions_adddup2(&actions, write_fd, STDERR_FILENO);
+            return {};
+        });
+}
 
-    for (const auto sig : { posix::signal::Int, posix::signal::Term }) {
-        ::sigaction(std::to_underlying(sig), &sa, nullptr);
-    }
+/** @brief Inits spawn attributes with an empty signal mask and SIG_DFL for all dispositions. */
+[[nodiscard]] auto configure_spawn_attr(posix_spawnattr_t& attr) noexcept -> std::expected<void, std::error_code> {
+    return posix::expect_success<posix::error_style::pthreads>(posix_spawnattr_init(&attr))
+        .and_then([&attr]() noexcept -> std::expected<void, std::error_code> {
+            sigset_t empty, all;
+            sigemptyset(&empty);
+            sigfillset(&all);
+            posix_spawnattr_setsigmask(&attr, &empty);
+            posix_spawnattr_setsigdefault(&attr, &all);
+            posix_spawnattr_setflags(&attr, static_cast<short>(POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF));
+            return {};
+        });
 }
 
 /**
- * @brief Redirects stdout and stderr to the pipe write end and closes unused descriptors.
+ * @brief Spawns a child process with stdout/stderr redirected to the pipe and a clean signal state.
+ *
+ * posix_spawn(3) atomically applies file actions and spawn attributes without any
+ * post-fork user-space code, eliminating the UB risk that arises from calling
+ * non-async-signal-safe functions in a multi-threaded parent after fork().
+ *
+ * The pipe fds carry O_CLOEXEC so exec() closes them automatically; only the
+ * dup2’d stdout/stderr targets (no CLOEXEC) remain open in the child.
  */
-void redirect_child_descriptors(posix::file_descriptor& write_fd, posix::file_descriptor& read_fd) noexcept {
-    scope_exit close_read { [&read_fd]() noexcept { read_fd.reset(); } };
-    scope_exit close_write { [&write_fd]() noexcept { write_fd.reset(); } };
+[[nodiscard]] auto spawn_child(const std::filesystem::path& path, const std::vector<char*>& argv,
+    posix::file_descriptor::native_handle_type write_fd) noexcept -> std::expected<pid_t, std::error_code> {
+    posix_spawn_file_actions_t actions;
+    if (const auto res = configure_spawn_file_actions(actions, write_fd); !res) { return std::unexpected(res.error()); }
+    scope_exit destroy_actions { [&actions]() noexcept { posix_spawn_file_actions_destroy(&actions); } };
 
-    const auto res_stdout = write_fd.redirect_to(posix::file_descriptor::stdout_fd, false);
-    if (!res_stdout) { std::_Exit(res_stdout.error().value()); }
-    const auto res_stderr = write_fd.redirect_to(posix::file_descriptor::stderr_fd, false);
-    if (!res_stderr) { std::_Exit(res_stderr.error().value()); }
-}
+    posix_spawnattr_t attr;
+    if (const auto res = configure_spawn_attr(attr); !res) { return std::unexpected(res.error()); }
+    scope_exit destroy_attr { [&attr]() noexcept { posix_spawnattr_destroy(&attr); } };
 
-/**
- * @brief Executes child image replacement and redirection.
- */
-[[noreturn]] void execute_child_process(const posix::resolved_executable& resolved_exec, std::span<char* const> argv,
-    posix::file_descriptor write_fd, posix::file_descriptor read_fd) noexcept {
-    reset_child_signals();
-    redirect_child_descriptors(write_fd, read_fd);
-
-    posix::exec_fd(resolved_exec.fd.native_handle(), resolved_exec.path.c_str(), argv.data());
-
-    /** @brief Ensure parent/diagnostic logging receives failure notification if exec fails. */
-    [[maybe_unused]] auto _ = write_all(posix::file_descriptor::stdout_fd, "Failed to execute binary\n");
-
-    std::_Exit(EXIT_FAILURE);
+    pid_t child_pid = -1;
+    return posix::expect_success<posix::error_style::pthreads>(
+        posix_spawn(&child_pid, path.c_str(), &actions, &attr, argv.data(), ::environ))
+        .transform([child_pid]() noexcept -> pid_t { return child_pid; });
 }
 
 /**
@@ -243,11 +254,16 @@ void redirect_child_descriptors(posix::file_descriptor& write_fd, posix::file_de
  * This encapsulates the wait loop and diagnostic error mapping to ensure the parent
  * does not leak zombie processes or misreport execution failures.
  */
-void reap_child_process(child_process& process, const auto& is_stopped, bool raise_on_error, ShellPipeResult& result) {
+void reap_child_process(child_process& process, chrono::steady_clock::time_point outer_deadline, const auto& is_stopped,
+    bool raise_on_error, ShellPipeResult& result) {
     if (!process) { return; }
 
-    const auto wait_deadline = chrono::steady_clock::now() + chrono::milliseconds(config::kShellPipeTermWaitMs);
-    auto wait_res = wait_for_child(process, wait_deadline, is_stopped, [&process]() noexcept { process.reset(); });
+    auto wait_res = wait_for_child(process, outer_deadline, is_stopped, [&process]() noexcept { process.reset(); });
+
+    if (!wait_res && wait_res.error() == std::errc::timed_out) {
+        const auto term_deadline = chrono::steady_clock::now() + chrono::milliseconds(config::kShellPipeTermWaitMs);
+        wait_res = wait_for_child(process, term_deadline, is_stopped, [&process]() noexcept { process.reset(); });
+    }
 
     if (!wait_res) {
         handle_wait_error(wait_res.error(), result);
@@ -303,14 +319,10 @@ auto ShellPipe::create(std::vector<std::string> args) -> std::expected<ShellPipe
      */
     scope_exit close_write { [&write_fd]() noexcept { write_fd.reset(); } };
 
-    const auto fork_result = posix::fork();
-    if (!fork_result) { return std::unexpected(fork_result.error()); }
+    const auto spawn_res = sp_impl::spawn_child(resolved_exec->path, argv, write_fd.native_handle());
+    if (!spawn_res) { return std::unexpected(spawn_res.error()); }
 
-    if (*fork_result == 0) {
-        sp_impl::execute_child_process(*resolved_exec, argv, std::move(write_fd), std::move(self.read_fd_));
-    }
-
-    self.pid_.reset(*fork_result);
+    self.pid_.reset(*spawn_res);
     return self;
 }
 
@@ -331,7 +343,7 @@ auto ShellPipe::create(std::vector<std::string> args) -> std::expected<ShellPipe
         return result;
     }
 
-    sp_impl::reap_child_process(pid_, is_stopped, raise_on_error, result);
+    sp_impl::reap_child_process(pid_, deadline, is_stopped, raise_on_error, result);
 
     return result;
 }
