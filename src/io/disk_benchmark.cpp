@@ -212,6 +212,10 @@ concept ProberStrategy = requires(T& t, std::size_t count, bool keep) {
 
 class ResourceProber {
 protected:
+    struct ProbeBounds {
+        std::size_t low, high;
+    };
+
     [[nodiscard]] static bool is_buffer_register_resource_error(std::error_code ret) noexcept {
         return ret.value() == ENOMEM || ret.value() == E2BIG;
     }
@@ -233,35 +237,61 @@ protected:
     }
 
     /**
-     * @brief Performs a binary search between a known success and a known failure point.
+     * @brief Evaluates a single iteration step of the buffer registration bisection search.
+     * 
+     * @details Isolates search state transitions into a stateless monadic flow to enforce
+     *          monotonicity invariants and prevent undefined behavior. Supports early exit
+     *          to avoid redundant system calls when the boundaries converge, and applies
+     *          upward midpoint rounding to guarantee loop termination when retaining successful candidates.
+     */
+    template <typename Self>
+        requires ProberStrategy<Self>
+    [[nodiscard]] static auto probe_bisection_step(Self& self,
+        std::expected<ProbeBounds, std::error_code> state) noexcept -> std::expected<ProbeBounds, std::error_code> {
+        return state.and_then([&self](ProbeBounds bounds) noexcept -> std::expected<ProbeBounds, std::error_code> {
+            if (bounds.low >= bounds.high) { return bounds; }
+
+            const std::size_t diff = safe_sub(bounds.high, bounds.low).value_or(0uz);
+            const std::size_t half = safe_add(diff, 1uz).value_or(0uz) >> 1uz;
+            const std::size_t mid  = safe_add(bounds.low, half).value_or(0uz);
+
+            return self.probe_register_buffers(mid, false)
+                .transform([bounds, mid]() noexcept { return ProbeBounds { mid, bounds.high }; })
+                .or_else([bounds, mid](std::error_code err) noexcept -> std::expected<ProbeBounds, std::error_code> {
+                    if (!is_buffer_register_resource_error(err)) { return std::unexpected(err); }
+                    return ProbeBounds { bounds.low, safe_sub(mid, 1uz).value_or(0uz) };
+                });
+        });
+    }
+
+    /**
+     * @brief Determines the maximum registerable I/O buffer count through bisection.
+     * 
+     * @details Coordinates search boundaries between a confirmed success floor and a
+     *          known failure limit to converge on the optimal memory-lock footprint.
+     *          Once the optimal count is identified, it persistently registers the buffer table
+     *          to transition the engine to high-performance registered-buffer I/O.
      */
     template <typename Self>
         requires ProberStrategy<Self>
     [[nodiscard]] std::expected<std::size_t, std::error_code> probe_max_read_count(
         this Self& self, std::size_t low_success, std::size_t high_fail) noexcept {
         if (high_fail == 0) [[unlikely]] {
-            return self.probe_register_buffers(low_success, true).transform([low_success]() { return low_success; });
+            return self.probe_register_buffers(low_success, true).transform([low_success]() noexcept {
+                return low_success;
+            });
         }
 
-        std::size_t low  = low_success;
-        std::size_t high = high_fail - 1uz;
+        const std::size_t iterations = toSize(std::bit_width(safe_sub(high_fail, low_success).value_or(0uz)));
 
-        while (low < high) {
-            const std::size_t mid = low + ((high - low + 1uz) >> 1uz);
-            auto res              = self.probe_register_buffers(mid, false);
-
-            if (res) {
-                low = mid;
-                continue;
-            }
-            if (is_buffer_register_resource_error(res.error())) {
-                high = mid - 1uz;
-                continue;
-            }
-            return std::unexpected(res.error());
-        }
-
-        return self.probe_register_buffers(low, true).transform([low]() { return low; });
+        return std::ranges::fold_left(std::views::iota(0uz, iterations),
+            std::expected<ProbeBounds, std::error_code> { ProbeBounds { low_success, high_fail - 1uz } },
+            [&self](auto state, auto) noexcept { return probe_bisection_step(self, state); })
+            .and_then([&self](ProbeBounds bounds) noexcept {
+                return self.probe_register_buffers(bounds.low, true).transform([bounds]() noexcept {
+                    return bounds.low;
+                });
+            });
     }
 };
 
