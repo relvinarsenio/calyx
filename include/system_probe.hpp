@@ -233,19 +233,21 @@ inline const std::string kVirtualizationProbe = []() -> std::string {
     if (fs::exists("/proc/user_beancounters", ec)) { return "OpenVZ"; }
 
     if (auto env1 = read_file("/proc/1/environ")) {
-        const auto classify = [](std::string_view part) -> std::string_view {
-            if (part == "container=lxc"sv) { return "LXC"; }
-            if (part.starts_with("WSL_DISTRO_NAME=") || part.starts_with("WSL_INTEROP=")
-                || part.starts_with("WSLENV=")) {
-                return "WSL";
-            }
-            return {};
+        auto parts        = *env1 | split_to_sv('\0');
+        const auto is_lxc = [](std::string_view part) noexcept { return part == "container=lxc"sv; };
+        const auto is_wsl = [](std::string_view part) noexcept {
+            return part.starts_with("WSL_DISTRO_NAME=") || part.starts_with("WSL_INTEROP=")
+                || part.starts_with("WSLENV=");
         };
 
-        auto matches = *env1 | split_to_sv('\0') | std::views::transform(classify)
-            | std::views::filter([](std::string_view tag) { return !tag.empty(); }) | std::views::take(1);
+        auto check_tag = [&parts](auto pred, std::string_view tag) -> std::optional<std::string_view> {
+            return std::ranges::any_of(parts, pred) ? std::optional { tag } : std::nullopt;
+        };
 
-        if (auto it = std::ranges::begin(matches); it != std::ranges::end(matches)) { return std::string(*it); }
+        if (auto res
+            = check_tag(is_lxc, "LXC"sv).or_else([&check_tag, &is_wsl] { return check_tag(is_wsl, "WSL"sv); })) {
+            return std::string(*res);
+        }
     }
 
     // --- Tier 3: Kernel Scope (OS/Subsystem) ---
