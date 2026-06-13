@@ -329,7 +329,9 @@ public:
     }
 
     /** @overload Automatically wraps arbitrary spans into byte spans. */
-    template <non_const T> [[nodiscard]] auto read(std::span<T> buffer) const noexcept {
+    template <typename T>
+        requires non_const<T> && trivially_copyable<T>
+    [[nodiscard]] auto read(std::span<T> buffer) const noexcept {
         return read(std::as_writable_bytes(buffer));
     }
 
@@ -351,7 +353,9 @@ public:
     }
 
     /** @overload Automatically wraps arbitrary spans into byte spans. */
-    template <non_const T> [[nodiscard]] auto read_exact(std::span<T> buffer) const noexcept {
+    template <typename T>
+        requires non_const<T> && trivially_copyable<T>
+    [[nodiscard]] auto read_exact(std::span<T> buffer) const noexcept {
         return read_exact(std::as_writable_bytes(buffer));
     }
 
