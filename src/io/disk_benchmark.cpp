@@ -238,7 +238,7 @@ protected:
 
     /**
      * @brief Evaluates a single iteration step of the buffer registration bisection search.
-     * 
+     *
      * @details Isolates search state transitions into a stateless monadic flow to enforce
      *          monotonicity invariants and prevent undefined behavior. Supports early exit
      *          to avoid redundant system calls when the boundaries converge, and applies
@@ -266,7 +266,7 @@ protected:
 
     /**
      * @brief Determines the maximum registerable I/O buffer count through bisection.
-     * 
+     *
      * @details Coordinates search boundaries between a confirmed success floor and a
      *          known failure limit to converge on the optimal memory-lock footprint.
      *          Once the optimal count is identified, it persistently registers the buffer table

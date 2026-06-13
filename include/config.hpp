@@ -106,13 +106,14 @@ inline constexpr bool kUiForceAscii                = false;
  */
 inline constexpr double kMbpsToGbpsThreshold = 1000.0;
 
-inline constexpr std::uint8_t kTcpTtl                   = 128;
-inline constexpr std::uint16_t kShellPipeTermWaitMs     = 256;
-inline constexpr std::uint16_t kShellPipePollIntervalMs = 16;
-inline constexpr std::uint8_t kShellPipeKillWaitSec     = 2;
-inline constexpr std::size_t kFileReadChunkSize         = 4096z;
-inline constexpr std::size_t kPipeBufferSize            = 4096z;
-inline constexpr std::int64_t kUringWaitTimeoutNs       = 200'000'000LL;
+inline constexpr std::uint8_t kTcpTtl                     = 128;
+inline constexpr std::uint16_t kShellPipeTermWaitMs       = 256;
+inline constexpr std::uint16_t kShellPipePollIntervalMs   = 16;
+inline constexpr std::uint8_t kShellPipeKillWaitSec       = 2;
+inline constexpr std::uint32_t kShellPipeDefaultTimeoutMs = 60000;
+inline constexpr std::size_t kFileReadChunkSize           = 4096z;
+inline constexpr std::size_t kPipeBufferSize              = 4096z;
+inline constexpr std::int64_t kUringWaitTimeoutNs         = 200'000'000LL;
 
 inline constexpr std::uint64_t kMinBufferBytes           = 1048576;
 inline constexpr std::uint64_t kTgzMaxFileSize           = 100ULL * 1024ULL * 1024ULL;
