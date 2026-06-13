@@ -9,6 +9,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <optional>
 #include <thread>
 
 #ifndef _STX_HIDE_FROM_ABI
@@ -120,16 +121,53 @@ _STX_HIDE_FROM_ABI void __cpu_pause() noexcept {
 }
 
 /**
+ * @brief Retrieve the hardware-reported timer frequency directly.
+ * @details On x86_64, queries CPUID leaf 15H or 16H for nominal frequencies.
+ * On AArch64, reads the system counter frequency register CNTFRQ_EL0.
+ * @return Hardware clock frequency in cycles per nanosecond, or std::nullopt if unsupported.
+ */
+[[nodiscard]] _STX_HIDE_FROM_ABI std::optional<double> __hardware_frequency() noexcept {
+#if defined(__x86_64__)
+    uint32_t __eax = 0, __ebx = 0, __ecx = 0, __edx = 0;
+    __asm__ __volatile__("cpuid" : "=a"(__eax), "=b"(__ebx), "=c"(__ecx), "=d"(__edx) : "a"(0), "c"(0));
+    const uint32_t __max_leaf = __eax;
+    if (__max_leaf < 0x15) { return std::nullopt; }
+
+    __asm__ __volatile__("cpuid" : "=a"(__eax), "=b"(__ebx), "=c"(__ecx), "=d"(__edx) : "a"(0x15), "c"(0));
+
+    if (__ebx == 0 || __eax == 0) { return std::nullopt; }
+
+    if (__ecx != 0) { return (static_cast<double>(__ecx) * __ebx) / (static_cast<double>(__eax) * 1e9); }
+
+    if (__max_leaf >= 0x16) {
+        uint32_t __eax16 = 0, __ebx16 = 0, __ecx16 = 0, __edx16 = 0;
+        __asm__ __volatile__("cpuid" : "=a"(__eax16), "=b"(__ebx16), "=c"(__ecx16), "=d"(__edx16) : "a"(0x16), "c"(0));
+        if (__eax16 != 0) { return static_cast<double>(__eax16) / 1e3; }
+    }
+
+    return std::nullopt;
+#elif defined(__aarch64__)
+    uint64_t __freq = 0;
+    __asm__ __volatile__("mrs %0, cntfrq_el0" : "=r"(__freq));
+    if (__freq == 0) { return std::nullopt; }
+    return static_cast<double>(__freq) / 1e9;
+#else
+    return std::nullopt;
+#endif
+}
+
+/**
  * @brief Calibrate the cycle frequency against a steady clock.
  * @param __duration Duration to calibrate for (default 10ms).
  * @return Cycles per nanosecond.
  */
 template <class _Rep, class _Period>
 [[nodiscard]] _STX_HIDE_FROM_ABI double __calibrate(chrono::duration<_Rep, _Period> __duration) noexcept {
+    if (__duration <= chrono::duration<_Rep, _Period>::zero()) { return __hardware_frequency().value_or(0.0); }
     const auto __t0 = chrono::steady_clock::now();
     const auto __c0 = __rdtsc_ordered();
 
-    // Busy wait for better precision than sleep
+    /** @brief Busy-wait for better precision than sleep. */
     while (chrono::steady_clock::now() - __t0 < __duration) {
         __cpu_pause();
     }
@@ -138,6 +176,7 @@ template <class _Rep, class _Period>
     const auto __c1 = __rdtscp_ordered();
 
     const auto __elapsed_ns = chrono::duration_cast<chrono::nanoseconds>(__t1 - __t0).count();
+    if (__elapsed_ns <= 0) { return __hardware_frequency().value_or(0.0); }
     return static_cast<double>(__c1 - __c0) / static_cast<double>(__elapsed_ns);
 }
 
@@ -182,5 +221,5 @@ template <class _Rep, class _Period>
 } // namespace tsc
 } // namespace stx
 
-// Export to compatibility namespace alias to keep the rest of the project working without changes
+/** @brief Export to compatibility namespace alias to keep the rest of the project working without changes. */
 namespace tsc = stx::tsc;
