@@ -1573,12 +1573,28 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(const Ben
             res.error().value() == ENOMEM ? "Memory limit" : "System restriction"));
     }
 
+    /**
+     * @brief Callers are permitted to omit either callback, yet invoking an empty
+     *        @c std::move_only_function is undefined behavior — unlike @c std::function,
+     *        it provides no @c bad_function_call safety net. A guaranteed-valid
+     *        fallback is therefore required before the callbacks enter the I/O pipeline.
+     */
+    static const std::move_only_function<bool() const noexcept> kNoopInterrupt { []() noexcept -> bool {
+        return false;
+    } };
+    static const std::move_only_function<void(std::size_t, std::size_t, std::string_view) const> kNoopProgress {
+        [](std::size_t, std::size_t, std::string_view) noexcept {}
+    };
+
+    const auto& eff_interrupt = interrupt_cb ? interrupt_cb : kNoopInterrupt;
+    const auto& eff_progress  = progress_cb ? progress_cb : kNoopProgress;
+
     const IoParams params {
         .write_buffer      = write_buf.span(),
         .read_buffers      = read_buffers,
         .stop              = stop,
-        .progress_cb       = std::cref(progress_cb),
-        .interrupt_cb      = std::cref(interrupt_cb),
+        .progress_cb       = std::cref(eff_progress),
+        .interrupt_cb      = std::cref(eff_interrupt),
         .total_bytes       = total_bytes,
         .write_block_size  = write_block_size,
         .read_block_size   = read_block_size,
