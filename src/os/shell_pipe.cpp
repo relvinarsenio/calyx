@@ -187,26 +187,44 @@ void handle_wait_error(std::error_code ec, ShellPipeResult& result) {
 /** @brief Inits file actions to redirect stdout and stderr to the pipe write end. */
 [[nodiscard]] auto configure_spawn_file_actions(posix_spawn_file_actions_t& actions,
     posix::file_descriptor::native_handle_type write_fd) noexcept -> std::expected<void, std::error_code> {
-    return posix::expect_success<posix::error_style::pthreads>(posix_spawn_file_actions_init(&actions))
-        .and_then([&actions, write_fd]() noexcept -> std::expected<void, std::error_code> {
-            posix_spawn_file_actions_adddup2(&actions, write_fd, STDOUT_FILENO);
-            posix_spawn_file_actions_adddup2(&actions, write_fd, STDERR_FILENO);
-            return {};
-        });
+    auto res = posix::expect_success<posix::error_style::pthreads>(posix_spawn_file_actions_init(&actions));
+    if (!res) { return res; }
+
+    scope_exit guard { [&actions]() noexcept { posix_spawn_file_actions_destroy(&actions); } };
+
+    res = posix::expect_success<posix::error_style::pthreads>(
+        posix_spawn_file_actions_adddup2(&actions, write_fd, STDOUT_FILENO));
+    if (!res) { return res; }
+
+    res = posix::expect_success<posix::error_style::pthreads>(
+        posix_spawn_file_actions_adddup2(&actions, write_fd, STDERR_FILENO));
+    if (!res) { return res; }
+
+    guard.release();
+    return {};
 }
 
 /** @brief Inits spawn attributes with an empty signal mask and SIG_DFL for all dispositions. */
 [[nodiscard]] auto configure_spawn_attr(posix_spawnattr_t& attr) noexcept -> std::expected<void, std::error_code> {
-    return posix::expect_success<posix::error_style::pthreads>(posix_spawnattr_init(&attr))
-        .and_then([&attr]() noexcept -> std::expected<void, std::error_code> {
-            sigset_t empty, all;
-            sigemptyset(&empty);
-            sigfillset(&all);
-            posix_spawnattr_setsigmask(&attr, &empty);
-            posix_spawnattr_setsigdefault(&attr, &all);
-            posix_spawnattr_setflags(&attr, static_cast<short>(POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF));
-            return {};
-        });
+    auto res = posix::expect_success<posix::error_style::pthreads>(posix_spawnattr_init(&attr));
+    if (!res) { return res; }
+
+    scope_exit guard { [&attr]() noexcept { posix_spawnattr_destroy(&attr); } };
+
+    sigset_t empty, all;
+    sigemptyset(&empty);
+    sigfillset(&all);
+
+    res = posix::expect_success<posix::error_style::pthreads>(posix_spawnattr_setsigmask(&attr, &empty));
+    if (!res) { return res; }
+    res = posix::expect_success<posix::error_style::pthreads>(posix_spawnattr_setsigdefault(&attr, &all));
+    if (!res) { return res; }
+    res = posix::expect_success<posix::error_style::pthreads>(
+        posix_spawnattr_setflags(&attr, static_cast<short>(POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF)));
+    if (!res) { return res; }
+
+    guard.release();
+    return {};
 }
 
 /**
@@ -241,7 +259,7 @@ void handle_wait_error(std::error_code ec, ShellPipeResult& result) {
  * This isolates the argv construction required by execv-family system calls to prevent
  * memory management issues and ensure lifetime compatibility.
  */
-[[nodiscard]] auto prepare_argv(std::vector<std::string>& args) noexcept -> std::vector<char*> {
+[[nodiscard]] auto prepare_argv(std::vector<std::string>& args) -> std::vector<char*> {
     auto argv = args | std::views::transform([](std::string& s) noexcept { return s.data(); })
         | std::ranges::to<std::vector<char*>>();
     argv.push_back(nullptr);
@@ -258,12 +276,8 @@ void reap_child_process(child_process& process, chrono::steady_clock::time_point
     bool raise_on_error, ShellPipeResult& result) {
     if (!process) { return; }
 
-    auto wait_res = wait_for_child(process, outer_deadline, is_stopped, [&process]() noexcept { process.reset(); });
-
-    if (!wait_res && wait_res.error() == std::errc::timed_out) {
-        const auto term_deadline = chrono::steady_clock::now() + chrono::milliseconds(config::kShellPipeTermWaitMs);
-        wait_res = wait_for_child(process, term_deadline, is_stopped, [&process]() noexcept { process.reset(); });
-    }
+    const auto wait_res
+        = wait_for_child(process, outer_deadline, is_stopped, [&process]() noexcept { process.reset(); });
 
     if (!wait_res) {
         handle_wait_error(wait_res.error(), result);
@@ -334,8 +348,8 @@ auto ShellPipe::create(std::vector<std::string> args) -> std::expected<ShellPipe
     scope_exit reap_guard { [this]() noexcept { pid_.reset(); } };
     scope_exit close_read { [this]() noexcept { read_fd_.reset(); } };
 
-    const auto deadline = chrono::steady_clock::now() + timeout;
-    const auto read_err = sp_impl::read_pipe_output(read_fd_, deadline, is_stopped, result);
+    const auto read_deadline = chrono::steady_clock::now() + timeout;
+    const auto read_err      = sp_impl::read_pipe_output(read_fd_, read_deadline, is_stopped, result);
 
     if (read_err) {
         result.error = *read_err;
@@ -343,7 +357,8 @@ auto ShellPipe::create(std::vector<std::string> args) -> std::expected<ShellPipe
         return result;
     }
 
-    sp_impl::reap_child_process(pid_, deadline, is_stopped, raise_on_error, result);
+    const auto reap_deadline = chrono::steady_clock::now() + chrono::milliseconds(config::kShellPipeTermWaitMs);
+    sp_impl::reap_child_process(pid_, reap_deadline, is_stopped, raise_on_error, result);
 
     return result;
 }
