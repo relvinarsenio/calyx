@@ -9,7 +9,6 @@
 
 #include "config.hpp"
 #include "file_descriptor.hpp"
-#include "interrupts.hpp"
 #include "posix.hpp"
 #include "scope.hpp"
 #include "utils.hpp"
@@ -51,30 +50,44 @@ namespace sp_impl {
  * @brief Reads output from the pipe until EOF, timeout, or interruption.
  */
 [[nodiscard]] auto read_pipe_output(const posix::file_descriptor& read_fd, chrono::steady_clock::time_point deadline,
-    const auto& is_stopped, ShellPipeResult& result) -> std::optional<std::string> {
+    const auto& is_stopped, ShellPipeResult& result) -> bool {
     const std::size_t max_output_size = config::kPipeMaxOutputBytes;
     std::array<char, config::kPipeBufferSize> buffer {};
     std::size_t total_read = 0;
-    bool truncated         = false;
 
     while (true) {
-        if (is_stopped()) { return std::string { config::kInterruptMsg }; }
+        if (is_stopped()) {
+            result.status = ShellPipeStatus::interrupted;
+            result.error  = std::string { config::kInterruptMsg };
+            return false;
+        }
 
         const auto ready = poll_ready(read_fd, deadline);
-        if (!ready) { return format_sys_error(ready.error(), "poll failed on child output"); }
-        if (!*ready) { return "Child process timed out while reading output"; }
+        if (!ready) {
+            result.status = ShellPipeStatus::error;
+            result.error  = format_sys_error(ready.error(), "poll failed on child output");
+            return false;
+        }
+        if (!*ready) {
+            result.status = ShellPipeStatus::timed_out;
+            result.error  = "Child process timed out while reading output";
+            return false;
+        }
 
         const auto read_res = read_fd.read(std::as_writable_bytes(std::span { buffer }), is_stopped);
         if (!read_res) {
-            return read_res.error() == std::make_error_code(std::errc::operation_canceled)
-                ? std::string { config::kInterruptMsg }
-                : format_sys_error(read_res.error(), "Failed to read from pipe");
+            const auto ec       = read_res.error();
+            const bool canceled = (ec == std::make_error_code(std::errc::operation_canceled));
+            result.status       = canceled ? ShellPipeStatus::interrupted : ShellPipeStatus::error;
+            result.error
+                = canceled ? std::string { config::kInterruptMsg } : format_sys_error(ec, "Failed to read from pipe");
+            return false;
         }
 
         const std::size_t bytes = *read_res;
         if (bytes == 0) { break; }
 
-        if (truncated) { continue; }
+        if (result.truncated) { continue; }
 
         const auto new_total = safe_add(total_read, bytes);
         if (new_total && *new_total <= max_output_size) {
@@ -86,9 +99,9 @@ namespace sp_impl {
         const auto remaining = safe_sub(max_output_size, total_read).value_or(0uz);
         if (remaining > 0) { result.output.append(buffer.data(), remaining); }
         result.output.append("\n[Output truncated (too large)]");
-        truncated = true;
+        result.truncated = true;
     }
-    return std::nullopt;
+    return true;
 }
 
 /**
@@ -96,8 +109,8 @@ namespace sp_impl {
  *
  * Unifies the non-blocking waitpid polling loop to comply with DRY principles.
  */
-[[nodiscard]] auto poll_waitpid(std::int32_t pid, chrono::steady_clock::time_point deadline,
-    const auto& is_stopped) noexcept -> std::expected<std::optional<posix::wait_status>, std::error_code> {
+[[nodiscard]] auto poll_waitpid(pid_t pid, chrono::steady_clock::time_point deadline, const auto& is_stopped) noexcept
+    -> std::expected<std::optional<posix::wait_status>, std::error_code> {
     while (true) {
         const auto wait_res = posix::waitpid(pid, WNOHANG);
         if (wait_res && wait_res->has_value()) { return wait_res; }
@@ -138,7 +151,7 @@ namespace sp_impl {
 /**
  * @brief Attempts to terminate a process using progressive signaling and reaping.
  */
-auto try_terminate(std::int32_t pid, posix::signal sig, chrono::milliseconds wait_time) noexcept
+auto try_terminate(pid_t pid, posix::signal sig, chrono::milliseconds wait_time) noexcept
     -> std::expected<void, std::error_code> {
     const auto res = posix::kill(pid, sig);
     if (!res && res.error() == std::errc::no_such_process) { return {}; }
@@ -159,10 +172,13 @@ auto try_terminate(std::int32_t pid, posix::signal sig, chrono::milliseconds wai
  */
 void handle_child_exit(const posix::wait_status& ws, bool raise_on_error, ShellPipeResult& result) {
     if (ws.signaled()) {
-        result.error = ws.describe_signal();
+        result.status = ShellPipeStatus::signaled;
+        result.signal = ws.term_signal();
+        result.error  = ws.describe_signal();
         return;
     }
     if (ws.exited() && ws.exit_code() != 0) {
+        result.status    = ShellPipeStatus::nonzero_exit;
         result.exit_code = ws.exit_code();
         if (result.output.empty() || raise_on_error) {
             result.error = std::format("Child exited with code {}", result.exit_code);
@@ -175,12 +191,14 @@ void handle_child_exit(const posix::wait_status& ws, bool raise_on_error, ShellP
  */
 void handle_wait_error(std::error_code ec, ShellPipeResult& result) {
     if (ec == std::errc::operation_canceled) {
-        result.interrupted = true;
-        result.error       = std::string { config::kInterruptMsg };
+        result.status = ShellPipeStatus::interrupted;
+        result.error  = std::string { config::kInterruptMsg };
     } else if (ec == std::errc::timed_out) {
-        result.error = "Child process timed out waiting for exit status";
+        result.status = ShellPipeStatus::timed_out;
+        result.error  = "Child process timed out waiting for exit status";
     } else if (ec != std::errc::no_child_process) {
-        result.error = format_sys_error(ec, "waitpid failed for child process");
+        result.status = ShellPipeStatus::error;
+        result.error  = format_sys_error(ec, "waitpid failed for child process");
     }
 }
 
@@ -288,7 +306,7 @@ void reap_child_process(child_process& process, chrono::steady_clock::time_point
 
 } // namespace sp_impl
 
-void sp_impl::child_process::reset(std::int32_t new_pid) noexcept {
+void sp_impl::child_process::reset(pid_t new_pid) noexcept {
     if (posix::expect_result<posix::error_style::posix>(pid_)) { terminate(); }
     pid_ = new_pid;
 }
@@ -340,22 +358,17 @@ auto ShellPipe::create(std::vector<std::string> args) -> std::expected<ShellPipe
     return self;
 }
 
-[[nodiscard]] ShellPipeResult ShellPipe::read_all(
-    chrono::milliseconds timeout, std::stop_token stop, bool raise_on_error) {
+[[nodiscard]] ShellPipeResult ShellPipe::read_all(chrono::milliseconds timeout, std::stop_token stop,
+    std::move_only_function<bool() const noexcept> interrupt_cb, bool raise_on_error) {
     ShellPipeResult result;
-    const auto is_stopped = [&stop]() noexcept { return check_interrupted() || stop.stop_requested(); };
+    const auto is_stopped
+        = [&stop, &interrupt_cb]() noexcept { return stop.stop_requested() || (interrupt_cb && interrupt_cb()); };
 
     scope_exit reap_guard { [this]() noexcept { pid_.reset(); } };
     scope_exit close_read { [this]() noexcept { read_fd_.reset(); } };
 
     const auto read_deadline = chrono::steady_clock::now() + timeout;
-    const auto read_err      = sp_impl::read_pipe_output(read_fd_, read_deadline, is_stopped, result);
-
-    if (read_err) {
-        result.error = *read_err;
-        if (is_stopped()) { result.interrupted = true; }
-        return result;
-    }
+    if (!sp_impl::read_pipe_output(read_fd_, read_deadline, is_stopped, result)) { return result; }
 
     const auto reap_deadline = chrono::steady_clock::now() + chrono::milliseconds(config::kShellPipeTermWaitMs);
     sp_impl::reap_child_process(pid_, reap_deadline, is_stopped, raise_on_error, result);

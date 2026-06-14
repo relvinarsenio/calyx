@@ -13,26 +13,51 @@
 #include <chrono>
 #include <cstdint>
 #include <expected>
+#include <functional>
+#include <optional>
 #include <stop_token>
 #include <string>
+#include <sys/types.h>
 #include <system_error>
 #include <vector>
+
+/**
+ * @brief Execution status of a ShellPipe command.
+ */
+enum class ShellPipeStatus {
+    /** @brief The process executed successfully and exited with code 0. */
+    success,
+    /** @brief The process completed but exited with a non-zero exit code. */
+    nonzero_exit,
+    /** @brief The process or I/O operation timed out. */
+    timed_out,
+    /** @brief The operation was interrupted (e.g. via stop token or SIGINT). */
+    interrupted,
+    /** @brief The process was terminated by a signal. */
+    signaled,
+    /** @brief An execution, I/O, or system error occurred. */
+    error
+};
 
 /**
  * @brief Result of a ShellPipe execution.
  */
 struct ShellPipeResult {
+    /** @brief The execution status. */
+    ShellPipeStatus status = ShellPipeStatus::success;
     /** @brief The standard output and standard error of the command. */
     std::string output;
-    /** @brief The process exit code (typically 0 on success). */
-    std::int32_t exit_code = 0;
     /** @brief The error message, if any occurred. */
     std::string error;
-    /** @brief Whether the execution was interrupted. */
-    bool interrupted = false;
+    /** @brief The process exit code (typically 0 on success). */
+    std::int32_t exit_code = 0;
+    /** @brief The signal that terminated the process, if any. */
+    std::optional<std::int32_t> signal;
+    /** @brief Whether the output was truncated. */
+    bool truncated = false;
 
-    /** @brief Check if the command executed successfully without errors or interruption. */
-    [[nodiscard]] bool ok() const noexcept { return exit_code == 0 && error.empty() && !interrupted; }
+    /** @brief Check if the command executed successfully. */
+    [[nodiscard]] bool ok() const noexcept { return status == ShellPipeStatus::success; }
 };
 
 /**
@@ -51,13 +76,13 @@ namespace sp_impl {
  * Move-only, non-copyable.
  */
 class child_process {
-    std::int32_t pid_ = -1;
+    pid_t pid_ = -1;
 
     void terminate() noexcept;
 
 public:
     child_process() noexcept = default;
-    explicit child_process(std::int32_t pid) noexcept
+    explicit child_process(pid_t pid) noexcept
         : pid_(pid) {}
     ~child_process() noexcept { reset(); }
 
@@ -75,9 +100,9 @@ public:
         return *this;
     }
 
-    [[nodiscard]] auto native_handle() const noexcept -> std::int32_t { return pid_; }
-    auto release() noexcept -> std::int32_t { return std::exchange(pid_, -1); }
-    void reset(std::int32_t new_pid = -1) noexcept;
+    [[nodiscard]] auto native_handle() const noexcept -> pid_t { return pid_; }
+    auto release() noexcept -> pid_t { return std::exchange(pid_, -1); }
+    void reset(pid_t new_pid = -1) noexcept;
 
     explicit operator bool() const noexcept {
         return static_cast<bool>(posix::expect_result<posix::error_style::posix>(pid_));
@@ -123,5 +148,6 @@ public:
      */
     [[nodiscard]] ShellPipeResult read_all(
         std::chrono::milliseconds timeout = std::chrono::milliseconds(config::kShellPipeDefaultTimeoutMs),
-        std::stop_token stop = {}, bool raise_on_error = false);
+        std::stop_token stop = {}, std::move_only_function<bool() const noexcept> interrupt_cb = {},
+        bool raise_on_error = false);
 };
