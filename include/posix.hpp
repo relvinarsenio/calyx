@@ -460,9 +460,7 @@ namespace sys_helpers {
 [[nodiscard]] inline auto stat(const std::filesystem::path& path) noexcept
     -> std::expected<struct ::stat, std::error_code> {
     struct ::stat st {};
-    return eintr_loop<error_style::posix>([&path, &st]() noexcept {
-        return ::stat(path.c_str(), &st);
-    }).transform([&st](auto) noexcept { return st; });
+    return expect_result<error_style::posix>(::stat(path.c_str(), &st)).transform([&st](auto) noexcept { return st; });
 }
 
 /**
@@ -474,9 +472,9 @@ namespace sys_helpers {
 [[nodiscard]] inline auto statvfs(const std::filesystem::path& path) noexcept
     -> std::expected<struct ::statvfs, std::error_code> {
     struct ::statvfs svfs {};
-    return eintr_loop<error_style::posix>([&path, &svfs]() noexcept {
-        return ::statvfs(path.c_str(), &svfs);
-    }).transform([&svfs](auto) noexcept { return svfs; });
+    return expect_result<error_style::posix>(::statvfs(path.c_str(), &svfs)).transform([&svfs](auto) noexcept {
+        return svfs;
+    });
 }
 
 /**
@@ -493,14 +491,13 @@ namespace sys_helpers {
      * truncation may have occurred. We conservatively treat this
      * as an error to avoid propagating ambiguous/truncated paths.
      */
-    return eintr_loop<error_style::posix>([&path, &buf]() noexcept {
-        return ::readlink(path.c_str(), buf.data(), buf.size());
-    }).and_then([&buf](ssize_t nbytes) -> std::expected<std::size_t, std::error_code> {
-        if (toSize(nbytes) >= buf.size()) {
-            return std::unexpected(std::make_error_code(std::errc::filename_too_long));
-        }
-        return toSize(nbytes);
-    });
+    return expect_result<error_style::posix>(::readlink(path.c_str(), buf.data(), buf.size()))
+        .and_then([&buf](ssize_t nbytes) -> std::expected<std::size_t, std::error_code> {
+            if (toSize(nbytes) >= buf.size()) {
+                return std::unexpected(std::make_error_code(std::errc::filename_too_long));
+            }
+            return toSize(nbytes);
+        });
 }
 
 /**
@@ -515,9 +512,7 @@ namespace sys_helpers {
 [[nodiscard]] inline auto lstat(const std::filesystem::path& path) noexcept
     -> std::expected<struct ::stat, std::error_code> {
     struct ::stat st {};
-    return eintr_loop<error_style::posix>([&path, &st]() noexcept {
-        return ::lstat(path.c_str(), &st);
-    }).transform([&st](auto) noexcept { return st; });
+    return expect_result<error_style::posix>(::lstat(path.c_str(), &st)).transform([&st](auto) noexcept { return st; });
 }
 
 /**

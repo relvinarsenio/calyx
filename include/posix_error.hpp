@@ -205,7 +205,7 @@ template <error_style Style, posix_syscall F>
     using res_t = std::invoke_result_t<F>;
     res_t res;
     do {
-        res = std::invoke(std::forward<F>(f));
+        res = std::invoke(f);
     } while (is_eintr<Style>(res));
     return expect_result<Style>(res);
 }

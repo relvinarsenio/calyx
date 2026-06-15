@@ -124,16 +124,14 @@ private:
     [[nodiscard]] auto update_fcntl_flag(std::int32_t get_cmd, std::int32_t set_cmd, std::int32_t flag,
         bool enable) const noexcept -> std::expected<void, std::error_code> {
         return ensure_valid_fd()
-            .and_then([fd = fd_, get_cmd]() noexcept {
-                return eintr_loop<error_style::posix>([fd, get_cmd]() noexcept { return ::fcntl(fd, get_cmd, 0); });
-            })
+            .and_then(
+                [fd = fd_, get_cmd]() noexcept { return expect_result<error_style::posix>(::fcntl(fd, get_cmd, 0)); })
             .and_then([fd = fd_, set_cmd, flag, enable](
                           std::int32_t current_flags) noexcept -> std::expected<void, std::error_code> {
                 const std::int32_t updated_flags = enable ? (current_flags | flag) : (current_flags & ~flag);
                 if (updated_flags == current_flags) { return {}; }
-                return eintr_loop<error_style::posix>([fd, set_cmd, updated_flags]() noexcept {
-                    return ::fcntl(fd, set_cmd, updated_flags);
-                }).transform([](auto) noexcept {});
+                return expect_result<error_style::posix>(::fcntl(fd, set_cmd, updated_flags))
+                    .transform([](auto) noexcept {});
             });
     }
 
@@ -278,9 +276,7 @@ public:
     [[nodiscard]] auto stat() const noexcept -> std::expected<struct ::stat, std::error_code> {
         struct ::stat st {};
         return ensure_valid_fd()
-            .and_then([fd = fd_, &st]() noexcept {
-                return eintr_loop<error_style::posix>([fd, &st]() noexcept { return ::fstat(fd, &st); });
-            })
+            .and_then([fd = fd_, &st]() noexcept { return expect_result<error_style::posix>(::fstat(fd, &st)); })
             .transform([&st](auto) noexcept { return st; });
     }
 
@@ -290,17 +286,14 @@ public:
      */
     [[nodiscard]] auto chmod(mode_t mode) const noexcept -> std::expected<void, std::error_code> {
         return ensure_valid_fd()
-            .and_then([fd = fd_, mode]() noexcept {
-                return eintr_loop<error_style::posix>([fd, mode]() noexcept { return ::fchmod(fd, mode); });
-            })
+            .and_then([fd = fd_, mode]() noexcept { return expect_result<error_style::posix>(::fchmod(fd, mode)); })
             .transform([](auto) noexcept {});
     }
 
     /** @brief Reposition the file offset via lseek(2). */
     [[nodiscard]] auto seek(off_t offset, std::int32_t whence) const noexcept -> std::expected<off_t, std::error_code> {
         return ensure_valid_fd().and_then([fd = fd_, offset, whence]() noexcept {
-            return eintr_loop<error_style::posix>(
-                [fd, offset, whence]() noexcept { return ::lseek(fd, offset, whence); });
+            return expect_result<error_style::posix>(::lseek(fd, offset, whence));
         });
     }
 
