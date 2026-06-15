@@ -43,17 +43,17 @@ _STX_HIDE_FROM_ABI void __cpu_pause() noexcept {
  * @brief Read the hardware cycle counter (non-serializing).
  * @return 64-bit cycle count.
  */
-[[nodiscard]] _STX_HIDE_FROM_ABI uint64_t __rdtsc() noexcept {
+[[nodiscard]] _STX_HIDE_FROM_ABI std::uint64_t __rdtsc() noexcept {
 #if defined(__x86_64__)
-    uint32_t __lo = 0, __hi = 0;
+    std::uint32_t __lo = 0, __hi = 0;
     __asm__ __volatile__("rdtsc" : "=a"(__lo), "=d"(__hi)::"memory");
-    return (static_cast<uint64_t>(__hi) << 32) | static_cast<uint64_t>(__lo);
+    return (static_cast<std::uint64_t>(__hi) << 32) | static_cast<std::uint64_t>(__lo);
 #elif defined(__aarch64__)
-    uint64_t __val = 0;
+    std::uint64_t __val = 0;
     __asm__ __volatile__("isb; mrs %0, cntvct_el0" : "=r"(__val)::"memory");
     return __val;
 #else
-    return static_cast<uint64_t>(chrono::steady_clock::now().time_since_epoch().count());
+    return static_cast<std::uint64_t>(chrono::steady_clock::now().time_since_epoch().count());
 #endif
 }
 
@@ -63,17 +63,17 @@ _STX_HIDE_FROM_ABI void __cpu_pause() noexcept {
  * ensures all prior instructions and loads complete before the timestamp.
  * This is the recommended pattern for the start of a timed interval.
  */
-[[nodiscard]] _STX_HIDE_FROM_ABI uint64_t __rdtsc_ordered() noexcept {
+[[nodiscard]] _STX_HIDE_FROM_ABI std::uint64_t __rdtsc_ordered() noexcept {
 #if defined(__x86_64__)
-    uint32_t __lo = 0, __hi = 0;
+    std::uint32_t __lo = 0, __hi = 0;
     __asm__ __volatile__("lfence\n\trdtsc" : "=a"(__lo), "=d"(__hi)::"memory");
-    return (static_cast<uint64_t>(__hi) << 32) | static_cast<uint64_t>(__lo);
+    return (static_cast<std::uint64_t>(__hi) << 32) | static_cast<std::uint64_t>(__lo);
 #elif defined(__aarch64__)
-    uint64_t __val = 0;
+    std::uint64_t __val = 0;
     __asm__ __volatile__("isb; mrs %0, cntvct_el0" : "=r"(__val)::"memory");
     return __val;
 #else
-    return static_cast<uint64_t>(chrono::steady_clock::now().time_since_epoch().count());
+    return static_cast<std::uint64_t>(chrono::steady_clock::now().time_since_epoch().count());
 #endif
 }
 
@@ -85,13 +85,13 @@ _STX_HIDE_FROM_ABI void __cpu_pause() noexcept {
  * barrier is required.
  * @return 64-bit cycle count.
  */
-[[nodiscard]] _STX_HIDE_FROM_ABI uint64_t __rdtscp() noexcept {
+[[nodiscard]] _STX_HIDE_FROM_ABI std::uint64_t __rdtscp() noexcept {
 #if defined(__x86_64__)
-    uint32_t __lo = 0, __hi = 0;
+    std::uint32_t __lo = 0, __hi = 0;
     __asm__ __volatile__("rdtscp" : "=a"(__lo), "=d"(__hi)::"rcx", "memory");
-    return (static_cast<uint64_t>(__hi) << 32) | static_cast<uint64_t>(__lo);
+    return (static_cast<std::uint64_t>(__hi) << 32) | static_cast<std::uint64_t>(__lo);
 #elif defined(__aarch64__)
-    uint64_t __val = 0;
+    std::uint64_t __val = 0;
     __asm__ __volatile__("isb; mrs %0, cntvct_el0; isb" : "=r"(__val)::"memory");
     return __val;
 #else
@@ -106,13 +106,13 @@ _STX_HIDE_FROM_ABI void __cpu_pause() noexcept {
  * before the timestamp is captured. This is the recommended pattern for
  * the end of a timed interval.
  */
-[[nodiscard]] _STX_HIDE_FROM_ABI uint64_t __rdtscp_ordered() noexcept {
+[[nodiscard]] _STX_HIDE_FROM_ABI std::uint64_t __rdtscp_ordered() noexcept {
 #if defined(__x86_64__)
-    uint32_t __lo = 0, __hi = 0;
+    std::uint32_t __lo = 0, __hi = 0;
     __asm__ __volatile__("rdtscp\n\tlfence" : "=a"(__lo), "=d"(__hi)::"rcx", "memory");
-    return (static_cast<uint64_t>(__hi) << 32) | static_cast<uint64_t>(__lo);
+    return (static_cast<std::uint64_t>(__hi) << 32) | static_cast<std::uint64_t>(__lo);
 #elif defined(__aarch64__)
-    uint64_t __val = 0;
+    std::uint64_t __val = 0;
     __asm__ __volatile__("isb; mrs %0, cntvct_el0; isb" : "=r"(__val)::"memory");
     return __val;
 #else
@@ -128,9 +128,9 @@ _STX_HIDE_FROM_ABI void __cpu_pause() noexcept {
  */
 [[nodiscard]] _STX_HIDE_FROM_ABI std::optional<double> __hardware_frequency() noexcept {
 #if defined(__x86_64__)
-    uint32_t __eax = 0, __ebx = 0, __ecx = 0, __edx = 0;
+    std::uint32_t __eax = 0, __ebx = 0, __ecx = 0, __edx = 0;
     __asm__ __volatile__("cpuid" : "=a"(__eax), "=b"(__ebx), "=c"(__ecx), "=d"(__edx) : "a"(0), "c"(0));
-    const uint32_t __max_leaf = __eax;
+    const std::uint32_t __max_leaf = __eax;
     if (__max_leaf < 0x15) { return std::nullopt; }
 
     __asm__ __volatile__("cpuid" : "=a"(__eax), "=b"(__ebx), "=c"(__ecx), "=d"(__edx) : "a"(0x15), "c"(0));
@@ -140,14 +140,14 @@ _STX_HIDE_FROM_ABI void __cpu_pause() noexcept {
     if (__ecx != 0) { return (static_cast<double>(__ecx) * __ebx) / (static_cast<double>(__eax) * 1e9); }
 
     if (__max_leaf >= 0x16) {
-        uint32_t __eax16 = 0, __ebx16 = 0, __ecx16 = 0, __edx16 = 0;
+        std::uint32_t __eax16 = 0, __ebx16 = 0, __ecx16 = 0, __edx16 = 0;
         __asm__ __volatile__("cpuid" : "=a"(__eax16), "=b"(__ebx16), "=c"(__ecx16), "=d"(__edx16) : "a"(0x16), "c"(0));
         if (__eax16 != 0) { return static_cast<double>(__eax16) / 1e3; }
     }
 
     return std::nullopt;
 #elif defined(__aarch64__)
-    uint64_t __freq = 0;
+    std::uint64_t __freq = 0;
     __asm__ __volatile__("mrs %0, cntfrq_el0" : "=r"(__freq));
     if (__freq == 0) { return std::nullopt; }
     return static_cast<double>(__freq) / 1e9;
@@ -180,10 +180,6 @@ template <class _Rep, class _Period>
     return static_cast<double>(__c1 - __c0) / static_cast<double>(__elapsed_ns);
 }
 
-[[nodiscard]] _STX_HIDE_FROM_ABI double __calibrate_default() noexcept {
-    return __calibrate(chrono::milliseconds(10));
-}
-
 } // namespace __tsc
 
 namespace tsc {
@@ -192,19 +188,19 @@ _STX_HIDE_FROM_ABI void cpu_pause() noexcept {
     stx::__tsc::__cpu_pause();
 }
 
-[[nodiscard]] _STX_HIDE_FROM_ABI uint64_t rdtsc() noexcept {
+[[nodiscard]] _STX_HIDE_FROM_ABI std::uint64_t rdtsc() noexcept {
     return stx::__tsc::__rdtsc();
 }
 
-[[nodiscard]] _STX_HIDE_FROM_ABI uint64_t rdtsc_ordered() noexcept {
+[[nodiscard]] _STX_HIDE_FROM_ABI std::uint64_t rdtsc_ordered() noexcept {
     return stx::__tsc::__rdtsc_ordered();
 }
 
-[[nodiscard]] _STX_HIDE_FROM_ABI uint64_t rdtscp() noexcept {
+[[nodiscard]] _STX_HIDE_FROM_ABI std::uint64_t rdtscp() noexcept {
     return stx::__tsc::__rdtscp();
 }
 
-[[nodiscard]] _STX_HIDE_FROM_ABI uint64_t rdtscp_ordered() noexcept {
+[[nodiscard]] _STX_HIDE_FROM_ABI std::uint64_t rdtscp_ordered() noexcept {
     return stx::__tsc::__rdtscp_ordered();
 }
 
@@ -214,7 +210,7 @@ template <class _Rep, class _Period>
 }
 
 [[nodiscard]] _STX_HIDE_FROM_ABI double calibrate(
-    std::chrono::nanoseconds __duration = std::chrono::milliseconds(10)) noexcept {
+    std::chrono::milliseconds __duration = std::chrono::milliseconds(10)) noexcept {
     return stx::__tsc::__calibrate(__duration);
 }
 
