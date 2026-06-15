@@ -62,8 +62,8 @@ class TerminalGuard {
     bool active_ = false;
 
 public:
-    TerminalGuard() noexcept;
-    ~TerminalGuard() noexcept;
+    TerminalGuard();
+    ~TerminalGuard();
 
     TerminalGuard(const TerminalGuard&)            = delete;
     TerminalGuard& operator=(const TerminalGuard&) = delete;

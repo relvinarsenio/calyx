@@ -80,31 +80,35 @@ void print_spinner_frame(std::string_view text, std::string_view frame, double e
     std::fflush(stdout);
 }
 
-void clear_spinner_line() noexcept {
+void clear_spinner_line() {
     std::print("\r{}", style::clear_line);
     std::fflush(stdout);
 }
 
-/** @brief Shared mutable state between the progress UI thread and its update callback. */
-struct ProgressState {
-    std::atomic<std::size_t> current { 0uz };
-    std::atomic<std::size_t> total { 0uz };
+/** @brief Coherent snapshot of all progress fields taken under a single lock. */
+struct ProgressSnapshot {
+    std::size_t current { 0uz };
+    std::size_t total { 0uz };
     std::string label;
-    mutable std::mutex label_mtx;
 };
 
-[[nodiscard]] std::string read_label(const ProgressState& state) {
-    std::lock_guard lk(state.label_mtx);
-    return state.label;
+/** @brief Shared mutable state between the progress UI thread and its update callback. */
+struct ProgressState {
+    ProgressSnapshot snap;
+    mutable std::mutex mtx;
+};
+
+[[nodiscard]] ProgressSnapshot read_snapshot(const ProgressState& state) {
+    std::lock_guard lk(state.mtx);
+    return state.snap;
 }
 
-void finalize_progress(const ProgressState& state, std::uint8_t label_width) noexcept {
-    const std::size_t curr = state.current.load(std::memory_order_acquire);
-    const std::size_t tot  = state.total.load(std::memory_order_acquire);
+void finalize_progress(const ProgressState& state, std::uint8_t label_width) {
+    const auto [curr, tot, label] = read_snapshot(state);
     if (tot == 0uz || curr < tot) {
         clear_spinner_line();
     } else {
-        render_progress_line(read_label(state), 100uz, label_width);
+        render_progress_line(label, 100uz, label_width);
     }
 }
 
@@ -122,8 +126,7 @@ void progress_ui_thread_body(std::stop_token st, std::shared_ptr<ProgressState> 
     std::size_t last_current = std::numeric_limits<std::size_t>::max();
 
     while (!st.stop_requested() && !check_interrupted()) {
-        const std::size_t curr = state->current.load(std::memory_order_acquire);
-        const std::size_t tot  = state->total.load(std::memory_order_acquire);
+        const auto [curr, tot, label] = read_snapshot(*state);
 
         if (curr == last_current || tot == 0uz) {
             std::this_thread::sleep_for(std::chrono::milliseconds(config::kUiUpdateIntervalMs));
@@ -131,7 +134,7 @@ void progress_ui_thread_body(std::stop_token st, std::shared_ptr<ProgressState> 
         }
 
         const std::size_t percent = safe_mul(curr, 100uz).value_or(0uz) / tot;
-        render_progress_line(read_label(*state), percent, label_width);
+        render_progress_line(label, percent, label_width);
         last_current = curr;
         std::this_thread::sleep_for(std::chrono::milliseconds(config::kUiUpdateIntervalMs));
     }
@@ -165,7 +168,7 @@ void print_success_row(const SpeedEntryResult& entry) {
 
 } // namespace
 
-TerminalGuard::TerminalGuard() noexcept {
+TerminalGuard::TerminalGuard() {
     if (posix::file_descriptor::is_tty(posix::file_descriptor::stdout_fd)) {
         active_ = true;
         std::print("{}", cursor::hide);
@@ -173,7 +176,7 @@ TerminalGuard::TerminalGuard() noexcept {
     }
 }
 
-TerminalGuard::~TerminalGuard() noexcept {
+TerminalGuard::~TerminalGuard() {
     if (active_) {
         std::print("{}{}", style::reset, cursor::show);
         std::fflush(stdout);
@@ -272,12 +275,10 @@ std::move_only_function<void(std::size_t, std::size_t, std::string_view) const> 
 
     return [state = std::move(state), jth = std::make_shared<std::jthread>(std::move(ui_thread))](
                std::size_t current, std::size_t total, std::string_view label) {
-        {
-            std::lock_guard lk(state->label_mtx);
-            state->label = label;
-        }
-        state->total.store(total, std::memory_order_release);
-        state->current.store(current, std::memory_order_release);
+        std::lock_guard lk(state->mtx);
+        state->snap.label   = label;
+        state->snap.total   = total;
+        state->snap.current = current;
     };
 }
 
