@@ -218,6 +218,7 @@ add_executable(calyx
     src/system/os_info.cpp
     src/system/storage_info.cpp
     src/net/http_client.cpp
+    src/io/uring_engine.cpp
     src/io/disk_benchmark.cpp
     src/net/speed_test.cpp
     src/ui/cli_renderer.cpp
