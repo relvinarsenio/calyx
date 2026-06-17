@@ -101,6 +101,15 @@ inline constexpr auto safe_add
 inline constexpr auto safe_sub
     = [](std::uint64_t lhs, std::uint64_t rhs) noexcept { return safe_arith<overflow_op::sub>(lhs, rhs); };
 
+/**
+ * @brief Checks if a value equals any of the specified template constants.
+ *
+ * Dispatched at compile time using fold expressions.
+ */
+template <auto... Vals, typename T> [[nodiscard]] constexpr bool is_one_of(const T& val) noexcept {
+    return ((val == Vals) || ...);
+}
+
 namespace fs = std::filesystem;
 
 /**
@@ -275,10 +284,10 @@ inline constexpr auto check_disk_space
     if (!target_res) { return std::unexpected(target_res.error()); }
     const auto target = *target_res;
 
-    auto space_info = fs::space(target, ec);
+    const auto space_info = fs::space(target, ec);
     if (ec) { return std::unexpected(ec); }
 
-    auto total_req = safe_add(required_bytes, config::kMinBufferBytes);
+    const auto total_req = safe_add(required_bytes, config::kMinBufferBytes);
     if (!total_req) { return std::unexpected(std::make_error_code(std::errc::value_too_large)); }
 
     if (space_info.available < *total_req) {
@@ -311,7 +320,8 @@ inline constexpr auto capitalize = [](std::string_view text) noexcept -> std::st
 template <cast::numeric_type T>
 [[nodiscard]] std::expected<T, std::errc> parse_number(std::string_view input_view) noexcept {
     T value {};
-    auto [end_pointer, error_status] = std::from_chars(input_view.data(), input_view.data() + input_view.size(), value);
+    const auto [end_pointer, error_status]
+        = std::from_chars(input_view.data(), input_view.data() + input_view.size(), value);
     if (error_status == std::errc()) {
         if (end_pointer == input_view.data() + input_view.size()) { return value; }
         return std::unexpected(std::errc::invalid_argument);
@@ -368,7 +378,7 @@ inline constexpr auto write_file
 template <typename T, std::invocable<std::string_view> Parser>
     requires std::convertible_to<std::invoke_result_t<Parser, std::string_view>, T>
 inline T parse_file_or(const std::filesystem::path& path, Parser&& parser, T fallback) {
-    auto content = read_file(path);
+    const auto content = read_file(path);
     if (!content) { return fallback; }
     return std::forward<Parser>(parser)(*content);
 }
