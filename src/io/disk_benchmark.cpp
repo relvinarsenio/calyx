@@ -259,7 +259,7 @@ struct IoParams {
     }
 
     /** @brief Register async IO worker affinity (io-wq). */
-    if (auto res = engine->register_worker_affinity(mask, size); !res) {
+    if (const auto res = engine->register_worker_affinity(mask, size); !res) {
         return std::unexpected(affinity::IsolationError {
             .ec      = res.error(),
             .context = "io_uring_register_iowq_aff failed",
@@ -481,10 +481,10 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(const Ben
     std::optional<UringEngine> engine;
 
     /** @brief Enforce strict single-core isolation with explicit SQPOLL and io-wq pinning. */
-    if (auto res = setup_engine_affinity(engine, max_queue_depth); !res) { return std::unexpected(res.error()); }
+    if (const auto res = setup_engine_affinity(engine, max_queue_depth); !res) { return std::unexpected(res.error()); }
 
     static std::atomic<bool> warned { false };
-    if (auto res = engine->register_buffers(write_buf.span(), read_buffers); !res && !warned.exchange(true)) {
+    if (const auto res = engine->register_buffers(write_buf.span(), read_buffers); !res && !warned.exchange(true)) {
         print_warning(std::format("Performance Hint: io_uring fixed buffers disabled ({}), using fallback.",
             res.error().value() == ENOMEM ? "Memory limit" : "System restriction"));
     }
