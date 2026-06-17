@@ -74,6 +74,11 @@ enum class IoPath : std::uint8_t {
     Vector
 };
 
+struct ProbedIoPaths {
+    IoPath write_path = IoPath::Plain;
+    IoPath read_path  = IoPath::Plain;
+};
+
 template <typename T>
 concept ProberStrategy = requires(T& t, std::size_t count, bool keep) {
     { t.probe_register_buffers(count, keep) } -> std::same_as<std::expected<void, std::error_code>>;
@@ -109,7 +114,7 @@ protected:
             State { .result = std::nullopt, .probe = high_fail },
             [&self](const State& state, const auto) noexcept -> State {
                 if (state.result) { return state; }
-                const std::size_t next_probe = state.probe >> 1uz;
+                const std::size_t next_probe = state.probe / 2uz;
                 const auto res               = self.probe_register_buffers(next_probe, false);
                 if (res) { return State { .result = next_probe, .probe = next_probe }; }
                 if (!is_buffer_register_resource_error(res.error()) || next_probe == 0) {
@@ -138,7 +143,7 @@ protected:
         if (bounds.low >= bounds.high) { return bounds; }
 
         const std::size_t diff = safe_sub(bounds.high, bounds.low).value_or(0uz);
-        const std::size_t half = safe_add(diff, 1uz).value_or(0uz) >> 1uz;
+        const std::size_t half = safe_add(diff, 1uz).value_or(0uz) / 2uz;
         const std::size_t mid  = safe_add(bounds.low, half).value_or(0uz);
 
         const auto probe_res = self.probe_register_buffers(mid, false);
@@ -208,7 +213,7 @@ public:
 
 class UringProber {
 public:
-    void probe_io_paths(io_uring* ring, IoPath& write_path, IoPath& read_path) noexcept;
+    [[nodiscard]] ProbedIoPaths probe_io_paths(io_uring* ring) noexcept;
 };
 
 class UringFileRegistrar {

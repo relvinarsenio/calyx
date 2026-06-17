@@ -64,20 +64,21 @@ UringRing::~UringRing() {
     }
 }
 
-void UringProber::probe_io_paths(io_uring* ring, IoPath& write_path, IoPath& read_path) noexcept {
+ProbedIoPaths UringProber::probe_io_paths(io_uring* ring) noexcept {
     struct io_uring_probe* probe = io_uring_get_probe_ring(ring);
     if (probe == nullptr) {
         ///< Probe unsupported (kernel < 5.6); default to Vector as a safe fallback
         ///< for pre-5.6 kernels (READV/WRITEV exist since 5.1).
-        write_path = IoPath::Vector;
-        read_path  = IoPath::Vector;
-        return;
+        return { IoPath::Vector, IoPath::Vector };
     }
 
     scope_exit free_probe { [probe]() noexcept { io_uring_free_probe(probe); } };
 
+    IoPath write_path = IoPath::Plain;
+    IoPath read_path  = IoPath::Plain;
     if (io_uring_opcode_supported(probe, IORING_OP_WRITE) == 0) { write_path = IoPath::Vector; }
     if (io_uring_opcode_supported(probe, IORING_OP_READ) == 0) { read_path = IoPath::Vector; }
+    return { write_path, read_path };
 }
 
 auto UringFileRegistrar::register_file(io_uring* ring, const posix::file_descriptor& fd_wrapper) noexcept
@@ -436,7 +437,9 @@ UringEngine::UringEngine(std::uint16_t queue_depth, std::optional<std::int32_t> 
         registered_iovecs_.resize(safe_add(toSize(queue_depth), 1uz).value_or(0uz));
         retry_count_ = 0;
 
-        prober_.probe_io_paths(ring_.get_ring(), write_path_, read_path_);
+        const auto probed = prober_.probe_io_paths(ring_.get_ring());
+        write_path_       = probed.write_path;
+        read_path_        = probed.read_path;
     }
 }
 

@@ -126,7 +126,7 @@ void fill_pattern_fast(std::span<std::byte> buffer) noexcept {
     const auto target_path = dir_path.empty() ? std::filesystem::current_path(ec) : dir_path;
     if (ec) { return std::unexpected(format_sys_error(ec, "path resolution")); }
 
-    if (auto res = check_disk_space(target_path, total_bytes); !res) {
+    if (const auto res = check_disk_space(target_path, total_bytes); !res) {
         return std::unexpected(format_sys_error(res.error(), "Storage"));
     }
     return target_path;
@@ -295,25 +295,25 @@ struct IoParams {
  */
 [[nodiscard]] std::expected<PhaseRunStats, std::string> run_write_operations(
     IoFile wf, UringEngine& engine, const IoParams& params) {
-    if (auto alloc = wf.file().allocate(0, toLong(params.total_bytes));
+    if (const auto alloc = wf.file().allocate(0, toLong(params.total_bytes));
         !alloc && alloc.error().value() != EOPNOTSUPP && alloc.error().value() != EINVAL) {
         return std::unexpected(format_sys_error(alloc.error(), "posix_fallocate"));
     }
 
-    std::string label_write = std::format("{} Write", params.label);
-    const auto ctx          = IoContext {
-                 .fd           = wf.descriptor(),
-                 .write_buffer = params.write_buffer,
-                 .read_buffers = {},
-                 .stop         = params.stop,
-                 .progress_cb  = params.progress_cb,
-                 .interrupt_cb = params.interrupt_cb,
-                 .total_blocks = (params.total_bytes + params.write_block_size - 1) / params.write_block_size,
-                 .block_size   = params.write_block_size,
-                 .mem_stride   = params.write_mem_stride,
-                 .total_bytes  = params.total_bytes,
-                 .label        = label_write,
-                 .queue_depth  = params.write_queue_depth,
+    const std::string label_write = std::format("{} Write", params.label);
+    const auto ctx                = IoContext {
+                       .fd           = wf.descriptor(),
+                       .write_buffer = params.write_buffer,
+                       .read_buffers = {},
+                       .stop         = params.stop,
+                       .progress_cb  = params.progress_cb,
+                       .interrupt_cb = params.interrupt_cb,
+                       .total_blocks = params.total_bytes / params.write_block_size,
+                       .block_size   = params.write_block_size,
+                       .mem_stride   = params.write_mem_stride,
+                       .total_bytes  = params.total_bytes,
+                       .label        = label_write,
+                       .queue_depth  = params.write_queue_depth,
     };
 
     return engine.submit_and_wait(ctx, true)
@@ -324,7 +324,7 @@ struct IoParams {
                 .transform([io_result]() { return io_result; });
         })
         .transform([&wf](const PhaseRunStats& done) {
-            if (auto adv = wf.file().advise(0, 0, posix::FAdvise::DontNeed); !adv) {
+            if (const auto adv = wf.file().advise(0, 0, posix::FAdvise::DontNeed); !adv) {
                 print_warning(format_sys_error(adv.error(), "posix_fadvise"));
             }
             return done;
@@ -363,20 +363,20 @@ struct IoParams {
 
 [[nodiscard]] std::expected<PhaseRunStats, std::string> run_read_operations(
     IoFile rf, UringEngine& engine, const IoParams& params) {
-    std::string label_read = std::format("{} Read", params.label);
-    const auto ctx         = IoContext {
-                .fd           = rf.descriptor(),
-                .write_buffer = {},
-                .read_buffers = params.read_buffers,
-                .stop         = params.stop,
-                .progress_cb  = params.progress_cb,
-                .interrupt_cb = params.interrupt_cb,
-                .total_blocks = (params.total_bytes + params.read_block_size - 1) / params.read_block_size,
-                .block_size   = params.read_block_size,
-                .mem_stride   = params.read_mem_stride,
-                .total_bytes  = params.total_bytes,
-                .label        = label_read,
-                .queue_depth  = params.read_queue_depth,
+    const std::string label_read = std::format("{} Read", params.label);
+    const auto ctx               = IoContext {
+                      .fd           = rf.descriptor(),
+                      .write_buffer = {},
+                      .read_buffers = params.read_buffers,
+                      .stop         = params.stop,
+                      .progress_cb  = params.progress_cb,
+                      .interrupt_cb = params.interrupt_cb,
+                      .total_blocks = params.total_bytes / params.read_block_size,
+                      .block_size   = params.read_block_size,
+                      .mem_stride   = params.read_mem_stride,
+                      .total_bytes  = params.total_bytes,
+                      .label        = label_read,
+                      .queue_depth  = params.read_queue_depth,
     };
 
     return engine.submit_and_wait(ctx, false).transform([](const PhaseRunStats& io_result) { return io_result; });
