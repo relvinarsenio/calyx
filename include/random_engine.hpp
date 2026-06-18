@@ -7,8 +7,6 @@
  */
 #pragma once
 
-#include "utils.hpp"
-
 #include <array>
 #include <bit>
 #include <cstdint>
@@ -77,7 +75,7 @@ public:
     /**
      * @brief Generate next 64-bit random value.
      */
-    result_type operator()() noexcept {
+    constexpr result_type operator()() noexcept {
         const result_type res = std::rotl(state_[0] + state_[3], 23) + state_[0];
         const result_type t   = state_[1] << 17;
 
@@ -94,7 +92,7 @@ public:
     /**
      * @brief Advances the state by 2^128 steps.
      */
-    void jump() noexcept {
+    constexpr void jump() noexcept {
         static constexpr std::array<result_type, 4> JUMP
             = { 0x180ec6d33cfd0aba, 0xd5a61266f0c9392c, 0xa9582618e03fc9aa, 0x39abdc4529b1661c };
         jump_by_pattern(JUMP);
@@ -103,7 +101,7 @@ public:
     /**
      * @brief Advances the state by 2^192 steps.
      */
-    void long_jump() noexcept {
+    constexpr void long_jump() noexcept {
         static constexpr std::array<result_type, 4> LONG_JUMP
             = { 0x76e15d3efefdcbbf, 0xc5004e441c522fb3, 0x77710069854ee241, 0x39109bb02acbe635 };
         jump_by_pattern(LONG_JUMP);
@@ -115,11 +113,12 @@ private:
     /**
      * @brief Core jump logic using C++23 ranges and views.
      */
-    void jump_by_pattern(std::span<const result_type, 4> pattern) noexcept {
+    constexpr void jump_by_pattern(std::span<const result_type, 4> pattern) noexcept {
         std::array<result_type, 4> accumulator {};
 
-        for (auto [word, bit] : std::views::cartesian_product(std::views::iota(0, 4), std::views::iota(0, 64))) {
-            if (pattern[toSize(word)] & (1ULL << bit)) {
+        for (auto [word, bit] :
+            std::views::cartesian_product(std::views::iota(0uz, 4uz), std::views::iota(0uz, 64uz))) {
+            if (pattern[word] & (1ULL << bit)) {
                 std::ranges::transform(accumulator, state_, accumulator.begin(), std::bit_xor<> {});
             }
             operator()();
