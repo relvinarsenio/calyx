@@ -246,6 +246,8 @@ inline constexpr std::size_t kTarMaxMetadataSize = 64z * 1024z;
     auto normalized = dir_path.lexically_normal();
     if (normalized.empty()) { return {}; }
 
+    if (state.validated_dirs.contains(normalized)) { return {}; }
+
     /**
      * @brief Validate/create directory path and cache only after success.
      *
