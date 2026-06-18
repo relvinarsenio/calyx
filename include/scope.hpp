@@ -15,7 +15,9 @@
  * @details Executes cleanup on destruction unless released. Movable, non-copyable.
  * @tparam F Callable type (Destructible, Invocable).
  */
-template <typename F> class [[nodiscard]] scope_exit {
+template <typename F>
+    requires std::invocable<F&> && std::destructible<F>
+class [[nodiscard]] scope_exit {
     [[no_unique_address]] F func_;
     bool active_ { true };
 
@@ -90,4 +92,6 @@ public:
     void release() noexcept { active_ = false; }
 };
 
-template <typename F> scope_exit(F) -> scope_exit<F>;
+template <typename F>
+    requires std::invocable<F&> && std::destructible<F>
+scope_exit(F) -> scope_exit<F>;

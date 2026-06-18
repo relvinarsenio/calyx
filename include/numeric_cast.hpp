@@ -84,9 +84,7 @@ template <std::integral T> constexpr auto to_std_int(T value) noexcept {
  *
  * Follows professional rounding and saturation standards. Handles NaNs by returning 0.
  */
-template <class T, class U>
-    requires std::is_integral_v<T> && std::is_floating_point_v<U>
-[[nodiscard]] constexpr T saturate_fp_to_int(U x) noexcept {
+template <std::integral T, std::floating_point U> [[nodiscard]] constexpr T saturate_fp_to_int(U x) noexcept {
     if (std::isnan(x)) { return T { 0 }; }
 
     static_assert(sizeof(T) <= 8, "Unsupported target integer width for floating-point saturation.");
@@ -107,9 +105,7 @@ template <class T, class U>
 /**
  * @brief Internal engine for saturating casts supporting mixed integral and floating-point types.
  */
-template <class T, class U>
-    requires numeric_type<T> && numeric_type<U>
-[[nodiscard]] constexpr T saturating_cast_impl(U x) noexcept {
+template <numeric_type T, numeric_type U> [[nodiscard]] constexpr T saturating_cast_impl(U x) noexcept {
     if constexpr (std::is_same_v<T, U>) {
         return x;
     } else if constexpr (std::is_integral_v<T> && std::is_integral_v<U>) {

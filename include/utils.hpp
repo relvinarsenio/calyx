@@ -106,7 +106,9 @@ inline constexpr auto safe_sub
  *
  * Dispatched at compile time using fold expressions.
  */
-template <auto... Vals, typename T> [[nodiscard]] constexpr bool is_one_of(const T& val) noexcept {
+template <auto... Vals, class T>
+    requires(std::equality_comparable_with<T, decltype(Vals)> && ...)
+[[nodiscard]] constexpr bool is_one_of(const T& val) noexcept {
     return ((val == Vals) || ...);
 }
 

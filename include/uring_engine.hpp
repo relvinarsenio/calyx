@@ -146,11 +146,16 @@ enum class LogicError {
     std::unreachable();
 }
 
-template <typename T>
-concept UringErrorEnum = std::is_same_v<T, ConfigError> || std::is_same_v<T, AllocationError>
-    || std::is_same_v<T, ExecutionError> || std::is_same_v<T, LogicError>;
-
-[[nodiscard]] inline auto make_unexpected(UringErrorEnum auto err) {
+[[nodiscard]] inline auto make_unexpected(ConfigError err) {
+    return std::unexpected<std::string>(error_string(err));
+}
+[[nodiscard]] inline auto make_unexpected(AllocationError err) {
+    return std::unexpected<std::string>(error_string(err));
+}
+[[nodiscard]] inline auto make_unexpected(ExecutionError err) {
+    return std::unexpected<std::string>(error_string(err));
+}
+[[nodiscard]] inline auto make_unexpected(LogicError err) {
     return std::unexpected<std::string>(error_string(err));
 }
 
@@ -212,7 +217,7 @@ protected:
     }
 
     /**
-     * @brief Performs a linear-step downward search to find a successful probe point.
+     * @brief Performs an exponential backoff search to find a successful probe point.
      */
     template <typename Self>
         requires ProberStrategy<Self>
