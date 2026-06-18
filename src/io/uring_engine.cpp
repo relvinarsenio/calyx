@@ -7,6 +7,8 @@
  */
 #include "uring_engine.hpp"
 
+#include "config.hpp"
+
 namespace uring {
 
 std::expected<void, std::error_code> UringRing::initialize_ring(
@@ -106,7 +108,7 @@ std::expected<void, std::string> UringTimeoutController::arm_timeout_timer(io_ur
     timeout_ts_ = { .tv_sec = ::config::kDiskBenchmarkMaxSeconds, .tv_nsec = 0 };
 
     return posix::expect_result<posix::error_style::pointer>(io_uring_get_sqe(ring))
-        .transform_error([](auto) { return std::string("Failed to get SQE for timer"); })
+        .transform_error([](auto) { return std::string { error_string(LogicError::FailedToGetSqeForTimer) }; })
         .and_then([this, ring](io_uring_sqe* sqe) {
             io_uring_prep_timeout(sqe, &timeout_ts_, 0, 0);
             io_uring_sqe_set_data64(sqe, kTimerTag);
@@ -327,7 +329,7 @@ std::expected<void, std::string> UringCqeProcessor::handle_completion(
     const auto tag = io_uring_cqe_get_data64(cqe);
     if (tag == UringTimeoutController::kTimerTag) {
         engine.timeout_controller_.set_timer_armed(false);
-        if (cqe->res == -ETIME) { return std::unexpected("Disk Benchmark Timeout"); }
+        if (cqe->res == -ETIME) { return make_unexpected(ExecutionError::Timeout); }
         return {};
     }
 
@@ -358,8 +360,7 @@ std::expected<void, std::string> UringCqeProcessor::finalize_cqe(
     state.bytes_completed += bytes;
 
     if (bytes == 0) [[unlikely]] {
-        return std::unexpected(
-            is_write ? "Write operation stalled (0 bytes written)" : "Unexpected EOF (0 bytes read)");
+        return make_unexpected(is_write ? ExecutionError::WriteStalled : ExecutionError::UnexpectedEof);
     }
 
     if (bytes < engine.requests_[idx].remaining) {
@@ -383,7 +384,7 @@ std::expected<void, std::string> UringCqeProcessor::finalize_cqe(
 }
 
 std::expected<void, std::string> UringCqeProcessor::queue_retry_slot(UringEngine& engine, std::uint16_t idx) noexcept {
-    if (engine.retry_count_ >= engine.retry_slots_.size()) { return std::unexpected("Retry slot overflow"); }
+    if (engine.retry_count_ >= engine.retry_slots_.size()) { return make_unexpected(LogicError::RetrySlotOverflow); }
 
     engine.retry_slots_[engine.retry_count_] = idx;
     ++engine.retry_count_;
@@ -393,7 +394,7 @@ std::expected<void, std::string> UringCqeProcessor::queue_retry_slot(UringEngine
 std::expected<std::uint16_t, std::string> UringCqeProcessor::resolve_cqe_slot(
     const UringEngine& engine, std::uint64_t tag) noexcept {
     const std::uint16_t idx = toUShort(tag);
-    if (toSize(idx) >= engine.requests_.size()) [[unlikely]] { return std::unexpected("CQE tag out of bounds"); }
+    if (toSize(idx) >= engine.requests_.size()) [[unlikely]] { return make_unexpected(LogicError::CqeTagOutOfBounds); }
 
     return idx;
 }
@@ -459,7 +460,7 @@ std::expected<void, std::error_code> UringEngine::register_buffers(
 
 std::expected<PhaseRunStats, std::string> UringEngine::submit_and_wait(const IoContext& ctx, bool is_write) {
     if (const auto res = file_registrar_.register_file(ring_.get_ring(), ctx.fd); !res) {
-        if (res.error().value() == EBUSY) { return std::unexpected("io_uring: file registration conflict"); }
+        if (res.error().value() == EBUSY) { return make_unexpected(ExecutionError::FileRegistrationConflict); }
         print_warning("io_uring: fixed-file registration failed, using raw fd");
     }
     scope_exit unreg_file { [this]() noexcept { file_registrar_.unregister_file(ring_.get_ring()); } };
@@ -515,13 +516,11 @@ std::expected<PhaseRunStats, std::string> UringEngine::submit_and_wait(const IoC
         }
 
         const auto active_requests_opt = safe_sub(state.submitted, state.completed);
-        if (!active_requests_opt) [[unlikely]] {
-            return std::unexpected("Logic Error: completed blocks exceed submitted blocks");
-        }
+        if (!active_requests_opt) [[unlikely]] { return make_unexpected(LogicError::CompletedBlocksExceedSubmitted); }
         const std::size_t active_requests = *active_requests_opt;
 
         const auto in_kernel_opt = safe_sub(active_requests, retry_count_);
-        if (!in_kernel_opt) [[unlikely]] { return std::unexpected("Logic Error: retry slots exceed active requests"); }
+        if (!in_kernel_opt) [[unlikely]] { return make_unexpected(LogicError::RetrySlotsExceedActiveRequests); }
         const std::size_t in_kernel = *in_kernel_opt;
 
         if (active_requests == 0) { break; }

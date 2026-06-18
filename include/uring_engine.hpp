@@ -37,6 +37,123 @@
 
 namespace uring {
 
+enum class ConfigError {
+    QueueDepthNotPositive,
+    BlockSizeNotPositive,
+    AlignmentNotPowerOfTwo,
+    AlignmentOverflow,
+};
+
+enum class AllocationError {
+    WriteBufSizeOverflow,
+    WriteBufAlignOverflow,
+    WriteBufOom,
+    ReadBufAlignOverflow,
+    ReadBufOom,
+    WriteBlockAlignOverflow,
+    ReadBlockAlignOverflow,
+    WriteMemStrideOverflow,
+    ReadMemStrideOverflow,
+    TotalTestSizeOverflow,
+};
+
+enum class ExecutionError {
+    Timeout,
+    WriteStalled,
+    UnexpectedEof,
+    FileRegistrationConflict,
+};
+
+enum class LogicError {
+    RetrySlotOverflow,
+    CqeTagOutOfBounds,
+    CompletedBlocksExceedSubmitted,
+    RetrySlotsExceedActiveRequests,
+    FailedToGetSqeForTimer,
+};
+
+[[nodiscard]] constexpr std::string_view error_string(ConfigError err) noexcept {
+    switch (err) {
+        using enum ConfigError;
+        case QueueDepthNotPositive:
+            return "Queue depth must be positive";
+        case BlockSizeNotPositive:
+            return "Block size must be positive";
+        case AlignmentNotPowerOfTwo:
+            return "Alignment must be a power of two";
+        case AlignmentOverflow:
+            return "Block size combination results in alignment overflow";
+    }
+    std::unreachable();
+}
+
+[[nodiscard]] constexpr std::string_view error_string(AllocationError err) noexcept {
+    switch (err) {
+        using enum AllocationError;
+        case WriteBufSizeOverflow:
+            return "Overflow in write buffer total size calculation";
+        case WriteBufAlignOverflow:
+            return "Overflow in write buffer allocation alignment";
+        case WriteBufOom:
+            return "Failed to allocate aligned write buffer";
+        case ReadBufAlignOverflow:
+            return "Overflow in read buffer allocation alignment";
+        case ReadBufOom:
+            return "Failed to allocate read partitions";
+        case WriteBlockAlignOverflow:
+            return "Overflow in write block size alignment";
+        case ReadBlockAlignOverflow:
+            return "Overflow in read block size alignment";
+        case WriteMemStrideOverflow:
+            return "Overflow in write memory stride alignment";
+        case ReadMemStrideOverflow:
+            return "Overflow in read memory stride alignment";
+        case TotalTestSizeOverflow:
+            return "Overflow in total test size alignment";
+    }
+    std::unreachable();
+}
+
+[[nodiscard]] constexpr std::string_view error_string(ExecutionError err) noexcept {
+    switch (err) {
+        using enum ExecutionError;
+        case Timeout:
+            return "Disk benchmark timeout";
+        case WriteStalled:
+            return "Write operation stalled (0 bytes written)";
+        case UnexpectedEof:
+            return "Unexpected EOF (0 bytes read)";
+        case FileRegistrationConflict:
+            return "File registration conflict";
+    }
+    std::unreachable();
+}
+
+[[nodiscard]] constexpr std::string_view error_string(LogicError err) noexcept {
+    switch (err) {
+        using enum LogicError;
+        case RetrySlotOverflow:
+            return "Retry slot overflow";
+        case CqeTagOutOfBounds:
+            return "CQE tag out of bounds";
+        case CompletedBlocksExceedSubmitted:
+            return "Completed blocks exceed submitted blocks";
+        case RetrySlotsExceedActiveRequests:
+            return "Retry slots exceed active requests";
+        case FailedToGetSqeForTimer:
+            return "Failed to get SQE for timer";
+    }
+    std::unreachable();
+}
+
+template <typename T>
+concept UringErrorEnum = std::is_same_v<T, ConfigError> || std::is_same_v<T, AllocationError>
+    || std::is_same_v<T, ExecutionError> || std::is_same_v<T, LogicError>;
+
+[[nodiscard]] inline auto make_unexpected(UringErrorEnum auto err) {
+    return std::unexpected<std::string>(error_string(err));
+}
+
 struct PhaseRunStats {
     std::chrono::duration<double> elapsed {};
     std::uint64_t io_bytes  = 0;

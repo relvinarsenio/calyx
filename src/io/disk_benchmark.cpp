@@ -108,9 +108,7 @@ void fill_pattern_fast(std::span<std::byte> buffer) noexcept {
     const std::size_t gcd_val     = std::gcd(write_block_size, read_block_size);
     const std::size_t lcm_partial = toSize(write_block_size / gcd_val);
     const auto lcm_val            = safe_arith<overflow_op::mul>(lcm_partial, toSize(read_block_size));
-    if (!lcm_val) {
-        return std::unexpected("Invalid configuration: block size combination results in alignment overflow");
-    }
+    if (!lcm_val) { return uring::make_unexpected(uring::ConfigError::AlignmentOverflow); }
     return *lcm_val;
 }
 
@@ -180,18 +178,18 @@ struct IoParams {
     std::size_t alignment, const DiskBenchmark::BenchmarkConfig& config, std::uint64_t read_block_size) {
     const auto write_buf_total
         = safe_arith<overflow_op::mul>(toSize(write_mem_stride), toSize(config.write_queue_depth));
-    if (!write_buf_total) { return std::unexpected("Overflow in write buffer total size calculation"); }
+    if (!write_buf_total) { return uring::make_unexpected(uring::AllocationError::WriteBufSizeOverflow); }
 
     const auto write_buf_alloc_opt = round_up(*write_buf_total, get_page_size());
-    if (!write_buf_alloc_opt) { return std::unexpected("Overflow in write buffer allocation alignment"); }
+    if (!write_buf_alloc_opt) { return uring::make_unexpected(uring::AllocationError::WriteBufAlignOverflow); }
     const auto write_buf_alloc = *write_buf_alloc_opt;
     auto write_buf_opt         = AlignedBuffer::create(write_buf_alloc, alignment);
-    if (!write_buf_opt) { return std::unexpected("OOM: Failed to allocate aligned write buffer"); }
+    if (!write_buf_opt) { return uring::make_unexpected(uring::AllocationError::WriteBufOom); }
     AlignedBuffer write_buf_local = std::move(*write_buf_opt);
     fill_pattern_fast(write_buf_local.span());
 
     const auto read_buf_alloc_opt = round_up(read_block_size, get_page_size());
-    if (!read_buf_alloc_opt) { return std::unexpected("Overflow in read buffer allocation alignment"); }
+    if (!read_buf_alloc_opt) { return uring::make_unexpected(uring::AllocationError::ReadBufAlignOverflow); }
     const auto read_buf_alloc = *read_buf_alloc_opt;
 
     const auto init_vector = [depth = config.read_queue_depth]() {
@@ -205,7 +203,7 @@ struct IoParams {
         [read_buf_alloc, alignment](auto&& acc, auto) -> std::expected<std::vector<AlignedBuffer>, std::string> {
             if (!acc) { return std::move(acc); }
             auto read_buf_opt = AlignedBuffer::create(read_buf_alloc, alignment);
-            if (!read_buf_opt) { return std::unexpected("OOM: Failed to allocate read partitions"); }
+            if (!read_buf_opt) { return uring::make_unexpected(uring::AllocationError::ReadBufOom); }
             acc->push_back(std::move(*read_buf_opt));
             return std::move(acc);
         });
@@ -403,15 +401,15 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(const Ben
     using namespace std::chrono;
 
     if (config.write_queue_depth == 0 || config.read_queue_depth == 0) {
-        return std::unexpected("Invalid configuration: queue depth must be positive");
+        return uring::make_unexpected(uring::ConfigError::QueueDepthNotPositive);
     }
 
     if (config.write_block_size == 0 || config.read_block_size == 0) {
-        return std::unexpected("Invalid configuration: block size must be positive");
+        return uring::make_unexpected(uring::ConfigError::BlockSizeNotPositive);
     }
 
     if (!std::has_single_bit(config.alignment)) {
-        return std::unexpected("Invalid configuration: alignment must be a power of two");
+        return uring::make_unexpected(uring::ConfigError::AlignmentNotPowerOfTwo);
     }
 
     const std::string filename = get_test_filename();
@@ -428,11 +426,11 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(const Ben
     const auto alignment = std::max({ config.alignment, toSize(hw.mem_align), toSize(get_page_size()) });
 
     const auto write_block_size_opt = round_up(config.write_block_size, hw.offset_align);
-    if (!write_block_size_opt) { return std::unexpected("Overflow in write block size alignment"); }
+    if (!write_block_size_opt) { return uring::make_unexpected(uring::AllocationError::WriteBlockAlignOverflow); }
     const std::uint64_t write_block_size = *write_block_size_opt;
 
     const auto read_block_size_opt = round_up(config.read_block_size, hw.offset_align);
-    if (!read_block_size_opt) { return std::unexpected("Overflow in read block size alignment"); }
+    if (!read_block_size_opt) { return uring::make_unexpected(uring::AllocationError::ReadBlockAlignOverflow); }
     const std::uint64_t read_block_size = *read_block_size_opt;
 
     /**
@@ -443,12 +441,12 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(const Ben
     const auto write_mem_stride_opt = (write_block_size >= get_page_size())
         ? round_up(write_block_size, get_page_size())
         : round_up(write_block_size, hw.mem_align);
-    if (!write_mem_stride_opt) { return std::unexpected("Overflow in write memory stride alignment"); }
+    if (!write_mem_stride_opt) { return uring::make_unexpected(uring::AllocationError::WriteMemStrideOverflow); }
     const auto write_mem_stride = *write_mem_stride_opt;
 
     const auto read_mem_stride_opt = (read_block_size >= get_page_size()) ? round_up(read_block_size, get_page_size())
                                                                           : round_up(read_block_size, hw.mem_align);
-    if (!read_mem_stride_opt) { return std::unexpected("Overflow in read memory stride alignment"); }
+    if (!read_mem_stride_opt) { return uring::make_unexpected(uring::AllocationError::ReadMemStrideOverflow); }
     const auto read_mem_stride = *read_mem_stride_opt;
 
     const auto raw_size = toULong(config.size_mb) * 1024ULL * 1024ULL;
@@ -462,7 +460,7 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(const Ben
     const std::size_t final_mask = *final_mask_res;
 
     const auto total_bytes_opt = round_up(raw_size, final_mask);
-    if (!total_bytes_opt) { return std::unexpected("Overflow in total test size alignment"); }
+    if (!total_bytes_opt) { return uring::make_unexpected(uring::AllocationError::TotalTestSizeOverflow); }
     const std::uint64_t total_bytes = *total_bytes_opt;
 
     scope_exit file_cleaner { [&filename]() noexcept {
