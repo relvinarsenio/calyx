@@ -31,7 +31,7 @@ public:
     template <typename EFP>
         requires(!std::same_as<std::remove_cvref_t<EFP>, scope_exit>) && std::constructible_from<F, EFP>
         && (std::is_lvalue_reference_v<EFP> || !std::is_nothrow_constructible_v<F, EFP>)
-    [[nodiscard]] explicit scope_exit(EFP&& f) noexcept(std::is_nothrow_constructible_v<F, EFP&>)
+    [[nodiscard]] constexpr explicit scope_exit(EFP&& f) noexcept(std::is_nothrow_constructible_v<F, EFP&>)
 #ifdef __cpp_exceptions
         try
 #endif
@@ -51,7 +51,7 @@ public:
     template <typename EFP>
         requires(!std::same_as<std::remove_cvref_t<EFP>, scope_exit>) && std::constructible_from<F, EFP>
         && (!std::is_lvalue_reference_v<EFP>) && std::is_nothrow_constructible_v<F, EFP>
-    explicit scope_exit(EFP&& f) noexcept
+    constexpr explicit scope_exit(EFP&& f) noexcept
         : func_(std::forward<EFP>(f)) {}
 
     /**
@@ -69,7 +69,7 @@ public:
      * @brief Move-constructs via forward when F is noexcept-move-constructible (P0052R10 §22).
      * @details Deactivates the source guard unconditionally; construction is guaranteed noexcept.
      */
-    scope_exit(scope_exit&& other) noexcept
+    constexpr scope_exit(scope_exit&& other) noexcept
         requires std::is_nothrow_move_constructible_v<F>
         : func_(std::move(other.func_))
         , active_(std::exchange(other.active_, false)) {}
@@ -80,7 +80,7 @@ public:
      *          Uses is_copy_constructible_v (not std::copy_constructible) to match R10 §21
      *          exactly and avoid over-constraining types with deleted move constructors.
      */
-    scope_exit(scope_exit&& other) noexcept(std::is_nothrow_copy_constructible_v<F>)
+    constexpr scope_exit(scope_exit&& other) noexcept(std::is_nothrow_copy_constructible_v<F>)
         requires(!std::is_nothrow_move_constructible_v<F>) && std::is_copy_constructible_v<F>
         : func_(other.func_)
         , active_(std::exchange(other.active_, false)) {}
