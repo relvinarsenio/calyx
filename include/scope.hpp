@@ -71,7 +71,7 @@ public:
      */
     constexpr scope_exit(scope_exit&& other) noexcept
         requires std::is_nothrow_move_constructible_v<F>
-        : func_(std::move(other.func_))
+        : func_(std::forward(other.func_))
         , active_(std::exchange(other.active_, false)) {}
 
     /**
