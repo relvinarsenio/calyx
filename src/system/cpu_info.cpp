@@ -28,7 +28,30 @@ namespace {
 
 using namespace arm;
 
-const std::string kCpuModel = []() -> std::string {
+[[nodiscard]] constexpr std::optional<std::pair<std::string_view, std::string_view>> split_field(
+    std::string_view line) noexcept {
+    const auto colon = line.find(':');
+    if (colon == std::string_view::npos) { return std::nullopt; }
+    return std::pair { trim_sv(line.substr(0, colon)), trim_sv(line.substr(colon + 1)) };
+}
+
+template <typename KeysRange, typename LinesRange>
+[[nodiscard]] std::optional<std::string_view> find_first_field(KeysRange&& keys, LinesRange&& lines) {
+    auto pairs = std::views::cartesian_product(std::forward<KeysRange>(keys), std::forward<LinesRange>(lines));
+
+    const auto it = std::ranges::find_if(pairs, [](const auto& pair) {
+        const auto& [key, line] = pair;
+        const auto field        = split_field(line);
+        return field && field->first.size() == key.size() && is_starts_with_ic(field->first, key)
+            && !field->second.empty();
+    });
+
+    if (it == pairs.end()) { return std::nullopt; }
+    const auto& [key, line] = *it;
+    return split_field(line)->second;
+}
+
+[[nodiscard]] std::string probe_cpu_model() {
 #if defined(__i386__) || defined(__x86_64__)
     std::uint32_t max_ext = __get_cpuid_max(0x80000000, nullptr);
     if (max_ext >= 0x80000004) {
@@ -37,17 +60,17 @@ const std::string kCpuModel = []() -> std::string {
         __cpuid(0x80000003, data[4], data[5], data[6], data[7]);
         __cpuid(0x80000004, data[8], data[9], data[10], data[11]);
 
-        auto chars    = std::bit_cast<std::array<char, 48>>(data);
-        auto null_it  = std::ranges::find(chars, '\0');
-        auto brand_sv = trim_sv(std::string_view(chars.data(), toSize(std::distance(chars.begin(), null_it))));
-        if (!brand_sv.empty()) return std::string(brand_sv);
+        const auto chars    = std::bit_cast<std::array<char, 48>>(data);
+        const auto null_it  = std::ranges::find(chars, '\0');
+        const auto brand_sv = trim_sv(std::string_view(chars.data(), toSize(std::distance(chars.begin(), null_it))));
+        if (!brand_sv.empty()) { return std::string(brand_sv); }
     }
 #endif
 
     if (!probe::kDtModelProbe.empty()) { return probe::kDtModelProbe; }
 
 #if !defined(__i386__) && !defined(__x86_64__)
-    if (auto arm_name = resolve_arm_model_name()) return *arm_name;
+    if (const auto arm_name = resolve_arm_model_name()) { return *arm_name; }
 #endif
 
     const auto& cpuinfo                              = probe::kCpuInfoProbe;
@@ -55,44 +78,31 @@ const std::string kCpuModel = []() -> std::string {
 
     auto lines = cpuinfo | split_to_sv('\n');
 
-    auto matches = std::views::cartesian_product(kKeys, lines) | std::views::filter([](auto pair) {
-        auto [key, line] = pair;
-        auto colon       = line.find(':');
-        if (colon == std::string_view::npos) return false;
-        auto tag = trim_sv(line.substr(0, colon));
-        return tag.size() == key.size() && is_starts_with_ic(tag, key);
-    }) | std::views::transform([](auto pair) {
-        auto [key, line] = pair;
-        auto colon       = line.find(':');
-        return trim_sv(line.substr(colon + 1));
-    }) | std::views::filter([](auto val) { return !val.empty(); })
-        | std::views::take(1);
+    if (const auto match = find_first_field(kKeys, lines)) { return std::string(*match); }
 
-    if (auto it = matches.begin(); it != matches.end()) { return std::string(*it); }
-
-    std::string arch = SystemInfo::get_raw_arch();
+    const std::string arch = SystemInfo::get_raw_arch();
     return (arch != "unknown") ? arch : "Unknown CPU";
-}();
+}
 
-const bool kHasAes = []() noexcept {
+[[nodiscard]] bool probe_aes() noexcept {
 #if defined(__i386__) || defined(__x86_64__)
-    std::uint32_t eax, ebx, ecx, edx;
-    if (!__get_cpuid(1, &eax, &ebx, &ecx, &edx)) return false;
+    std::uint32_t eax {}, ebx {}, ecx {}, edx {};
+    if (!__get_cpuid(1, &eax, &ebx, &ecx, &edx)) { return false; }
     return (ecx & (1u << 25)) != 0;
 #else
     return cpu_has_flag("aes");
 #endif
-}();
+}
 
-const bool kHasVmx = []() noexcept {
+[[nodiscard]] bool probe_vmx() noexcept {
 #if defined(__i386__) || defined(__x86_64__)
-    std::uint32_t eax, ebx, ecx, edx;
-    if (!__get_cpuid(1, &eax, &ebx, &ecx, &edx)) return false;
+    std::uint32_t eax {}, ebx {}, ecx {}, edx {};
+    if (!__get_cpuid(1, &eax, &ebx, &ecx, &edx)) { return false; }
 
-    bool intel_vmx = (ecx & (1u << 5)) != 0;
+    const bool intel_vmx = (ecx & (1u << 5)) != 0;
 
-    bool amd_svm          = false;
-    std::uint32_t max_ext = __get_cpuid_max(0x80000000, nullptr);
+    bool amd_svm                = false;
+    const std::uint32_t max_ext = __get_cpuid_max(0x80000000, nullptr);
     if (max_ext >= 0x80000001) {
         __cpuid(0x80000001, eax, ebx, ecx, edx);
         amd_svm = (ecx & (1u << 2)) != 0;
@@ -102,7 +112,7 @@ const bool kHasVmx = []() noexcept {
 #else
     return cpu_has_flag("vmx") || cpu_has_flag("svm") || cpu_has_flag("virt");
 #endif
-}();
+}
 
 } // namespace
 
@@ -119,7 +129,8 @@ const bool kHasVmx = []() noexcept {
  * @return std::string The CPU model name or fallback value.
  */
 std::string SystemInfo::get_model_name() noexcept {
-    return kCpuModel;
+    static const std::string cpu_model = probe_cpu_model();
+    return cpu_model;
 }
 
 std::string SystemInfo::get_cpu_cores_freq() noexcept {
@@ -140,9 +151,11 @@ std::string SystemInfo::get_cpu_cache() noexcept {
 }
 
 bool SystemInfo::has_aes() noexcept {
-    return kHasAes;
+    static const bool has_aes = probe_aes();
+    return has_aes;
 }
 
 bool SystemInfo::has_vmx() noexcept {
-    return kHasVmx;
+    static const bool has_vmx = probe_vmx();
+    return has_vmx;
 }

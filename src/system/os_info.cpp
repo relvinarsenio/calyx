@@ -18,24 +18,30 @@
 #include <string>
 #include <string_view>
 
+namespace {
+
+[[nodiscard]] std::string get_os_release_pretty_name() {
+    static constexpr std::string_view kPrefix = "PRETTY_NAME=";
+    const std::string_view content            = probe::kOsReleaseProbe;
+    if (content.empty()) { return "Linux"; }
+
+    auto pretty_name_lines = content | split_to_sv('\n')
+        | std::views::filter([](const auto line) { return line.starts_with(kPrefix) && line.size() > kPrefix.size(); })
+        | std::views::transform([](const auto line) { return unquote(line.substr(kPrefix.size())); })
+        | std::views::filter([](const auto unquoted) { return !unquoted.empty(); }) | std::views::take(1);
+
+    const auto first = pretty_name_lines.begin();
+    return first != pretty_name_lines.end() ? std::string(*first) : "Linux";
+}
+
+} // namespace
+
 std::string SystemInfo::get_virtualization() noexcept {
     return probe::kVirtualizationProbe;
 }
 
 std::string SystemInfo::get_os() noexcept {
-    static const std::string instance = []() -> std::string {
-        static constexpr std::string_view kPrefix = "PRETTY_NAME=";
-        const std::string_view content            = probe::kOsReleaseProbe;
-        if (content.empty()) { return "Linux"; }
-
-        auto pretty_name_lines = content | split_to_sv('\n')
-            | std::views::filter([](auto line) { return line.starts_with(kPrefix) && line.size() > kPrefix.size(); })
-            | std::views::transform([](auto line) { return unquote(line.substr(kPrefix.size())); })
-            | std::views::filter([](auto unquoted) { return !unquoted.empty(); }) | std::views::take(1);
-
-        auto first = pretty_name_lines.begin();
-        return first != pretty_name_lines.end() ? std::string(*first) : "Linux";
-    }();
+    static const std::string instance = get_os_release_pretty_name();
     return instance;
 }
 
