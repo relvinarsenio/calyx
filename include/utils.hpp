@@ -174,6 +174,12 @@ inline constexpr auto trim_sv = [](std::string_view str) noexcept -> std::string
 
 inline constexpr auto trim = [](const std::string& str) -> std::string { return std::string(trim_sv(str)); };
 
+inline constexpr auto equals_ic = [](std::string_view lhs, std::string_view rhs) noexcept -> bool {
+    return lhs.size() == rhs.size() && std::ranges::equal(lhs, rhs, [](char a, char b) noexcept {
+        return std::tolower(toUChar(a)) == std::tolower(toUChar(b));
+    });
+};
+
 /**
  * @brief Truncates a string to a maximum length, appending an ellipsis if needed.
  */
@@ -430,4 +436,23 @@ inline auto tokenize_sv() {
                   | std::views::filter([](std::string_view sub_token) { return !sub_token.empty(); });
           })
         | std::views::join;
+}
+
+template <std::ranges::input_range KeysRange>
+inline std::optional<std::string_view> lookup_info_field(std::string_view content, const KeysRange& keys) {
+    auto lines = std::views::split(content, '\n') | std::views::transform([](auto raw) {
+        return std::string_view(raw);
+    }) | std::views::transform([](std::string_view line) {
+        const auto colon = line.find(':');
+        return (colon == std::string_view::npos)
+            ? std::pair { std::string_view {}, std::string_view {} }
+            : std::pair { trim_sv(line.substr(0, colon)), trim_sv(line.substr(colon + 1)) };
+    }) | std::views::filter([&keys](const auto& pair) {
+        return !pair.first.empty() && !pair.second.empty()
+            && std::ranges::any_of(keys, [&pair](std::string_view key) { return equals_ic(pair.first, key); });
+    }) | std::views::transform([](const auto& pair) { return pair.second; })
+        | std::views::take(1);
+
+    auto it = lines.begin();
+    return (it != lines.end()) ? std::optional<std::string_view> { *it } : std::nullopt;
 }

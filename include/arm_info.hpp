@@ -31,31 +31,6 @@ inline constexpr auto is_starts_with_ic = [](std::string_view str, std::string_v
         [](char lhs, char rhs) { return std::tolower(toUChar(lhs)) == std::tolower(toUChar(rhs)); });
 };
 
-#if !defined(__i386__) && !defined(__x86_64__)
-inline constexpr auto cpu_has_flag = [](std::string_view flag) -> bool {
-    const auto& cpuinfo = probe::kCpuInfoProbe;
-    if (cpuinfo.empty()) { return false; }
-
-    constexpr std::array<std::string_view, 2> kKeys = { "flags", "Features" };
-
-    auto flag_words = std::views::split(cpuinfo, '\n')
-        | std::views::transform([](auto raw) { return std::string_view(raw); })
-        | std::views::filter([&kKeys](auto line) {
-              return std::ranges::any_of(kKeys, [line](auto key) { return is_starts_with_ic(line, key); });
-          })
-        | std::views::take(1) | std::views::transform([](auto line) {
-              auto colon = line.find(':');
-              return (colon == std::string_view::npos) ? std::string_view {} : trim_sv(line.substr(colon + 1));
-          })
-        | std::views::transform([](auto flags_str) {
-              return std::views::split(flags_str, ' ')
-                  | std::views::transform([](auto raw) { return std::string_view(raw); });
-          })
-        | std::views::join;
-
-    return std::ranges::any_of(flag_words, [flag](auto word) { return !word.empty() && word == flag; });
-};
-
 /**
  * @brief ARM CPU identification logic via MIDR_EL1 fields.
  *
@@ -450,24 +425,15 @@ inline constexpr auto lookup_arm_name = [](std::int32_t impl, std::int32_t part)
  */
 inline constexpr auto parse_cpuinfo_hex
     = [](const std::string& cpuinfo, std::string_view key) -> std::optional<std::int32_t> {
-    /** @brief Per-line parser: returns the hex value if the line matches @p key, otherwise std::nullopt. */
-    const auto try_parse = [key](std::string_view line) -> std::optional<std::int32_t> {
-        if (!is_starts_with_ic(line, key)) { return std::nullopt; }
-        const auto colon = line.find(':');
-        if (colon == std::string_view::npos) { return std::nullopt; }
-        auto val_str = trim_sv(line.substr(colon + 1));
-        if (val_str.starts_with("0x") || val_str.starts_with("0X")) { val_str.remove_prefix(2); }
-        std::int32_t val = 0;
-        auto [ptr, ec]   = std::from_chars(val_str.data(), val_str.data() + val_str.size(), val, 16);
-        return (ec == std::errc {}) ? std::optional { val } : std::nullopt;
-    };
+    const std::array<std::string_view, 1> keys = { key };
+    const auto val_opt                         = lookup_info_field(cpuinfo, keys);
+    if (!val_opt) { return std::nullopt; }
 
-    /** @brief Pipeline: split by newline → parse each line → keep valid results → take the first match. */
-    auto matches = cpuinfo | split_to_sv('\n') | std::views::transform(try_parse)
-        | std::views::filter([](const auto& opt) { return opt.has_value(); }) | std::views::take(1);
-
-    const auto it = std::ranges::begin(matches);
-    return (it != std::ranges::end(matches)) ? *it : std::nullopt;
+    auto val_str = *val_opt;
+    if (val_str.starts_with("0x") || val_str.starts_with("0X")) { val_str.remove_prefix(2); }
+    std::int32_t val = 0;
+    auto [ptr, ec]   = std::from_chars(val_str.data(), val_str.data() + val_str.size(), val, 16);
+    return (ec == std::errc {}) ? std::optional { val } : std::nullopt;
 };
 
 /**
@@ -478,7 +444,7 @@ inline constexpr auto parse_cpuinfo_hex
  * @return std::optional<std::string> The resolved name if successful.
  */
 inline constexpr auto parse_midr_sysfs = []() -> std::optional<std::string> {
-    const std::string_view content = probe::kMidrProbe;
+    const std::string_view content = probe::get_midr_probe();
     if (content.empty()) { return std::nullopt; }
 
     auto val_str = trim_sv(content);
@@ -488,8 +454,8 @@ inline constexpr auto parse_midr_sysfs = []() -> std::optional<std::string> {
     auto [ptr, ec]     = std::from_chars(val_str.data(), val_str.data() + val_str.size(), midr, 16);
     if (ec != std::errc {}) { return std::nullopt; }
 
-    std::int32_t impl = toInt((midr >> 24) & 0xFF);
-    std::int32_t part = toInt((midr >> 4) & 0xFFF);
+    const std::int32_t impl = toInt((midr >> 24) & 0xFF);
+    const std::int32_t part = toInt((midr >> 4) & 0xFFF);
 
     return lookup_arm_name(impl, part);
 };
@@ -503,16 +469,15 @@ inline constexpr auto parse_midr_sysfs = []() -> std::optional<std::string> {
  */
 inline constexpr auto resolve_arm_model_name = []() -> std::optional<std::string> {
     ///< @brief Strategy 1: parse "CPU implementer" + "CPU part" from /proc/cpuinfo
-    const auto& cpuinfo = probe::kCpuInfoProbe;
+    const auto& cpuinfo = probe::get_cpu_info_probe();
     if (!cpuinfo.empty()) {
-        auto impl_opt = parse_cpuinfo_hex(cpuinfo, "CPU implementer");
-        auto part_opt = parse_cpuinfo_hex(cpuinfo, "CPU part");
+        const auto impl_opt = parse_cpuinfo_hex(cpuinfo, "CPU implementer");
+        const auto part_opt = parse_cpuinfo_hex(cpuinfo, "CPU part");
         if (impl_opt && part_opt) { return lookup_arm_name(*impl_opt, *part_opt); }
     }
 
     ///< @brief Strategy 2: read MIDR_EL1 register from sysfs (kernel ≥ 4.11)
     return parse_midr_sysfs();
 };
-#endif
 
 } // namespace arm

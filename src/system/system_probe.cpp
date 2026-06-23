@@ -61,7 +61,7 @@ template <FixedString... Prefixes> [[nodiscard]] constexpr bool starts_with_any(
 }
 
 [[nodiscard]] ArchInfo probe_arch() {
-    return kUnameProbe.transform(format_arch_info).value_or(ArchInfo { "unknown", "Unknown" });
+    return get_uname_probe().transform(format_arch_info).value_or(ArchInfo { "unknown", "Unknown" });
 }
 
 [[nodiscard]] std::string probe_cpu_info() {
@@ -269,7 +269,7 @@ static constexpr auto kUnits = std::to_array<UnitMultiplier>(
 }
 
 [[nodiscard]] FreqInfo probe_max_freq_cpuinfo() {
-    auto items = kCpuInfoProbe | split_to_sv('\n')
+    auto items = get_cpu_info_probe() | split_to_sv('\n')
         | std::views::filter([](const auto line_sv) { return line_sv.starts_with("cpu MHz"); })
         | std::views::transform(parse_cpu_mhz_line);
 
@@ -368,7 +368,7 @@ static constexpr auto kUnits = std::to_array<UnitMultiplier>(
 }
 
 [[nodiscard]] std::optional<std::string> check_uname_kernel() noexcept {
-    return kUnameProbe.transform(check_uname_kernel_impl).value_or(std::nullopt);
+    return get_uname_probe().transform(check_uname_kernel_impl).value_or(std::nullopt);
 }
 
 [[nodiscard]] std::optional<std::string> check_wsl_devices() noexcept {
@@ -396,19 +396,9 @@ static constexpr auto kUnits = std::to_array<UnitMultiplier>(
     return check_uname_kernel().or_else(check_wsl_devices).or_else(check_hypervisor_type);
 }
 
-[[nodiscard]] bool check_cpuid_hv_bit() noexcept {
-#if defined(__x86_64__) || defined(__i386__)
-    std::uint32_t eax_val {}, ebx_val {}, ecx_val {}, edx_val {};
-    __cpuid(1, eax_val, ebx_val, ecx_val, edx_val);
-    return (ecx_val & (std::uint32_t { 1 } << 31)) != 0;
-#else
-    return false;
-#endif
-}
-
 [[nodiscard]] std::optional<std::string> check_cpuid_hypervisor() noexcept {
 #if defined(__x86_64__) || defined(__i386__)
-    if (check_cpuid_hv_bit()) {
+    if (get_cpu_features().has_hv_bit) {
         std::uint32_t eax_val {}, ebx_val {}, ecx_val {}, edx_val {};
         __cpuid(0x40000000, eax_val, ebx_val, ecx_val, edx_val);
         const auto cast = [](std::uint32_t v) { return std::bit_cast<std::array<char, 4>>(v); };
@@ -443,7 +433,9 @@ static constexpr auto kUnits = std::to_array<UnitMultiplier>(
  */
 [[nodiscard]] std::optional<std::string> detect_hardware_scope() {
     if (const auto res = check_cpuid_hypervisor()) { return res; }
-    if (kCpuInfoProbe.contains("QEMU") || kCpuInfoProbe.contains("implementer\t: 0x00")) { return "QEMU (Emulated)"; }
+    if (get_cpu_info_probe().contains("QEMU") || get_cpu_info_probe().contains("implementer\t: 0x00")) {
+        return "QEMU (Emulated)";
+    }
     return std::nullopt;
 }
 
@@ -531,22 +523,107 @@ static constexpr auto kDmiRules = std::to_array<DmiRule>({ { "Hyper-V",
         .or_else(detect_isolation_scope)
         .or_else(detect_kernel_scope)
         .or_else(detect_hardware_scope)
-        .or_else([]() { return detect_global_scope(check_cpuid_hv_bit()); })
+        .or_else([]() { return detect_global_scope(get_cpu_features().has_hv_bit); })
         .value_or("");
 }
 
 } // namespace
 
-const std::expected<::utsname, std::error_code> kUnameProbe = probe_uname();
-const ArchInfo kArchProbe                                   = probe_arch();
-const std::string kCpuInfoProbe                             = probe_cpu_info();
-const std::string kOsReleaseProbe                           = probe_os_release();
-const std::string kTcpCcProbe                               = probe_tcp_cc();
-const std::string kCpuCacheProbe                            = probe_cpu_cache();
-const std::string kDtModelProbe                             = probe_dt_model();
-const std::string kMidrProbe                                = probe_midr();
-const bool kZswapEnabledProbe                               = probe_zswap_enabled();
-const FreqInfo kMaxFreqProbe                                = probe_max_freq();
-const std::string kVirtualizationProbe                      = probe_virtualization();
+const std::expected<::utsname, std::error_code>& get_uname_probe() noexcept {
+    static const auto instance = probe_uname();
+    return instance;
+}
+
+const ArchInfo& get_arch_probe() noexcept {
+    static const auto instance = probe_arch();
+    return instance;
+}
+
+const std::string& get_cpu_info_probe() noexcept {
+    static const auto instance = probe_cpu_info();
+    return instance;
+}
+
+const std::string& get_os_release_probe() noexcept {
+    static const auto instance = probe_os_release();
+    return instance;
+}
+
+const std::string& get_tcp_cc_probe() noexcept {
+    static const auto instance = probe_tcp_cc();
+    return instance;
+}
+
+const std::string& get_cpu_cache_probe() noexcept {
+    static const auto instance = probe_cpu_cache();
+    return instance;
+}
+
+const std::string& get_dt_model_probe() noexcept {
+    static const auto instance = probe_dt_model();
+    return instance;
+}
+
+const std::string& get_midr_probe() noexcept {
+    static const auto instance = probe_midr();
+    return instance;
+}
+
+bool get_zswap_enabled_probe() noexcept {
+    static const bool instance = probe_zswap_enabled();
+    return instance;
+}
+
+const FreqInfo& get_max_freq_probe() noexcept {
+    static const auto instance = probe_max_freq();
+    return instance;
+}
+
+const std::string& get_virtualization_probe() noexcept {
+    static const auto instance = probe_virtualization();
+    return instance;
+}
+
+const CpuFeatures& get_cpu_features() noexcept {
+    static const auto instance = []() noexcept {
+#if defined(__i386__) || defined(__x86_64__)
+        std::uint32_t cpuid1_eax {}, cpuid1_ebx {}, cpuid1_ecx {}, cpuid1_edx {};
+        const bool cpuid1_ok = __get_cpuid(1, &cpuid1_eax, &cpuid1_ebx, &cpuid1_ecx, &cpuid1_edx) != 0;
+
+        const bool has_hv_bit    = cpuid1_ok && (cpuid1_ecx & (1U << 31)) != 0;
+        const bool has_aes       = cpuid1_ok && (cpuid1_ecx & (1U << 25)) != 0;
+        const bool has_vmx_intel = cpuid1_ok && (cpuid1_ecx & (1U << 5)) != 0;
+
+        const auto check_amd_svm = []() noexcept -> bool {
+            const std::uint32_t max_ext = __get_cpuid_max(0x80000000, nullptr);
+            if (max_ext < 0x80000001) { return false; }
+            std::uint32_t eax {}, ebx {}, ecx {}, edx {};
+            __cpuid(0x80000001, eax, ebx, ecx, edx);
+            return (ecx & (1U << 2)) != 0;
+        };
+
+        const bool has_vmx = has_vmx_intel || check_amd_svm();
+
+        return CpuFeatures { .has_aes = has_aes, .has_vmx = has_vmx, .has_hv_bit = has_hv_bit };
+#else
+        return CpuFeatures { .has_aes = cpu_has_flag("aes"),
+            .has_vmx                  = cpu_has_flag("vmx") || cpu_has_flag("svm") || cpu_has_flag("virt"),
+            .has_hv_bit               = false };
+#endif
+    }();
+    return instance;
+}
+
+bool cpu_has_flag(std::string_view flag) noexcept {
+    const auto& cpuinfo = get_cpu_info_probe();
+    if (cpuinfo.empty()) { return false; }
+
+    constexpr std::array<std::string_view, 2> kKeys = { "flags", "Features" };
+    const auto field_opt                            = lookup_info_field(cpuinfo, kKeys);
+    if (!field_opt) { return false; }
+
+    auto flag_words = *field_opt | tokenize_sv();
+    return std::ranges::any_of(flag_words, [flag](auto word) { return !word.empty() && word == flag; });
+}
 
 } // namespace probe

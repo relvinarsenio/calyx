@@ -22,7 +22,7 @@ namespace {
 
 [[nodiscard]] std::string get_os_release_pretty_name() {
     static constexpr std::string_view kPrefix = "PRETTY_NAME=";
-    const std::string_view content            = probe::kOsReleaseProbe;
+    const std::string_view content            = probe::get_os_release_probe();
     if (content.empty()) { return "Linux"; }
 
     auto pretty_name_lines = content | split_to_sv('\n')
@@ -37,7 +37,7 @@ namespace {
 } // namespace
 
 std::string SystemInfo::get_virtualization() noexcept {
-    return probe::kVirtualizationProbe;
+    return probe::get_virtualization_probe();
 }
 
 std::string SystemInfo::get_os() noexcept {
@@ -46,20 +46,21 @@ std::string SystemInfo::get_os() noexcept {
 }
 
 std::string SystemInfo::get_raw_arch() noexcept {
-    return probe::kArchProbe.raw;
+    return probe::get_arch_probe().raw;
 }
 
 std::string SystemInfo::get_arch() noexcept {
-    return probe::kArchProbe.formatted;
+    return probe::get_arch_probe().formatted;
 }
 
 std::string SystemInfo::get_kernel() noexcept {
-    static const std::string instance = probe::kUnameProbe ? probe::kUnameProbe->release : std::string("Unknown");
+    static const std::string instance
+        = probe::get_uname_probe() ? probe::get_uname_probe()->release : std::string("Unknown");
     return instance;
 }
 
 std::string SystemInfo::get_tcp_cc() noexcept {
-    const std::string& cc = probe::kTcpCcProbe;
+    const std::string& cc = probe::get_tcp_cc_probe();
     return cc.empty() ? std::string("Unknown") : cc;
 }
 
@@ -69,10 +70,10 @@ std::string SystemInfo::get_uptime() noexcept {
     struct sysinfo sys_info {};
     if (!posix::expect_result<posix::error_style::posix>(::sysinfo(&sys_info))) { return "Unknown"; }
 
-    auto total    = seconds(sys_info.uptime);
-    auto up_days  = floor<days>(total);
-    auto up_hours = floor<hours>(total - up_days);
-    auto up_mins  = floor<minutes>(total - up_days - up_hours);
+    const auto total    = seconds(sys_info.uptime);
+    const auto up_days  = floor<days>(total);
+    const auto up_hours = floor<hours>(total - up_days);
+    const auto up_mins  = floor<minutes>(total - up_days - up_hours);
 
     struct TimeUnit {
         std::int64_t count;

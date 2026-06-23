@@ -62,24 +62,6 @@ namespace {
     return stats;
 }
 
-[[nodiscard]] std::optional<std::uint64_t> extract_mem_available(std::string_view line) {
-    constexpr std::string_view kPrefix = "MemAvailable:";
-    if (!line.starts_with(kPrefix)) { return std::nullopt; }
-
-    return std::optional<std::string_view> { line.substr(kPrefix.size()) }
-        .transform(trim_sv)
-        .transform([](std::string_view val) noexcept -> std::string_view {
-            constexpr std::string_view kSuffix = "kB";
-            return trim_sv(
-                val.ends_with(kSuffix) ? val.substr(0uz, safe_sub(val.size(), kSuffix.size()).value_or(0uz)) : val);
-        })
-        .and_then([](std::string_view val) noexcept -> std::optional<std::uint64_t> {
-            const auto res = parse_number<std::uint64_t>(val);
-            return res ? std::optional { *res } : std::nullopt;
-        })
-        .and_then([](std::uint64_t val) noexcept -> std::optional<std::uint64_t> { return safe_mul(val, 1024ULL); });
-}
-
 [[nodiscard]] std::optional<SwapEntry> parse_swap_line(std::string_view line) {
     constexpr std::size_t kFieldCount = 4;
     auto tokens                       = line | tokenize_sv() | std::views::take(kFieldCount);
@@ -155,7 +137,7 @@ struct MountMatch {
 } // namespace
 
 MemInfo SystemInfo::get_memory_status() noexcept {
-    const auto [initial_total, initial_available] = []() -> std::pair<std::uint64_t, std::uint64_t> {
+    const auto [total, initial_available] = []() -> std::pair<std::uint64_t, std::uint64_t> {
         struct sysinfo si {};
         if (posix::expect_result<posix::error_style::posix>(::sysinfo(&si)) && si.mem_unit > 0) {
             const std::uint64_t unit = si.mem_unit;
@@ -164,21 +146,27 @@ MemInfo SystemInfo::get_memory_status() noexcept {
         return { 0, 0 };
     }();
 
-    MemInfo info { .total = initial_total, .available = initial_available };
+    const std::uint64_t available = [initial_available]() -> std::uint64_t {
+        const auto meminfo = read_file("/proc/meminfo");
+        if (!meminfo) { return initial_available; }
 
-    if (auto meminfo = read_file("/proc/meminfo")) {
-        auto available_mem = *meminfo | split_to_sv('\n') | std::views::transform(extract_mem_available)
-            | std::views::filter([](auto mem_result) { return mem_result.has_value(); })
-            | std::views::transform([](auto mem_result) { return *mem_result; }) | std::views::take(1);
+        constexpr std::array<std::string_view, 1> kKeys = { "MemAvailable" };
+        const auto field_opt                            = lookup_info_field(*meminfo, kKeys);
+        if (!field_opt) { return initial_available; }
 
-        if (auto first_value = available_mem.begin(); first_value != available_mem.end()) {
-            info.available = *first_value;
-        }
-    }
+        auto val_str                       = *field_opt;
+        constexpr std::string_view kSuffix = "kB";
+        if (val_str.ends_with(kSuffix)) { val_str = trim_sv(val_str.substr(0, val_str.size() - kSuffix.size())); }
 
-    info.used = safe_sub(info.total, info.available).value_or(0);
+        const auto res = parse_number<std::uint64_t>(val_str);
+        if (!res) { return initial_available; }
 
-    return info;
+        return safe_mul(*res, 1024ULL).value_or(0);
+    }();
+
+    const std::uint64_t used = safe_sub(total, available).value_or(0);
+
+    return MemInfo { .total = total, .used = used, .available = available };
 }
 
 DiskInfo SystemInfo::get_disk_usage(const std::string& mountpoint) noexcept {
@@ -200,19 +188,17 @@ DiskInfo SystemInfo::get_disk_usage(const std::string& mountpoint) noexcept {
 }
 
 std::vector<SwapEntry> SystemInfo::get_swaps() noexcept {
-    std::vector<SwapEntry> swaps;
-
-    if (auto content = read_file("/proc/swaps")) {
-        swaps = *content | split_to_sv('\n') | std::views::drop(1) | std::views::transform(parse_swap_line)
+    const auto raw_swaps = []() -> std::vector<SwapEntry> {
+        const auto content = read_file("/proc/swaps");
+        if (!content) { return {}; }
+        return *content | split_to_sv('\n') | std::views::drop(1) | std::views::transform(parse_swap_line)
             | std::views::filter([](const auto& swap_result) { return swap_result.has_value(); })
             | std::views::transform([](auto&& swap_result) { return std::move(*swap_result); })
             | std::ranges::to<std::vector>();
-    }
+    }();
 
     const auto zswap = []() -> std::optional<SwapEntry> {
-        const bool enabled = probe::kZswapEnabledProbe;
-
-        if (!enabled) { return std::nullopt; }
+        if (!probe::get_zswap_enabled_probe()) { return std::nullopt; }
 
         auto zs = collect_zswap_stats();
         if (!zs) { return std::nullopt; }
@@ -227,9 +213,11 @@ std::vector<SwapEntry> SystemInfo::get_swaps() noexcept {
             .zswap_stats         = std::move(zs) };
     }();
 
-    if (zswap) { swaps.push_back(std::move(*zswap)); }
+    if (!zswap) { return raw_swaps; }
 
-    return swaps;
+    auto result = raw_swaps;
+    result.push_back(std::move(*zswap));
+    return result;
 }
 
 std::string SystemInfo::get_device_name(const std::string& path) noexcept {

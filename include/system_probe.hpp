@@ -33,21 +33,31 @@ struct ArchInfo {
     std::string formatted;
 };
 
+struct CpuFeatures {
+    bool has_aes    = false;
+    bool has_vmx    = false;
+    bool has_hv_bit = false;
+};
+
 /**
- * @brief Cached system information probes.
- * @details Declared as extern const to prevent redundant dynamic initialization
- *          and startup I/O across multiple translation units, reducing compilation overhead.
+ * @brief Lazy accessors for system probes to prevent redundant startup I/O.
  */
-extern const std::expected<::utsname, std::error_code> kUnameProbe;
-extern const ArchInfo kArchProbe;
-extern const std::string kCpuInfoProbe;
-extern const std::string kOsReleaseProbe;
-extern const std::string kTcpCcProbe;
-extern const std::string kCpuCacheProbe;
-extern const std::string kDtModelProbe;
-extern const std::string kMidrProbe;
-extern const bool kZswapEnabledProbe;
-extern const FreqInfo kMaxFreqProbe;
-extern const std::string kVirtualizationProbe;
+const std::expected<::utsname, std::error_code>& get_uname_probe() noexcept;
+const ArchInfo& get_arch_probe() noexcept;
+const std::string& get_cpu_info_probe() noexcept;
+const std::string& get_os_release_probe() noexcept;
+const std::string& get_tcp_cc_probe() noexcept;
+const std::string& get_cpu_cache_probe() noexcept;
+const std::string& get_dt_model_probe() noexcept;
+const std::string& get_midr_probe() noexcept;
+bool get_zswap_enabled_probe() noexcept;
+const FreqInfo& get_max_freq_probe() noexcept;
+const std::string& get_virtualization_probe() noexcept;
+const CpuFeatures& get_cpu_features() noexcept;
+
+/**
+ * @brief Checks if the CPU has a specific flag (for non-x86 architectures).
+ */
+bool cpu_has_flag(std::string_view flag) noexcept;
 
 } // namespace probe

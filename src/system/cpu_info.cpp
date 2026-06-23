@@ -28,29 +28,6 @@ namespace {
 
 using namespace arm;
 
-[[nodiscard]] constexpr std::optional<std::pair<std::string_view, std::string_view>> split_field(
-    std::string_view line) noexcept {
-    const auto colon = line.find(':');
-    if (colon == std::string_view::npos) { return std::nullopt; }
-    return std::pair { trim_sv(line.substr(0, colon)), trim_sv(line.substr(colon + 1)) };
-}
-
-template <typename KeysRange, typename LinesRange>
-[[nodiscard]] std::optional<std::string_view> find_first_field(KeysRange&& keys, LinesRange&& lines) {
-    auto pairs = std::views::cartesian_product(std::forward<KeysRange>(keys), std::forward<LinesRange>(lines));
-
-    const auto it = std::ranges::find_if(pairs, [](const auto& pair) {
-        const auto& [key, line] = pair;
-        const auto field        = split_field(line);
-        return field && field->first.size() == key.size() && is_starts_with_ic(field->first, key)
-            && !field->second.empty();
-    });
-
-    if (it == pairs.end()) { return std::nullopt; }
-    const auto& [key, line] = *it;
-    return split_field(line)->second;
-}
-
 [[nodiscard]] std::string probe_cpu_model() {
 #if defined(__i386__) || defined(__x86_64__)
     std::uint32_t max_ext = __get_cpuid_max(0x80000000, nullptr);
@@ -67,51 +44,19 @@ template <typename KeysRange, typename LinesRange>
     }
 #endif
 
-    if (!probe::kDtModelProbe.empty()) { return probe::kDtModelProbe; }
+    if (!probe::get_dt_model_probe().empty()) { return probe::get_dt_model_probe(); }
 
 #if !defined(__i386__) && !defined(__x86_64__)
     if (const auto arm_name = resolve_arm_model_name()) { return *arm_name; }
 #endif
 
-    const auto& cpuinfo                              = probe::kCpuInfoProbe;
+    const auto& cpuinfo                              = probe::get_cpu_info_probe();
     constexpr std::array<std::string_view, 5z> kKeys = { "model name", "model", "hardware", "cpu", "processor" };
 
-    auto lines = cpuinfo | split_to_sv('\n');
-
-    if (const auto match = find_first_field(kKeys, lines)) { return std::string(*match); }
+    if (const auto match = lookup_info_field(cpuinfo, kKeys)) { return std::string(*match); }
 
     const std::string arch = SystemInfo::get_raw_arch();
     return (arch != "unknown") ? arch : "Unknown CPU";
-}
-
-[[nodiscard]] bool probe_aes() noexcept {
-#if defined(__i386__) || defined(__x86_64__)
-    std::uint32_t eax {}, ebx {}, ecx {}, edx {};
-    if (!__get_cpuid(1, &eax, &ebx, &ecx, &edx)) { return false; }
-    return (ecx & (1u << 25)) != 0;
-#else
-    return cpu_has_flag("aes");
-#endif
-}
-
-[[nodiscard]] bool probe_vmx() noexcept {
-#if defined(__i386__) || defined(__x86_64__)
-    std::uint32_t eax {}, ebx {}, ecx {}, edx {};
-    if (!__get_cpuid(1, &eax, &ebx, &ecx, &edx)) { return false; }
-
-    const bool intel_vmx = (ecx & (1u << 5)) != 0;
-
-    bool amd_svm                = false;
-    const std::uint32_t max_ext = __get_cpuid_max(0x80000000, nullptr);
-    if (max_ext >= 0x80000001) {
-        __cpuid(0x80000001, eax, ebx, ecx, edx);
-        amd_svm = (ecx & (1u << 2)) != 0;
-    }
-
-    return intel_vmx || amd_svm;
-#else
-    return cpu_has_flag("vmx") || cpu_has_flag("svm") || cpu_has_flag("virt");
-#endif
 }
 
 } // namespace
@@ -136,7 +81,7 @@ std::string SystemInfo::get_model_name() noexcept {
 std::string SystemInfo::get_cpu_cores_freq() noexcept {
     const auto cores_res     = posix::expect_result<posix::error_style::posix>(::sysconf(_SC_NPROCESSORS_ONLN));
     const std::int64_t cores = (cores_res && *cores_res > 0) ? *cores_res : 1L;
-    const auto& [max_khz, is_true_max] = probe::kMaxFreqProbe;
+    const auto& [max_khz, is_true_max] = probe::get_max_freq_probe();
 
     if (max_khz > 0) {
         const double mhz = toDouble(max_khz) / 1000.0;
@@ -147,15 +92,13 @@ std::string SystemInfo::get_cpu_cores_freq() noexcept {
 }
 
 std::string SystemInfo::get_cpu_cache() noexcept {
-    return probe::kCpuCacheProbe;
+    return probe::get_cpu_cache_probe();
 }
 
 bool SystemInfo::has_aes() noexcept {
-    static const bool has_aes = probe_aes();
-    return has_aes;
+    return probe::get_cpu_features().has_aes;
 }
 
 bool SystemInfo::has_vmx() noexcept {
-    static const bool has_vmx = probe_vmx();
-    return has_vmx;
+    return probe::get_cpu_features().has_vmx;
 }
