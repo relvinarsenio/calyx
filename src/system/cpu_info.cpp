@@ -44,16 +44,18 @@ using namespace arm;
     }
 #endif
 
-    if (!probe::get_dt_model_probe().empty()) { return probe::get_dt_model_probe(); }
-
 #if !defined(__i386__) && !defined(__x86_64__)
     if (const auto arm_name = resolve_arm_model_name()) { return *arm_name; }
 #endif
 
+    if (!probe::get_dt_model_probe().empty()) { return probe::get_dt_model_probe(); }
+
     const auto& cpuinfo                              = probe::get_cpu_info_probe();
     constexpr std::array<std::string_view, 5z> kKeys = { "model name", "model", "hardware", "cpu", "processor" };
 
-    if (const auto match = lookup_info_field(cpuinfo, kKeys)) { return std::string(*match); }
+    for (const auto key : kKeys) {
+        if (const auto match = lookup_info_field(cpuinfo, std::array { key })) { return std::string(*match); }
+    }
 
     const std::string arch = SystemInfo::get_raw_arch();
     return (arch != "unknown") ? arch : "Unknown CPU";

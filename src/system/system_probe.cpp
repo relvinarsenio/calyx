@@ -226,14 +226,15 @@ static constexpr auto kUnits = std::to_array<UnitMultiplier>(
         || !std::ranges::all_of(suffix, [](unsigned char digit_char) { return std::isdigit(digit_char) != 0; })) {
         return std::nullopt;
     }
-    const auto max_freq { parse_file_or<std::uint64_t>(
-        cpu_entry.path() / "cpufreq/cpuinfo_max_freq",
-        [](const auto content_sv) { return parse_number<std::uint64_t>(trim_sv(content_sv)).value_or(0ULL); }, 0ULL) };
-    if (max_freq > 0) { return FreqInfo { max_freq, true }; }
 
     if (const auto online = read_file(cpu_entry.path() / "online"); online && trim_sv(*online) == "0") {
         return std::nullopt;
     }
+
+    const auto max_freq { parse_file_or<std::uint64_t>(
+        cpu_entry.path() / "cpufreq/cpuinfo_max_freq",
+        [](const auto content_sv) { return parse_number<std::uint64_t>(trim_sv(content_sv)).value_or(0ULL); }, 0ULL) };
+    if (max_freq > 0) { return FreqInfo { max_freq, true }; }
 
     const auto scale_freq { parse_file_or<std::uint64_t>(
         cpu_entry.path() / "cpufreq/scaling_max_freq",
