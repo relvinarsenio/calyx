@@ -13,8 +13,10 @@
 #include <cerrno>
 #include <concepts>
 #include <expected>
+#include <functional>
 #include <system_error>
 #include <type_traits>
+#include <utility>
 
 /**
  * @file posix_error.hpp
