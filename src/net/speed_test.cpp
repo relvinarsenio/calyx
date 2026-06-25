@@ -295,8 +295,6 @@ NodeExecutionResult run_speed_test_for_node(const Node& node, NodeRunContext con
         return node_result;
     }
 
-    node_result.entry.error = std::move(summary.error);
-
     if (summary.found_result && summary.metrics) {
         node_result.entry.success       = true;
         node_result.entry.download_mbps = summary.metrics->download_mbps;
@@ -305,6 +303,7 @@ NodeExecutionResult run_speed_test_for_node(const Node& node, NodeRunContext con
         node_result.entry.loss          = std::move(summary.metrics->loss);
     } else {
         node_result.entry.success = false;
+        node_result.entry.error   = std::move(summary.error);
     }
 
     if (!summary.found_result && node_result.entry.error.empty()) {
