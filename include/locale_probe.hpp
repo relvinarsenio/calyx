@@ -7,7 +7,7 @@
  */
 #pragma once
 
-#include "numeric_cast.hpp"
+#include "utils.hpp"
 
 #include <algorithm>
 #include <array>
@@ -19,34 +19,8 @@
 
 namespace ui::locale::probe_impl {
 
-/**
- * @brief Evaluates whether a character is equal to a known lowercase ASCII character,
- *        performing case-insensitive comparison on the left character.
- *
- * @note This comparator is asymmetric: the right-hand operand (rhs) MUST be
- *       already lowercase ASCII for the comparison to be correct.
- */
-struct AsciiLowerEqualRight {
-    [[nodiscard]] constexpr bool operator()(char lhs, char rhs) const noexcept {
-        return static_cast<unsigned char>(std::tolower(toUChar(lhs))) == toUChar(rhs);
-    }
-};
-
-template <std::size_t N> struct FixedString {
-    std::array<char, N> chars {};
-    consteval FixedString(const char (&str)[N]) { std::ranges::copy(str, chars.begin()); }
-    [[nodiscard]] consteval std::size_t size() const noexcept { return N - 1uz; }
-};
-
-template <FixedString Pattern> struct StringMatcher {
-    [[nodiscard]] static constexpr bool match(std::string_view str) noexcept {
-        const std::string_view pattern { Pattern.chars.begin(), Pattern.chars.begin() + Pattern.size() };
-        return std::ranges::contains_subrange(str, pattern, AsciiLowerEqualRight {});
-    }
-};
-
 [[nodiscard]] constexpr bool is_utf8_encoding(std::string_view val) noexcept {
-    return StringMatcher<"utf-8">::match(val) || StringMatcher<"utf8">::match(val);
+    return string_utils::contains_ic<"utf-8">(val) || string_utils::contains_ic<"utf8">(val);
 }
 
 /**

@@ -80,6 +80,26 @@ template <std::integral T> constexpr auto to_std_int(T value) noexcept {
 }
 
 /**
+ * @brief Computes the exclusive upper bound (as a floating-point power-of-2) for saturating
+ *        conversion from floating-point type U to integer type T.
+ *
+ * @note Uses exact power-of-2 values to avoid rounding errors that arise from casting
+ *       std::numeric_limits<T>::max() directly to a floating-point type.
+ */
+template <std::integral T, std::floating_point U> [[nodiscard]] consteval U fp_saturation_upper_bound() noexcept {
+    static_assert(sizeof(T) <= 8, "Unsupported target integer width for floating-point saturation.");
+    if constexpr (sizeof(T) == 8) {
+        return std::is_signed_v<T> ? U { 0x1p63 } : U { 0x1p64 };
+    } else if constexpr (sizeof(T) == 4) {
+        return std::is_signed_v<T> ? U { 0x1p31 } : U { 0x1p32 };
+    } else if constexpr (sizeof(T) == 2) {
+        return std::is_signed_v<T> ? U { 0x1p15 } : U { 0x1p16 };
+    } else {
+        return std::is_signed_v<T> ? U { 0x1p7 } : U { 0x1p8 };
+    }
+}
+
+/**
  * @brief Performs saturating conversion from floating-point values to integral types.
  *
  * Follows professional rounding and saturation standards. Handles NaNs by returning 0.
@@ -87,13 +107,7 @@ template <std::integral T> constexpr auto to_std_int(T value) noexcept {
 template <std::integral T, std::floating_point U> [[nodiscard]] constexpr T saturate_fp_to_int(U x) noexcept {
     if (std::isnan(x)) { return T { 0 }; }
 
-    static_assert(sizeof(T) <= 8, "Unsupported target integer width for floating-point saturation.");
-
-    constexpr U kMaxBound = static_cast<U>((sizeof(T) == 8) ? (std::is_signed_v<T> ? 0x1p63 : 0x1p64)
-            : (sizeof(T) == 4)                              ? (std::is_signed_v<T> ? 0x1p31 : 0x1p32)
-            : (sizeof(T) == 2)                              ? (std::is_signed_v<T> ? 0x1p15 : 0x1p16)
-                                                            : (std::is_signed_v<T> ? 0x1p7 : 0x1p8));
-
+    constexpr U kMaxBound = fp_saturation_upper_bound<T, U>();
     constexpr U kMinBound = std::is_signed_v<T> ? -kMaxBound : U { 0 };
 
     if (x >= kMaxBound) { return std::numeric_limits<T>::max(); }
@@ -138,15 +152,11 @@ template <standard_integer_type T, standard_integer_type U> [[nodiscard]] conste
     return static_cast<T>(x);
 }
 
-} // namespace cast
-
 /**
  * @name Kotlin/Rust-style numeric conversions
  * @brief Expressive aliases for saturating and unchecked casting of arithmetic types.
  * @{
  */
-
-namespace cast {
 
 /** @brief Functor template for saturating numeric conversions. */
 template <numeric_type TargetType> struct saturating_converter {

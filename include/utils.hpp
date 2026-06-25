@@ -165,20 +165,106 @@ inline constexpr auto print_centered_header = [](std::string_view text) noexcept
     std::println("{0:-<{1}} {2} {0:-<{3}}", "", left_pad, text, right_pad);
 };
 
-inline constexpr auto trim_sv = [](std::string_view str) noexcept -> std::string_view {
-    const auto first = str.find_first_not_of(" \t\n\r\v\f");
-    if (first == std::string_view::npos) { return {}; }
-    const auto last = str.find_last_not_of(" \t\n\r\v\f");
-    return str.substr(first, last - first + 1);
-};
+[[nodiscard]] constexpr std::string_view trim_sv(std::convertible_to<std::string_view> auto&& str) noexcept {
+    const std::string_view sv { std::forward<decltype(str)>(str) };
+    constexpr auto is_space = [](char const ch) noexcept {
+        return ch == ' ' || ch == '\n' || ch == '\r' || ch == '\t' || ch == '\v' || ch == '\f';
+    };
+    auto first = std::ranges::find_if_not(sv, is_space);
+    if (first == sv.end()) { return {}; }
+    auto last = std::ranges::find_if_not(sv | std::views::reverse, is_space).base();
+    return std::string_view(first, last);
+}
 
-inline constexpr auto trim = [](const std::string& str) -> std::string { return std::string(trim_sv(str)); };
+[[nodiscard]] constexpr std::string trim(std::convertible_to<std::string_view> auto&& str) {
+    return std::string { trim_sv(std::forward<decltype(str)>(str)) };
+}
 
-inline constexpr auto equals_ic = [](std::string_view lhs, std::string_view rhs) noexcept -> bool {
-    return lhs.size() == rhs.size() && std::ranges::equal(lhs, rhs, [](char a, char b) noexcept {
+namespace string_utils {
+
+/**
+ * @brief Case-insensitive equality between two runtime strings.
+ *
+ * Symmetric: both sides are lowercased before comparison.
+ */
+[[nodiscard]] constexpr bool equals_ic(
+    std::convertible_to<std::string_view> auto&& lhs, std::convertible_to<std::string_view> auto&& rhs) noexcept {
+    const std::string_view sv1 { std::forward<decltype(lhs)>(lhs) };
+    const std::string_view sv2 { std::forward<decltype(rhs)>(rhs) };
+    return sv1.size() == sv2.size() && std::ranges::equal(sv1, sv2, [](char a, char b) noexcept {
         return std::tolower(toUChar(a)) == std::tolower(toUChar(b));
     });
+}
+
+/**
+ * @brief Evaluates whether a character is equal to a known lowercase ASCII character,
+ *        performing case-insensitive comparison on the left character.
+ *
+ * @note This comparator is asymmetric: the right-hand operand (rhs) MUST be
+ *       already lowercase ASCII for the comparison to be correct.
+ */
+struct AsciiLowerEqualRight {
+    [[nodiscard]] constexpr bool operator()(char lhs, char rhs) const noexcept {
+        const unsigned char lhs_ch = toUChar(lhs);
+        const unsigned char rhs_ch = toUChar(rhs);
+        return std::tolower(lhs_ch) == rhs_ch;
+    }
 };
+
+template <std::size_t N> struct FixedString {
+    std::array<char, N> chars {};
+    consteval FixedString(const char (&str)[N]) { std::ranges::copy(str, chars.begin()); }
+    [[nodiscard]] consteval std::size_t size() const noexcept { return N - 1uz; }
+};
+
+template <FixedString Pattern> [[nodiscard]] constexpr bool contains_ic(std::string_view str) noexcept {
+    static constexpr auto kPattern = Pattern;
+    static constexpr std::string_view pattern { kPattern.chars.begin(), kPattern.size() };
+    return std::ranges::contains_subrange(str, pattern, AsciiLowerEqualRight {});
+}
+
+template <FixedString Pattern> [[nodiscard]] constexpr bool starts_with_ic(std::string_view str) noexcept {
+    static constexpr auto kPattern = Pattern;
+    if (str.size() < kPattern.size()) { return false; }
+    static constexpr std::string_view prefix { kPattern.chars.begin(), kPattern.size() };
+    return std::ranges::equal(str.substr(0, kPattern.size()), prefix, AsciiLowerEqualRight {});
+}
+
+/**
+ * @brief Case-insensitive exact matcher against a compile-time pattern.
+ *
+ * Completes the matcher family alongside @ref contains_ic (substring)
+ * and @ref starts_with_ic (prefix).
+ *
+ * @note Asymmetric: the Pattern MUST be all-lowercase for correct matching.
+ */
+template <FixedString Pattern> [[nodiscard]] constexpr bool equals_ic(std::string_view str) noexcept {
+    static constexpr auto kPattern = Pattern;
+    if (str.size() != kPattern.size()) { return false; }
+    static constexpr std::string_view pattern { kPattern.chars.begin(), kPattern.size() };
+    return std::ranges::equal(str, pattern, AsciiLowerEqualRight {});
+}
+
+[[nodiscard]] constexpr std::string_view strip_bracketed_prefix(std::string_view sv) noexcept {
+    return std::optional { sv }
+        .and_then([](auto str) { return str.starts_with('[') ? std::optional { str } : std::nullopt; })
+        .and_then([](auto str) {
+            const auto close = str.find(']');
+            return (close != std::string_view::npos)
+                ? std::optional { std::pair { str.substr(0, close).substr(1), str.substr(close).substr(1) } }
+                : std::optional<std::pair<std::string_view, std::string_view>> {};
+        })
+        .and_then([](auto&& pair) {
+            const auto [inside, rest]     = pair;
+            constexpr auto is_ascii_digit = [](char ch) noexcept { return ch >= '0' && ch <= '9'; };
+            return !inside.empty() && std::ranges::all_of(inside, is_ascii_digit) ? std::optional { pair }
+                                                                                  : std::nullopt;
+        })
+        .transform([](auto&& pair) { return trim_sv(pair.second); })
+        .value_or(sv);
+}
+
+} // namespace string_utils
 
 /**
  * @brief Truncates a string to a maximum length, appending an ellipsis if needed.
@@ -321,7 +407,7 @@ inline constexpr auto cleanup_artifacts = []() noexcept {
 inline constexpr auto capitalize = [](std::string_view text) noexcept -> std::string {
     if (text.empty()) { return {}; }
 
-    if (text == "zram" || text == "Zram") { return "ZRAM"; }
+    if (string_utils::equals_ic<"zram">(text)) { return "ZRAM"; }
 
     if (std::isupper(toUChar(text.front()))) { return std::string(text); }
 
@@ -448,8 +534,9 @@ inline std::optional<std::string_view> lookup_info_field(std::string_view conten
             ? std::pair { std::string_view {}, std::string_view {} }
             : std::pair { trim_sv(line.substr(0, colon)), trim_sv(line.substr(colon + 1)) };
     }) | std::views::filter([&keys](const auto& pair) {
-        return !pair.first.empty() && !pair.second.empty()
-            && std::ranges::any_of(keys, [&pair](std::string_view key) { return equals_ic(pair.first, key); });
+        return !pair.first.empty() && !pair.second.empty() && std::ranges::any_of(keys, [&pair](std::string_view key) {
+            return string_utils::equals_ic(pair.first, key);
+        });
     }) | std::views::transform([](const auto& pair) { return pair.second; })
         | std::views::take(1);
 

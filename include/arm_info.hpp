@@ -24,13 +24,6 @@
 
 namespace arm {
 
-inline constexpr auto is_starts_with_ic = [](std::string_view str, std::string_view prefix) -> bool {
-    if (str.size() < prefix.size()) { return false; }
-
-    return std::ranges::equal(str.substr(0, prefix.size()), prefix,
-        [](char lhs, char rhs) { return std::tolower(toUChar(lhs)) == std::tolower(toUChar(rhs)); });
-};
-
 /**
  * @brief ARM CPU identification logic via MIDR_EL1 fields.
  *
@@ -430,7 +423,7 @@ inline constexpr auto parse_cpuinfo_hex
     if (!val_opt) { return std::nullopt; }
 
     auto val_str = *val_opt;
-    if (val_str.starts_with("0x") || val_str.starts_with("0X")) { val_str.remove_prefix(2); }
+    if (string_utils::starts_with_ic<"0x">(val_str)) { val_str.remove_prefix(2); }
     std::int32_t val = 0;
     auto [ptr, ec]   = std::from_chars(val_str.data(), val_str.data() + val_str.size(), val, 16);
     return (ec == std::errc {}) ? std::optional { val } : std::nullopt;
@@ -448,7 +441,7 @@ inline constexpr auto parse_midr_sysfs = []() -> std::optional<std::string> {
     if (content.empty()) { return std::nullopt; }
 
     auto val_str = trim_sv(content);
-    if (val_str.starts_with("0x") || val_str.starts_with("0X")) { val_str.remove_prefix(2); }
+    if (string_utils::starts_with_ic<"0x">(val_str)) { val_str.remove_prefix(2); }
 
     std::uint64_t midr = 0;
     auto [ptr, ec]     = std::from_chars(val_str.data(), val_str.data() + val_str.size(), midr, 16);

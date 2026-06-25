@@ -98,15 +98,19 @@ std::expected<std::string, std::error_code> write_cert_file(const fs::path& dir,
         });
 }
 
-std::string sanitize_error(std::string_view msg) {
-    const auto trimmed = [msg]() {
-        const auto first_line = msg.substr(0, msg.find('\n'));
-        auto without_prefix   = trim_sv(first_line);
-        if (without_prefix.starts_with("Error: ")) { without_prefix = without_prefix.substr(sizeof("Error: ") - 1); }
-        return trim_sv(without_prefix);
-    }();
+[[nodiscard]] constexpr std::string_view strip_leading_error_prefix(std::string_view sv) noexcept {
+    constexpr string_utils::FixedString kPattern = "error: ";
+    if (string_utils::starts_with_ic<kPattern>(sv)) { return trim_sv(sv.substr(kPattern.size())); }
+    return sv;
+}
 
-    return trimmed | std::views::filter([](char c) { return c != '[' && c != ']'; }) | std::ranges::to<std::string>();
+[[nodiscard]] std::string sanitize_error(std::string_view msg) {
+    using namespace std::string_view_literals;
+
+    const auto clean_msg = strip_leading_error_prefix(string_utils::strip_bracketed_prefix(trim_sv(msg)));
+
+    return clean_msg | std::views::transform([](char c) { return c == '\n' ? ' ' : c; })
+        | std::views::filter([](char c) { return !"[]"sv.contains(c); }) | std::ranges::to<std::string>();
 }
 
 enum class LineParseAction : std::uint8_t {

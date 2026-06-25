@@ -30,17 +30,12 @@ namespace probe {
 
 namespace {
 
-template <std::size_t N> struct FixedString {
-    std::array<char, N> chars {};
-    consteval FixedString(const char (&str)[N]) { std::ranges::copy(str, chars.begin()); }
-    [[nodiscard]] consteval std::size_t size() const noexcept { return N - 1uz; }
-};
-
-template <FixedString... Envs> [[nodiscard]] bool check_envs() noexcept {
+template <string_utils::FixedString... Envs> [[nodiscard]] bool check_envs() noexcept {
     return ((std::getenv(Envs.chars.data()) != nullptr) || ...);
 }
 
-template <FixedString... Prefixes> [[nodiscard]] constexpr bool starts_with_any(std::string_view str) noexcept {
+template <string_utils::FixedString... Prefixes>
+[[nodiscard]] constexpr bool starts_with_any(std::string_view str) noexcept {
     return (str.starts_with(std::string_view { Prefixes.chars.data(), Prefixes.size() }) || ...);
 }
 
