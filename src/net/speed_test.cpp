@@ -242,12 +242,26 @@ ParseSummary parse_speedtest_output_lines(std::string_view output) {
 }
 
 struct FallbackErrorParams {
+    ShellPipeStatus status;
     std::string_view pipe_error;
     std::int32_t pipe_exit_code;
     std::string_view last_raw_output;
 };
 
 std::string determine_fallback_error(FallbackErrorParams params) {
+    switch (params.status) {
+        case ShellPipeStatus::timed_out:
+            return "Process timed out";
+        case ShellPipeStatus::signaled:
+            return "Process terminated by signal";
+        case ShellPipeStatus::error:
+            return "Execution error occurred";
+        case ShellPipeStatus::success:
+        case ShellPipeStatus::nonzero_exit:
+        case ShellPipeStatus::interrupted:
+            break;
+    }
+
     if (!params.pipe_error.empty()) { return std::string(params.pipe_error); }
 
     if (params.pipe_exit_code != 0) { return std::format("Process failed with code {}", params.pipe_exit_code); }
@@ -308,6 +322,7 @@ NodeExecutionResult run_speed_test_for_node(const Node& node, NodeRunContext con
 
     if (!summary.found_result && node_result.entry.error.empty()) {
         node_result.entry.error = determine_fallback_error({
+            .status          = pipe_res.status,
             .pipe_error      = pipe_res.error,
             .pipe_exit_code  = pipe_res.exit_code,
             .last_raw_output = summary.last_raw_output,
