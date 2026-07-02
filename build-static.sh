@@ -47,8 +47,8 @@ cleanup_on_interrupt() {
     echo "🛑  Build cancelled by user (Ctrl+C)!"
     echo "🧹  Cleaning up..."
 
-    docker stop -t 0 "$CONTAINER_NAME" >/dev/null 2>&1 || true
-    docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+    docker container stop -t 0 "$CONTAINER_NAME" >/dev/null 2>&1 || true
+    docker container rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 
     echo "✨  Cleanup complete."
     exit 1
@@ -140,18 +140,18 @@ NEED_BUILD=false
 
 if [[ "$REBUILD_IMAGE" == "true" ]]; then
     echo "🗑️  Rebuild image requested — rebuilding toolchain and clearing everything..."
-    docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+    docker container rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
     docker volume rm "$VOL_BUILD" "$VOL_CCACHE" >/dev/null 2>&1 || true
     NEED_BUILD=true
 elif ! docker image inspect "$IMAGE_NAME" &>/dev/null; then
     echo "📦 Toolchain image not found — building for the first time..."
     NEED_BUILD=true
-elif [[ $(docker inspect -f "{{ range .Mounts }}{{ if eq .Destination \"$C_SRC\" }}{{ .Source }}{{ break }}{{ end }}{{ end }}" "$CONTAINER_NAME" 2>/dev/null || true) != "$SCRIPT_DIR" ]]; then
+elif [[ $(docker container inspect -f "{{ range .Mounts }}{{ if eq .Destination \"$C_SRC\" }}{{ .Source }}{{ break }}{{ end }}{{ end }}" "$CONTAINER_NAME" 2>/dev/null || true) != "$SCRIPT_DIR" ]]; then
     NEED_BUILD=true
 fi
 
 if [[ "$NEED_BUILD" == "true" ]]; then
-    OLD_IMAGE_ID="$(docker images -q "$IMAGE_NAME" 2>/dev/null)"
+    OLD_IMAGE_ID="$(docker image ls -q "$IMAGE_NAME" 2>/dev/null)"
 
     DOCKER_ARGS=(--force-rm)
     if [[ "$REBUILD_IMAGE" == "true" ]]; then
@@ -164,14 +164,14 @@ if [[ "$NEED_BUILD" == "true" ]]; then
     echo ""
     echo "🐳 Building toolchain image (Alpine/musl)..."
     echo "=============================================="
-    DOCKER_BUILDKIT=1 docker build "${DOCKER_ARGS[@]}" -t "$IMAGE_NAME" .
+    DOCKER_BUILDKIT=1 docker image build "${DOCKER_ARGS[@]}" -t "$IMAGE_NAME" .
 
     if [[ -n "$OLD_IMAGE_ID" ]]; then
-        NEW_IMAGE_ID="$(docker images -q "$IMAGE_NAME" 2>/dev/null)"
+        NEW_IMAGE_ID="$(docker image ls -q "$IMAGE_NAME" 2>/dev/null)"
         if [[ "$OLD_IMAGE_ID" != "$NEW_IMAGE_ID" ]]; then
             echo ""
             echo "🧹 Removing old toolchain image ($OLD_IMAGE_ID)..."
-            docker rmi "$OLD_IMAGE_ID" >/dev/null 2>&1 || true
+            docker image rm "$OLD_IMAGE_ID" >/dev/null 2>&1 || true
         fi
     fi
 fi
@@ -187,23 +187,23 @@ mkdir -p "$SCRIPT_DIR/$DIST_DIR"
 
 # REUSE: Create container only if it doesn't exist
 if [[ "$NEED_BUILD" == "true" ]]; then
-    docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+    docker container rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 fi
 
-if ! docker inspect "$CONTAINER_NAME" &>/dev/null; then
+if ! docker container inspect "$CONTAINER_NAME" &>/dev/null; then
     DOCKER_CREATE_ARGS=(--name "$CONTAINER_NAME" -v "$SCRIPT_DIR":$C_SRC:Z -v "$VOL_BUILD":$C_BUILD -v "$VOL_CCACHE":$C_CCACHE -i)
     [[ -n "$PLATFORM" ]] && DOCKER_CREATE_ARGS+=(--platform "$PLATFORM")
-    docker create "${DOCKER_CREATE_ARGS[@]}" "$IMAGE_NAME" sh >/dev/null
+    docker container create "${DOCKER_CREATE_ARGS[@]}" "$IMAGE_NAME" sh >/dev/null
 fi
 
-if [[ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null)" != "true" ]]; then
-    docker start "$CONTAINER_NAME" >/dev/null
+if [[ "$(docker container inspect -f '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null)" != "true" ]]; then
+    docker container start "$CONTAINER_NAME" >/dev/null
 fi
 
 # =============================================================================
 # 5. Build Inside Container
 # =============================================================================
-docker exec \
+docker container exec \
     -e FRESH_BUILD="$FRESH_BUILD" \
     -e C_BUILD="$C_BUILD" \
     -e C_SRC="$C_SRC" \
@@ -247,8 +247,8 @@ docker exec \
 echo ""
 echo "📦 Extracting binary..."
 
-docker cp "$CONTAINER_NAME":$C_BUILD/${BINARY_NAME} "$SCRIPT_DIR/$DIST_DIR/${BINARY_NAME}"
-docker stop -t 0 "$CONTAINER_NAME" >/dev/null 2>&1
+docker container cp "$CONTAINER_NAME":$C_BUILD/${BINARY_NAME} "$SCRIPT_DIR/$DIST_DIR/${BINARY_NAME}"
+docker container stop -t 0 "$CONTAINER_NAME" >/dev/null 2>&1
 
 # =============================================================================
 # 7. Auto-Prune Dangling Images
