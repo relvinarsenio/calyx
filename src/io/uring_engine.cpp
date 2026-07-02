@@ -8,26 +8,15 @@
 #include "uring_engine.hpp"
 
 #include "config.hpp"
+#include "utils.hpp"
 
 namespace uring {
 
 [[nodiscard]] std::string get_error_string(const UringError& err) {
-    return std::visit(
-        [](auto&& e) -> std::string {
-            using T = std::decay_t<decltype(e)>;
-            if constexpr (std::is_same_v<T, ConfigError> || std::is_same_v<T, AllocationError>
-                || std::is_same_v<T, ExecutionError> || std::is_same_v<T, LogicError>) {
-                return std::string { error_string(e) };
-            } else if constexpr (std::is_same_v<T, std::error_code>) {
-                return e.message();
-            } else if constexpr (std::is_same_v<T, InterruptError>) {
-                return std::string { ::config::kInterruptMsg };
-            } else if constexpr (std::is_same_v<T, posix::SysCallError>) {
-                return format_sys_error(e.ec, e.context);
-            } else {
-                return "Unknown UringError";
-            }
-        },
+    return std::visit(overloaded { [](const std::error_code& e) -> std::string { return e.message(); },
+                          [](const InterruptError&) -> std::string { return std::string { ::config::kInterruptMsg }; },
+                          [](const posix::SysCallError& e) -> std::string { return format_sys_error(e.ec, e.context); },
+                          [](const auto& e) -> std::string { return std::string { error_string(e) }; } },
         err);
 }
 

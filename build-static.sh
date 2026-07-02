@@ -191,7 +191,7 @@ if [[ "$NEED_BUILD" == "true" ]]; then
 fi
 
 if ! docker container inspect "$CONTAINER_NAME" &>/dev/null; then
-    DOCKER_CREATE_ARGS=(--name "$CONTAINER_NAME" -v "$SCRIPT_DIR":$C_SRC:Z -v "$VOL_BUILD":$C_BUILD -v "$VOL_CCACHE":$C_CCACHE -i)
+    DOCKER_CREATE_ARGS=(--name "$CONTAINER_NAME" -v "$SCRIPT_DIR:$C_SRC:Z" -v "$VOL_BUILD:$C_BUILD" -v "$VOL_CCACHE:$C_CCACHE" -i)
     [[ -n "$PLATFORM" ]] && DOCKER_CREATE_ARGS+=(--platform "$PLATFORM")
     docker container create "${DOCKER_CREATE_ARGS[@]}" "$IMAGE_NAME" sh >/dev/null
 fi
