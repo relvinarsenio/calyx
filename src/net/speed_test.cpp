@@ -255,7 +255,7 @@ std::string determine_fallback_error(FallbackErrorParams params) {
         case ShellPipeStatus::signaled:
             return "Process terminated by signal";
         case ShellPipeStatus::error:
-            return "Execution error occurred";
+            return params.pipe_error.empty() ? "Execution error occurred" : std::string(params.pipe_error);
         case ShellPipeStatus::success:
         case ShellPipeStatus::nonzero_exit:
         case ShellPipeStatus::interrupted:
