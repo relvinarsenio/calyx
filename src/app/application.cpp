@@ -424,7 +424,7 @@ void display_storage_memory() {
     const auto result
         = DiskBenchmark::run_io_test(io_config, progress_cb, {}, []() noexcept { return check_interrupted(); });
 
-    if (!result) { return std::unexpected(result.error()); }
+    if (!result) { return std::unexpected(DiskBenchmark::format_error(result.error())); }
 
     return *result;
 }

@@ -102,13 +102,16 @@ void fill_pattern_fast(std::span<std::byte> buffer) noexcept {
  * @note This ensures that the total file size remains a valid multiple for both sequential
  * write and read passes, preventing unaligned or partial block I/O at EOF.
  */
-[[nodiscard]] std::expected<std::size_t, std::string> calculate_final_mask(
+[[nodiscard]] std::expected<std::size_t, BenchmarkError> calculate_final_mask(
     std::uint64_t write_block_size, std::uint64_t read_block_size) noexcept {
     if (write_block_size == 0 || read_block_size == 0) { return 0; }
     const std::size_t gcd_val     = std::gcd(write_block_size, read_block_size);
     const std::size_t lcm_partial = toSize(write_block_size / gcd_val);
     const auto lcm_val            = safe_arith<overflow_op::mul>(lcm_partial, toSize(read_block_size));
-    if (!lcm_val) { return uring::make_unexpected(uring::ConfigError::AlignmentOverflow); }
+    if (!lcm_val) {
+        return std::unexpected(BenchmarkError {
+            BenchmarkError::Phase::Configuration, uring::UringError { uring::ConfigError::AlignmentOverflow } });
+    }
     return *lcm_val;
 }
 
@@ -118,14 +121,18 @@ void fill_pattern_fast(std::span<std::byte> buffer) noexcept {
  * @note This prevents mid-benchmark crashes or corrupted test files caused by running
  * out of disk space during high-throughput I/O generation.
  */
-[[nodiscard]] std::expected<std::filesystem::path, std::string> perform_space_check(
+[[nodiscard]] std::expected<std::filesystem::path, BenchmarkError> perform_space_check(
     std::uint64_t total_bytes, const std::filesystem::path& dir_path) {
     std::error_code ec;
     const auto target_path = dir_path.empty() ? std::filesystem::current_path(ec) : dir_path;
-    if (ec) { return std::unexpected(format_sys_error(ec, "path resolution")); }
+    if (ec) {
+        return std::unexpected(
+            BenchmarkError { BenchmarkError::Phase::SpaceCheck, posix::SysCallError { ec, "path resolution" } });
+    }
 
     if (const auto res = check_disk_space(target_path, total_bytes); !res) {
-        return std::unexpected(format_sys_error(res.error(), "Storage"));
+        return std::unexpected(
+            BenchmarkError { BenchmarkError::Phase::SpaceCheck, posix::SysCallError { res.error(), "Storage" } });
     }
     return target_path;
 }
@@ -174,22 +181,34 @@ struct IoParams {
  * @note Utilizing page-aligned or hardware-aligned buffers is mandatory for O_DIRECT
  * kernel interactions to bypass the page cache successfully.
  */
-[[nodiscard]] std::expected<Buffers, std::string> allocate_io_buffers(std::uint64_t write_mem_stride,
+[[nodiscard]] std::expected<Buffers, BenchmarkError> allocate_io_buffers(std::uint64_t write_mem_stride,
     std::size_t alignment, const DiskBenchmark::BenchmarkConfig& config, std::uint64_t read_block_size) {
     const auto write_buf_total
         = safe_arith<overflow_op::mul>(toSize(write_mem_stride), toSize(config.write_queue_depth));
-    if (!write_buf_total) { return uring::make_unexpected(uring::AllocationError::WriteBufSizeOverflow); }
+    if (!write_buf_total) {
+        return std::unexpected(BenchmarkError { BenchmarkError::Phase::BufferAllocation,
+            uring::UringError { uring::AllocationError::WriteBufSizeOverflow } });
+    }
 
     const auto write_buf_alloc_opt = round_up(*write_buf_total, get_page_size());
-    if (!write_buf_alloc_opt) { return uring::make_unexpected(uring::AllocationError::WriteBufAlignOverflow); }
+    if (!write_buf_alloc_opt) {
+        return std::unexpected(BenchmarkError { BenchmarkError::Phase::BufferAllocation,
+            uring::UringError { uring::AllocationError::WriteBufAlignOverflow } });
+    }
     const auto write_buf_alloc = *write_buf_alloc_opt;
     auto write_buf_opt         = AlignedBuffer::create(write_buf_alloc, alignment);
-    if (!write_buf_opt) { return uring::make_unexpected(uring::AllocationError::WriteBufOom); }
+    if (!write_buf_opt) {
+        return std::unexpected(BenchmarkError {
+            BenchmarkError::Phase::BufferAllocation, uring::UringError { uring::AllocationError::WriteBufOom } });
+    }
     AlignedBuffer write_buf_local = std::move(*write_buf_opt);
     fill_pattern_fast(write_buf_local.span());
 
     const auto read_buf_alloc_opt = round_up(read_block_size, get_page_size());
-    if (!read_buf_alloc_opt) { return uring::make_unexpected(uring::AllocationError::ReadBufAlignOverflow); }
+    if (!read_buf_alloc_opt) {
+        return std::unexpected(BenchmarkError { BenchmarkError::Phase::BufferAllocation,
+            uring::UringError { uring::AllocationError::ReadBufAlignOverflow } });
+    }
     const auto read_buf_alloc = *read_buf_alloc_opt;
 
     const auto init_vector = [depth = config.read_queue_depth]() {
@@ -199,11 +218,14 @@ struct IoParams {
     };
 
     auto read_buffers_res = std::ranges::fold_left(std::views::iota(0uz, toSize(config.read_queue_depth)),
-        std::expected<std::vector<AlignedBuffer>, std::string> { init_vector() },
-        [read_buf_alloc, alignment](auto&& acc, auto) -> std::expected<std::vector<AlignedBuffer>, std::string> {
+        std::expected<std::vector<AlignedBuffer>, BenchmarkError> { init_vector() },
+        [read_buf_alloc, alignment](auto&& acc, auto) -> std::expected<std::vector<AlignedBuffer>, BenchmarkError> {
             if (!acc) { return std::move(acc); }
             auto read_buf_opt = AlignedBuffer::create(read_buf_alloc, alignment);
-            if (!read_buf_opt) { return uring::make_unexpected(uring::AllocationError::ReadBufOom); }
+            if (!read_buf_opt) {
+                return std::unexpected(BenchmarkError { BenchmarkError::Phase::BufferAllocation,
+                    uring::UringError { uring::AllocationError::ReadBufOom } });
+            }
             acc->push_back(std::move(*read_buf_opt));
             return std::move(acc);
         });
@@ -259,7 +281,8 @@ struct IoParams {
     /** @brief Register async IO worker affinity (io-wq). */
     if (const auto res = engine->register_worker_affinity(mask, size); !res) {
         return std::unexpected(affinity::IsolationError {
-            .ec      = res.error(),
+            .ec      = std::holds_alternative<std::error_code>(res.error()) ? std::get<std::error_code>(res.error())
+                                                                            : posix::make_error(EIO),
             .context = "io_uring_register_iowq_aff failed",
         });
     }
@@ -269,7 +292,7 @@ struct IoParams {
 /**
  * @brief Orchestrates strict CPU core affinity isolation for the io_uring engine and its worker threads.
  */
-[[nodiscard]] std::expected<void, std::string> setup_engine_affinity(
+[[nodiscard]] std::expected<void, BenchmarkError> setup_engine_affinity(
     std::optional<UringEngine>& engine, std::uint16_t max_queue_depth) {
     const auto affinity_res = affinity::execute_strict_isolation(
         [&engine, max_queue_depth](const cpu_set_t* mask, std::size_t size, std::uint32_t,
@@ -278,8 +301,7 @@ struct IoParams {
         });
 
     if (!affinity_res) {
-        const auto& err = affinity_res.error();
-        return std::unexpected(format_sys_error(err.ec, err.context));
+        return std::unexpected(BenchmarkError { BenchmarkError::Phase::EngineSetup, affinity_res.error() });
     }
 
     return {};
@@ -291,11 +313,12 @@ struct IoParams {
  * @note Assumes the file is already opened exclusively. Flushes data to persistent
  * storage and drops page-cache pages after completion.
  */
-[[nodiscard]] std::expected<PhaseRunStats, std::string> run_write_operations(
+[[nodiscard]] std::expected<PhaseRunStats, BenchmarkError> run_write_operations(
     IoFile wf, UringEngine& engine, const IoParams& params) {
     if (const auto alloc = wf.file().allocate(0, toLong(params.total_bytes));
         !alloc && alloc.error().value() != EOPNOTSUPP && alloc.error().value() != EINVAL) {
-        return std::unexpected(format_sys_error(alloc.error(), "posix_fallocate"));
+        return std::unexpected(BenchmarkError {
+            BenchmarkError::Phase::WritePhase, posix::SysCallError { alloc.error(), "posix_fallocate" } });
     }
 
     const std::string label_write = std::format("{} Write", params.label);
@@ -315,10 +338,15 @@ struct IoParams {
     };
 
     return engine.submit_and_wait(ctx, true)
-        .and_then([&wf](const PhaseRunStats& io_result) {
+        .transform_error(
+            [](const uring::UringError& err) { return BenchmarkError { BenchmarkError::Phase::WritePhase, err }; })
+        .and_then([&wf](const PhaseRunStats& io_result) -> std::expected<PhaseRunStats, BenchmarkError> {
             return wf.file()
                 .datasync()
-                .transform_error([](std::error_code ec) { return format_sys_error(ec, "fdatasync"); })
+                .transform_error([](std::error_code ec) {
+                    return BenchmarkError { BenchmarkError::Phase::WritePhase,
+                        posix::SysCallError { ec, "fdatasync" } };
+                })
                 .transform([io_result]() { return io_result; });
         })
         .transform([&wf](const PhaseRunStats& done) {
@@ -336,7 +364,7 @@ struct IoParams {
  * through io_uring, then flushes data to persistent storage. Partial files are cleaned up
  * on failure via scope_exit to prevent stale test artifacts.
  */
-[[nodiscard]] std::expected<PhaseRunStats, std::string> execute_write_phase(
+[[nodiscard]] std::expected<PhaseRunStats, BenchmarkError> execute_write_phase(
     const std::string& filename, UringEngine& engine, const IoParams& params) {
     std::error_code pre_ec;
     std::filesystem::remove(filename, pre_ec);
@@ -351,7 +379,10 @@ struct IoParams {
 
     const auto phase_result
         = IoFile::create(filename, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR)
-              .transform_error([](std::error_code ec) { return format_sys_error(ec, "File Creation"); })
+              .transform_error([](std::error_code ec) {
+                  return BenchmarkError { BenchmarkError::Phase::WritePhase,
+                      posix::SysCallError { ec, "File Creation" } };
+              })
               .and_then([&engine, &params](IoFile wf) { return run_write_operations(std::move(wf), engine, params); });
 
     if (phase_result) { write_completed = true; }
@@ -359,7 +390,7 @@ struct IoParams {
     return phase_result;
 }
 
-[[nodiscard]] std::expected<PhaseRunStats, std::string> run_read_operations(
+[[nodiscard]] std::expected<PhaseRunStats, BenchmarkError> run_read_operations(
     IoFile rf, UringEngine& engine, const IoParams& params) {
     const std::string label_read = std::format("{} Read", params.label);
     const auto ctx               = IoContext {
@@ -377,7 +408,10 @@ struct IoParams {
                       .queue_depth  = params.read_queue_depth,
     };
 
-    return engine.submit_and_wait(ctx, false).transform([](const PhaseRunStats& io_result) { return io_result; });
+    return engine.submit_and_wait(ctx, false)
+        .transform_error(
+            [](const uring::UringError& err) { return BenchmarkError { BenchmarkError::Phase::ReadPhase, err }; })
+        .transform([](const PhaseRunStats& io_result) { return io_result; });
 }
 
 /**
@@ -386,30 +420,64 @@ struct IoParams {
  * @note Opens the previously written test file in read-only mode and submits
  * all read I/O through io_uring to measure sustained read throughput.
  */
-[[nodiscard]] std::expected<PhaseRunStats, std::string> execute_read_phase(
+[[nodiscard]] std::expected<PhaseRunStats, BenchmarkError> execute_read_phase(
     const std::string& filename, UringEngine& engine, const IoParams& params) {
     return IoFile::create(filename, O_RDONLY, 0)
-        .transform_error([](std::error_code ec) { return format_sys_error(ec, "File Open Read"); })
+        .transform_error([](std::error_code ec) {
+            return BenchmarkError { BenchmarkError::Phase::ReadPhase, posix::SysCallError { ec, "File Open Read" } };
+        })
         .and_then([&engine, &params](IoFile rf) { return run_read_operations(std::move(rf), engine, params); });
 }
 
 } // namespace
 
-std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(const BenchmarkConfig& config,
+std::string DiskBenchmark::format_error(const BenchmarkError& err) {
+    const std::string_view phase_str = [&err]() constexpr -> std::string_view {
+        switch (err.phase) {
+            case BenchmarkError::Phase::Configuration:
+                return "Configuration";
+            case BenchmarkError::Phase::SpaceCheck:
+                return "Space Check";
+            case BenchmarkError::Phase::BufferAllocation:
+                return "Buffer Allocation";
+            case BenchmarkError::Phase::EngineSetup:
+                return "Engine Setup";
+            case BenchmarkError::Phase::WritePhase:
+                return "Write Operations";
+            case BenchmarkError::Phase::ReadPhase:
+                return "Read Operations";
+        }
+        return "Unknown";
+    }();
+
+    const std::string cause_str = std::visit(
+        overloaded { [](const uring::UringError& e) -> std::string { return uring::get_error_string(e); },
+            [](const affinity::IsolationError& e) -> std::string { return format_sys_error(e.ec, e.context); },
+            [](const std::error_code& e) -> std::string { return e.message(); },
+            [](const posix::SysCallError& e) -> std::string { return format_sys_error(e.ec, e.context); } },
+        err.cause);
+
+    return std::format("[{}] {}", phase_str, cause_str);
+}
+
+[[nodiscard]] std::expected<DiskIORunResult, BenchmarkError> DiskBenchmark::run_io_test(const BenchmarkConfig& config,
     const std::move_only_function<void(std::size_t, std::size_t, std::string_view) const>& progress_cb,
     std::stop_token stop, const std::move_only_function<bool() const noexcept>& interrupt_cb) {
     using namespace std::chrono;
 
     if (config.write_queue_depth == 0 || config.read_queue_depth == 0) {
-        return uring::make_unexpected(uring::ConfigError::QueueDepthNotPositive);
+        return std::unexpected(BenchmarkError {
+            BenchmarkError::Phase::Configuration, uring::UringError { uring::ConfigError::QueueDepthNotPositive } });
     }
 
     if (config.write_block_size == 0 || config.read_block_size == 0) {
-        return uring::make_unexpected(uring::ConfigError::BlockSizeNotPositive);
+        return std::unexpected(BenchmarkError {
+            BenchmarkError::Phase::Configuration, uring::UringError { uring::ConfigError::BlockSizeNotPositive } });
     }
 
     if (!std::has_single_bit(config.alignment)) {
-        return uring::make_unexpected(uring::ConfigError::AlignmentNotPowerOfTwo);
+        return std::unexpected(BenchmarkError {
+            BenchmarkError::Phase::Configuration, uring::UringError { uring::ConfigError::AlignmentNotPowerOfTwo } });
     }
 
     const std::string filename = get_test_filename();
@@ -426,11 +494,17 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(const Ben
     const auto alignment = std::max({ config.alignment, toSize(hw.mem_align), toSize(get_page_size()) });
 
     const auto write_block_size_opt = round_up(config.write_block_size, hw.offset_align);
-    if (!write_block_size_opt) { return uring::make_unexpected(uring::AllocationError::WriteBlockAlignOverflow); }
+    if (!write_block_size_opt) {
+        return std::unexpected(BenchmarkError { BenchmarkError::Phase::BufferAllocation,
+            uring::UringError { uring::AllocationError::WriteBlockAlignOverflow } });
+    }
     const std::uint64_t write_block_size = *write_block_size_opt;
 
     const auto read_block_size_opt = round_up(config.read_block_size, hw.offset_align);
-    if (!read_block_size_opt) { return uring::make_unexpected(uring::AllocationError::ReadBlockAlignOverflow); }
+    if (!read_block_size_opt) {
+        return std::unexpected(BenchmarkError { BenchmarkError::Phase::BufferAllocation,
+            uring::UringError { uring::AllocationError::ReadBlockAlignOverflow } });
+    }
     const std::uint64_t read_block_size = *read_block_size_opt;
 
     /**
@@ -441,12 +515,18 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(const Ben
     const auto write_mem_stride_opt = (write_block_size >= get_page_size())
         ? round_up(write_block_size, get_page_size())
         : round_up(write_block_size, hw.mem_align);
-    if (!write_mem_stride_opt) { return uring::make_unexpected(uring::AllocationError::WriteMemStrideOverflow); }
+    if (!write_mem_stride_opt) {
+        return std::unexpected(BenchmarkError { BenchmarkError::Phase::BufferAllocation,
+            uring::UringError { uring::AllocationError::WriteMemStrideOverflow } });
+    }
     const auto write_mem_stride = *write_mem_stride_opt;
 
     const auto read_mem_stride_opt = (read_block_size >= get_page_size()) ? round_up(read_block_size, get_page_size())
                                                                           : round_up(read_block_size, hw.mem_align);
-    if (!read_mem_stride_opt) { return uring::make_unexpected(uring::AllocationError::ReadMemStrideOverflow); }
+    if (!read_mem_stride_opt) {
+        return std::unexpected(BenchmarkError { BenchmarkError::Phase::BufferAllocation,
+            uring::UringError { uring::AllocationError::ReadMemStrideOverflow } });
+    }
     const auto read_mem_stride = *read_mem_stride_opt;
 
     const auto raw_size = toULong(config.size_mb) * 1024ULL * 1024ULL;
@@ -460,7 +540,10 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(const Ben
     const std::size_t final_mask = *final_mask_res;
 
     const auto total_bytes_opt = round_up(raw_size, final_mask);
-    if (!total_bytes_opt) { return uring::make_unexpected(uring::AllocationError::TotalTestSizeOverflow); }
+    if (!total_bytes_opt) {
+        return std::unexpected(BenchmarkError { BenchmarkError::Phase::BufferAllocation,
+            uring::UringError { uring::AllocationError::TotalTestSizeOverflow } });
+    }
     const std::uint64_t total_bytes = *total_bytes_opt;
 
     scope_exit file_cleaner { [&filename]() noexcept {
@@ -483,8 +566,10 @@ std::expected<DiskIORunResult, std::string> DiskBenchmark::run_io_test(const Ben
 
     static std::atomic<bool> warned { false };
     if (const auto res = engine->register_buffers(write_buf.span(), read_buffers); !res && !warned.exchange(true)) {
+        const bool is_enomem = std::holds_alternative<std::error_code>(res.error())
+            && std::get<std::error_code>(res.error()).value() == ENOMEM;
         print_warning(std::format("Performance Hint: io_uring fixed buffers disabled ({}), using fallback.",
-            res.error().value() == ENOMEM ? "Memory limit" : "System restriction"));
+            is_enomem ? "Memory limit" : "System restriction"));
     }
 
     /**

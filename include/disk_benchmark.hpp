@@ -7,8 +7,11 @@
  */
 #pragma once
 
+#include "affinity.hpp"
 #include "config.hpp"
+#include "posix_error.hpp"
 #include "results.hpp"
+#include "uring_engine.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -17,6 +20,20 @@
 #include <stop_token>
 #include <string>
 #include <string_view>
+#include <variant>
+
+struct BenchmarkError {
+    enum class Phase {
+        Configuration,
+        SpaceCheck,
+        BufferAllocation,
+        EngineSetup,
+        WritePhase,
+        ReadPhase
+    } phase;
+
+    std::variant<uring::UringError, affinity::IsolationError, std::error_code, posix::SysCallError> cause;
+};
 
 class DiskBenchmark {
 public:
@@ -30,7 +47,9 @@ public:
         std::string label               = "Disk Speed";
     };
 
-    [[nodiscard]] static std::expected<DiskIORunResult, std::string> run_io_test(const BenchmarkConfig& config,
+    [[nodiscard]] static std::string format_error(const BenchmarkError& err);
+
+    [[nodiscard]] static std::expected<DiskIORunResult, BenchmarkError> run_io_test(const BenchmarkConfig& config,
         const std::move_only_function<void(std::size_t, std::size_t, std::string_view) const>& progress_cb = {},
         std::stop_token stop = {}, const std::move_only_function<bool() const noexcept>& interrupt_cb = {});
 };

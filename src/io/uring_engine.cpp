@@ -11,6 +11,26 @@
 
 namespace uring {
 
+[[nodiscard]] std::string get_error_string(const UringError& err) {
+    return std::visit(
+        [](auto&& e) -> std::string {
+            using T = std::decay_t<decltype(e)>;
+            if constexpr (std::is_same_v<T, ConfigError> || std::is_same_v<T, AllocationError>
+                || std::is_same_v<T, ExecutionError> || std::is_same_v<T, LogicError>) {
+                return std::string { error_string(e) };
+            } else if constexpr (std::is_same_v<T, std::error_code>) {
+                return e.message();
+            } else if constexpr (std::is_same_v<T, InterruptError>) {
+                return std::string { ::config::kInterruptMsg };
+            } else if constexpr (std::is_same_v<T, posix::SysCallError>) {
+                return format_sys_error(e.ec, e.context);
+            } else {
+                return "Unknown UringError";
+            }
+        },
+        err);
+}
+
 std::expected<void, std::error_code> UringRing::initialize_ring(
     std::uint16_t queue_depth, std::optional<std::int32_t> sq_thread_cpu) noexcept {
     constexpr std::uint32_t kCoop      = IORING_SETUP_COOP_TASKRUN | IORING_SETUP_TASKRUN_FLAG;
@@ -104,19 +124,20 @@ void UringFileRegistrar::unregister_file(io_uring* ring) noexcept {
     registered_handle_ = std::nullopt;
 }
 
-std::expected<void, std::string> UringTimeoutController::arm_timeout_timer(io_uring* ring) {
+std::expected<void, UringError> UringTimeoutController::arm_timeout_timer(io_uring* ring) {
     timeout_ts_ = { .tv_sec = ::config::kDiskBenchmarkMaxSeconds, .tv_nsec = 0 };
 
     return posix::expect_result<posix::error_style::pointer>(io_uring_get_sqe(ring))
-        .transform_error([](auto) { return std::string { error_string(LogicError::FailedToGetSqeForTimer) }; })
+        .transform_error([](auto) { return UringError { LogicError::FailedToGetSqeForTimer }; })
         .and_then([this, ring](io_uring_sqe* sqe) {
             io_uring_prep_timeout(sqe, &timeout_ts_, 0, 0);
             io_uring_sqe_set_data64(sqe, kTimerTag);
 
             return posix::expect_success<posix::error_style::linux_internal>(io_uring_submit(ring))
-                .transform_error([](auto err) { return format_sys_error(err, "io_uring_submit (timer)"); });
+                .transform_error(
+                    [](auto err) { return UringError { posix::SysCallError { err, "io_uring_submit (timer)" } }; });
         })
-        .and_then([this]() -> std::expected<void, std::string> {
+        .and_then([this]() -> std::expected<void, UringError> {
             timer_armed_ = true;
             return {};
         });
@@ -167,7 +188,7 @@ void UringTimeoutController::drain_pending_timer(io_uring* ring) noexcept {
     }
 }
 
-std::expected<void, std::string> UringIoSubmitter::submit_batch(
+std::expected<void, UringError> UringIoSubmitter::submit_batch(
     UringEngine& engine, const IoContext& ctx, bool is_write, UringEngine::LoopState& state) {
     const UringEngine::IoPrepContext prep { .io = ctx, .is_write = is_write };
 
@@ -199,7 +220,7 @@ std::expected<void, std::string> UringIoSubmitter::submit_batch(
         if (state.interrupt || ctx.stop.stop_requested()) {
             state.interrupt  = true;
             state.free_count = toUShort(state.free_count - submitted_in_batch);
-            return std::unexpected(std::string { config::kInterruptMsg });
+            return std::unexpected(UringError { InterruptError {} });
         }
 
         const auto sqe_res
@@ -277,7 +298,7 @@ void UringIoSubmitter::prepare_io_sqe(UringEngine& engine, io_uring_sqe* sqe, co
     if (engine.file_registrar_.registered_handle()) { sqe->flags |= IOSQE_FIXED_FILE; }
 }
 
-std::expected<void, std::string> UringCqeProcessor::wait_for_submission(
+std::expected<void, UringError> UringCqeProcessor::wait_for_submission(
     UringEngine& engine, const IoContext& ctx, std::uint32_t wait_nr) {
     io_uring_cqe* cqe_ptr = nullptr;
     auto& wait_ts         = engine.timeout_controller_.prepare_wait_timeout(config::kUringWaitTimeoutNs);
@@ -288,15 +309,16 @@ std::expected<void, std::string> UringCqeProcessor::wait_for_submission(
             return is_retryable_wait_error(toInt(err.value())) ? std::expected<void, std::error_code> {}
                                                                : std::unexpected(err);
         })
-        .transform_error([](auto err) { return format_sys_error(err, "io_uring_submit_and_wait"); })
-        .and_then([&ctx]() -> std::expected<void, std::string> {
+        .transform_error(
+            [](auto err) { return UringError { posix::SysCallError { err, "io_uring_submit_and_wait" } }; })
+        .and_then([&ctx]() -> std::expected<void, UringError> {
             return (ctx.interrupt_cb.get()() || ctx.stop.stop_requested())
-                ? std::unexpected(std::string { config::kInterruptMsg })
-                : std::expected<void, std::string> {};
+                ? std::unexpected(UringError { InterruptError {} })
+                : std::expected<void, UringError> {};
         });
 }
 
-std::expected<void, std::string> UringCqeProcessor::process_completions(
+std::expected<void, UringError> UringCqeProcessor::process_completions(
     UringEngine& engine, const IoContext& ctx, bool is_write, UringEngine::LoopState& state) {
     const unsigned count = io_uring_peek_batch_cqe(
         engine.ring_.get_ring(), engine.cqe_buffer_.data(), toUInt(engine.cqe_buffer_.size()));
@@ -324,7 +346,7 @@ std::expected<void, std::string> UringCqeProcessor::process_completions(
     return {};
 }
 
-std::expected<void, std::string> UringCqeProcessor::handle_completion(
+std::expected<void, UringError> UringCqeProcessor::handle_completion(
     UringEngine& engine, const io_uring_cqe* cqe, bool is_write, UringEngine::LoopState& state) {
     const auto tag = io_uring_cqe_get_data64(cqe);
     if (tag == UringTimeoutController::kTimerTag) {
@@ -351,10 +373,12 @@ std::expected<void, std::string> UringCqeProcessor::handle_completion(
     return finalize_cqe(engine, cqe, is_write, idx, state);
 }
 
-std::expected<void, std::string> UringCqeProcessor::finalize_cqe(
+std::expected<void, UringError> UringCqeProcessor::finalize_cqe(
     UringEngine& engine, const io_uring_cqe* cqe, bool is_write, std::uint16_t idx, UringEngine::LoopState& state) {
     const auto res_opt = posix::expect_result<posix::error_style::linux_internal>(cqe->res);
-    if (!res_opt) { return std::unexpected(format_sys_error(res_opt.error(), is_write ? "write" : "read")); }
+    if (!res_opt) {
+        return std::unexpected(UringError { posix::SysCallError { res_opt.error(), is_write ? "write" : "read" } });
+    }
     const std::int32_t res = *res_opt;
     const auto bytes       = toSize(res);
     state.bytes_completed += bytes;
@@ -383,7 +407,7 @@ std::expected<void, std::string> UringCqeProcessor::finalize_cqe(
     return {};
 }
 
-std::expected<void, std::string> UringCqeProcessor::queue_retry_slot(UringEngine& engine, std::uint16_t idx) noexcept {
+std::expected<void, UringError> UringCqeProcessor::queue_retry_slot(UringEngine& engine, std::uint16_t idx) noexcept {
     if (engine.retry_count_ >= engine.retry_slots_.size()) { return make_unexpected(LogicError::RetrySlotOverflow); }
 
     engine.retry_slots_[engine.retry_count_] = idx;
@@ -391,7 +415,7 @@ std::expected<void, std::string> UringCqeProcessor::queue_retry_slot(UringEngine
     return {};
 }
 
-std::expected<std::uint16_t, std::string> UringCqeProcessor::resolve_cqe_slot(
+std::expected<std::uint16_t, UringError> UringCqeProcessor::resolve_cqe_slot(
     const UringEngine& engine, std::uint64_t tag) noexcept {
     const std::uint16_t idx = toUShort(tag);
     if (toSize(idx) >= engine.requests_.size()) [[unlikely]] { return make_unexpected(LogicError::CqeTagOutOfBounds); }
@@ -404,9 +428,9 @@ void UringCqeProcessor::drain_all_completions(
     const auto drain_step = [&engine, &ctx, is_write, &state]() noexcept -> bool {
         const auto initial = state.completed;
         return wait_one_cqe(engine)
-            .transform_error([](auto err) { return format_sys_error(err, "io_uring wait"); })
-            .or_else([](auto) { return std::expected<void, std::string> {}; })
-            .and_then([&engine, &ctx, is_write, &state]() -> std::expected<void, std::string> {
+            /** @brief Error from wait_one_cqe is intentionally ignored during drain. */
+            .or_else([](auto) { return std::expected<void, UringError> {}; })
+            .and_then([&engine, &ctx, is_write, &state]() -> std::expected<void, UringError> {
                 return process_completions(engine, ctx, is_write, state);
             })
             .transform([&state, initial]() { return state.completed > initial || state.completed == state.submitted; })
@@ -453,12 +477,14 @@ UringEngine::~UringEngine() {
     }
 }
 
-std::expected<void, std::error_code> UringEngine::register_buffers(
+std::expected<void, UringError> UringEngine::register_buffers(
     std::span<std::byte> write_buf, std::span<AlignedBuffer> read_bufs) noexcept {
-    return BufferRegistrar { *this }.register_buffers(write_buf, read_bufs);
+    return BufferRegistrar { *this }.register_buffers(write_buf, read_bufs).transform_error([](std::error_code ec) {
+        return UringError { ec };
+    });
 }
 
-std::expected<PhaseRunStats, std::string> UringEngine::submit_and_wait(const IoContext& ctx, bool is_write) {
+std::expected<PhaseRunStats, UringError> UringEngine::submit_and_wait(const IoContext& ctx, bool is_write) {
     if (const auto res = file_registrar_.register_file(ring_.get_ring(), ctx.fd); !res) {
         if (res.error().value() == EBUSY) { return make_unexpected(ExecutionError::FileRegistrationConflict); }
         print_warning("io_uring: fixed-file registration failed, using raw fd");

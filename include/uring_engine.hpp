@@ -27,6 +27,7 @@
 #include <string_view>
 #include <sys/uio.h>
 #include <system_error>
+#include <variant>
 #include <vector>
 
 #ifdef USE_IO_URING
@@ -146,17 +147,15 @@ enum class LogicError {
     std::unreachable();
 }
 
-[[nodiscard]] inline auto make_unexpected(ConfigError err) {
-    return std::unexpected<std::string>(error_string(err));
-}
-[[nodiscard]] inline auto make_unexpected(AllocationError err) {
-    return std::unexpected<std::string>(error_string(err));
-}
-[[nodiscard]] inline auto make_unexpected(ExecutionError err) {
-    return std::unexpected<std::string>(error_string(err));
-}
-[[nodiscard]] inline auto make_unexpected(LogicError err) {
-    return std::unexpected<std::string>(error_string(err));
+struct InterruptError {};
+
+using UringError = std::variant<ConfigError, AllocationError, ExecutionError, LogicError, std::error_code,
+    InterruptError, posix::SysCallError>;
+
+[[nodiscard]] std::string get_error_string(const UringError& err);
+
+[[nodiscard]] inline auto make_unexpected(UringError err) {
+    return std::unexpected<UringError>(std::move(err));
 }
 
 struct PhaseRunStats {
@@ -365,7 +364,7 @@ public:
         return wait_ts_;
     }
 
-    [[nodiscard]] std::expected<void, std::string> arm_timeout_timer(io_uring* ring);
+    [[nodiscard]] std::expected<void, UringError> arm_timeout_timer(io_uring* ring);
     void drain_pending_timer(io_uring* ring) noexcept;
 
 private:
@@ -443,21 +442,22 @@ public:
     [[nodiscard]] std::error_code get_buffer_register_error() const noexcept { return buffer_register_error_; }
 
     [[nodiscard]] auto register_worker_affinity(const cpu_set_t* mask, std::size_t size) noexcept
-        -> std::expected<void, std::error_code> {
-        if (!ring_.is_valid()) { return std::unexpected(posix::make_error(EINVAL)); }
+        -> std::expected<void, UringError> {
+        if (!ring_.is_valid()) { return std::unexpected(UringError { posix::make_error(EINVAL) }); }
         return posix::expect_success<posix::error_style::linux_internal>(
-            ::io_uring_register_iowq_aff(ring_.get_ring(), size, mask));
+            ::io_uring_register_iowq_aff(ring_.get_ring(), size, mask))
+            .transform_error([](std::error_code ec) { return UringError { ec }; });
     }
 
-    [[nodiscard]] std::expected<void, std::error_code> register_buffers(
+    [[nodiscard]] std::expected<void, UringError> register_buffers(
         std::span<std::byte> write_buf, std::span<AlignedBuffer> read_bufs) noexcept;
 
-    [[nodiscard]] std::expected<PhaseRunStats, std::string> submit_and_wait(const IoContext& ctx, bool is_write);
+    [[nodiscard]] std::expected<PhaseRunStats, UringError> submit_and_wait(const IoContext& ctx, bool is_write);
 };
 
 class UringIoSubmitter {
 public:
-    static std::expected<void, std::string> submit_batch(
+    static std::expected<void, UringError> submit_batch(
         UringEngine& engine, const IoContext& ctx, bool is_write, UringEngine::LoopState& state);
     static void prepare_io_sqe(UringEngine& engine, io_uring_sqe* sqe, const UringEngine::IoPrepContext& prep,
         IoRequest& req, std::uint16_t idx) noexcept;
@@ -473,16 +473,16 @@ public:
         return is_one_of<ETIME, EINTR, EAGAIN, EBUSY>(rc);
     }
 
-    static std::expected<void, std::string> wait_for_submission(
+    static std::expected<void, UringError> wait_for_submission(
         UringEngine& engine, const IoContext& ctx, std::uint32_t wait_nr);
-    static std::expected<void, std::string> process_completions(
+    static std::expected<void, UringError> process_completions(
         UringEngine& engine, const IoContext& ctx, bool is_write, UringEngine::LoopState& state);
-    static std::expected<void, std::string> handle_completion(
+    static std::expected<void, UringError> handle_completion(
         UringEngine& engine, const io_uring_cqe* cqe, bool is_write, UringEngine::LoopState& state);
-    static std::expected<void, std::string> finalize_cqe(
+    static std::expected<void, UringError> finalize_cqe(
         UringEngine& engine, const io_uring_cqe* cqe, bool is_write, std::uint16_t idx, UringEngine::LoopState& state);
-    static std::expected<void, std::string> queue_retry_slot(UringEngine& engine, std::uint16_t idx) noexcept;
-    [[nodiscard]] static std::expected<std::uint16_t, std::string> resolve_cqe_slot(
+    static std::expected<void, UringError> queue_retry_slot(UringEngine& engine, std::uint16_t idx) noexcept;
+    [[nodiscard]] static std::expected<std::uint16_t, UringError> resolve_cqe_slot(
         const UringEngine& engine, std::uint64_t tag) noexcept;
     static void drain_all_completions(
         UringEngine& engine, const IoContext& ctx, bool is_write, UringEngine::LoopState& state) noexcept;

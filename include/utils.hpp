@@ -112,6 +112,16 @@ template <auto... Vals, class T>
     return ((val == Vals) || ...);
 }
 
+/**
+ * @brief Idiomatic overload set generator for exhaustive std::variant matching.
+ *
+ * Inherits from multiple lambdas to create a unified visitation object.
+ * @note Explicit deduction guides are omitted in favor of C++20 aggregate CTAD.
+ */
+template <class... Ts> struct overloaded : Ts... {
+    using Ts::operator()...;
+};
+
 namespace fs = std::filesystem;
 
 /**

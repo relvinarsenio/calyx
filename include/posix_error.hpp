@@ -56,6 +56,17 @@ namespace posix {
 }
 
 /**
+ * @brief Structured representation of a system call failure.
+ *
+ * Prevents early stringification (abstraction leaking) by preserving
+ * both the raw error code and the context in which it occurred.
+ */
+struct SysCallError {
+    std::error_code ec;
+    const char* context;
+};
+
+/**
  * @brief Error reporting styles for different system APIs.
  */
 enum class error_style {
