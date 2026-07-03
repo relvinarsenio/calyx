@@ -460,7 +460,7 @@ SpeedTestResult SpeedTest::run() {
     for (const auto& node : st_impl::kServers) {
         if (check_interrupted()) { break; }
 
-        const auto node_result = st_impl::run_speed_test_for_node(node,
+        auto node_result = st_impl::run_speed_test_for_node(node,
             st_impl::NodeRunContext {
                 .cli_path  = cli_path,
                 .cert_path = cert_path,
