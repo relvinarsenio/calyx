@@ -461,8 +461,11 @@ std::expected<void, std::string> run_disk_benchmarks() {
 
 std::expected<void, std::string> run_speed_test(HttpClient& http) {
     return SpeedTest::create(http)
+        .transform_error([](const SpeedTestError& err) { return get_error_string(err); })
         .and_then([](SpeedTest st) -> std::expected<SpeedTest, std::string> {
-            return st.install().transform([owned_st = std::move(st)]() mutable { return std::move(owned_st); });
+            return st.install()
+                .transform_error([](const SpeedTestError& err) { return get_error_string(err); })
+                .transform([owned_st = std::move(st)]() mutable { return std::move(owned_st); });
         })
         .transform([](SpeedTest st) {
             auto speed_result = st.run();

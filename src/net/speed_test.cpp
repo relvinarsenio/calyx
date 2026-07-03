@@ -64,7 +64,7 @@ struct SpeedTestResultJson {
     std::optional<double> packetLoss;
 };
 
-namespace {
+namespace st_impl {
 
 struct Node {
     std::string_view id;
@@ -332,7 +332,7 @@ NodeExecutionResult run_speed_test_for_node(const Node& node, NodeRunContext con
     return node_result;
 }
 
-std::expected<std::string_view, std::string> resolve_speedtest_url_arch(std::string_view arch) {
+std::expected<std::string_view, SpeedTestError> resolve_speedtest_url_arch(std::string_view arch) {
     using Result = std::expected<std::string_view, std::monostate>;
 
     return Result(std::unexpected(std::monostate {}))
@@ -351,7 +351,9 @@ std::expected<std::string_view, std::string> resolve_speedtest_url_arch(std::str
             return (arch.starts_with("armv6") || arch.starts_with("armv5")) ? Result("armel")
                                                                             : std::unexpected(std::monostate {});
         })
-        .transform_error([&arch](auto) { return std::format("Unsupported architecture: {}", arch); });
+        .transform_error([&arch](auto) -> SpeedTestError {
+            return SpeedTestLogicError { std::format("Unsupported architecture: {}", arch) };
+        });
 }
 
 std::string build_speedtest_download_url(std::string_view url_arch) {
@@ -359,7 +361,18 @@ std::string build_speedtest_download_url(std::string_view url_arch) {
         config::kSpeedtestCliVersion, url_arch);
 }
 
-} // namespace
+} // namespace st_impl
+
+[[nodiscard]] std::string get_error_string(const SpeedTestError& err) {
+    return std::visit(
+        overloaded { [](const posix::SysCallError& e) -> std::string { return format_sys_error(e.ec, e.context); },
+            [](const archive::ExtractError& e) -> std::string {
+                return std::string { archive::TgzExtractor::error_string(e) };
+            },
+            [](const HttpError& e) -> std::string { return e.message; },
+            [](const SpeedTestLogicError& e) -> std::string { return e.message; } },
+        err);
+}
 
 SpeedTest::SpeedTest(HttpClient& http, const std::filesystem::path& base_dir)
     : http_(http)
@@ -370,10 +383,12 @@ SpeedTest::SpeedTest(HttpClient& http, const std::filesystem::path& base_dir)
     tgz_path_ = base_dir_ / config::kSpeedtestTgz;
 }
 
-std::expected<SpeedTest, std::string> SpeedTest::create(HttpClient& client) {
+std::expected<SpeedTest, SpeedTestError> SpeedTest::create(HttpClient& client) {
     return posix::make_temp_dir((fs::temp_directory_path() / "calyx_XXXXXX").string())
         .transform([&client](std::string dir) { return SpeedTest(client, std::move(dir)); })
-        .transform_error([](std::error_code ec) { return format_sys_error(ec, "Failed to create secure temp dir"); });
+        .transform_error([](std::error_code ec) -> SpeedTestError {
+            return posix::SysCallError { ec, "Failed to create secure temp dir" };
+        });
 }
 
 SpeedTest::~SpeedTest() {
@@ -386,45 +401,49 @@ SpeedTest::~SpeedTest() {
     }
 }
 
-std::expected<void, std::string> SpeedTest::install() {
+std::expected<void, SpeedTestError> SpeedTest::install() {
     std::println("Downloading Speedtest CLI...");
 
-    return resolve_speedtest_url_arch(SystemInfo::get_raw_arch())
-        .transform([](std::string_view url_arch) { return build_speedtest_download_url(url_arch); })
-        .and_then([this](const std::string& url) { return http_.download(url, tgz_path_); })
-        .and_then([this]() -> std::expected<void, std::string> {
-            std::error_code ec;
-            fs::create_directories(cli_dir_, ec);
-            return ec ? std::unexpected(format_sys_error(ec.value(), "Installation Directory"))
-                      : std::expected<void, std::string> {};
-        })
-        .and_then([this]() -> std::expected<void, std::string> {
-            return archive::TgzExtractor::extract(tgz_path_, cli_dir_).transform_error([](archive::ExtractError err) {
-                return std::format("Failed to extract Speedtest: {}", archive::TgzExtractor::error_string(err));
+    return st_impl::resolve_speedtest_url_arch(SystemInfo::get_raw_arch())
+        .transform([](std::string_view url_arch) { return st_impl::build_speedtest_download_url(url_arch); })
+        .and_then([this](const std::string& url) -> std::expected<void, SpeedTestError> {
+            return http_.download(url, tgz_path_).transform_error([](const std::string& err) -> SpeedTestError {
+                return HttpError { err };
             });
         })
-        .and_then([this]() -> std::expected<void, std::string> {
-            return fs::exists(cli_path_) ? std::expected<void, std::string> {}
-                                         : std::unexpected("Speedtest binary not found after extraction!");
+        .and_then([this]() -> std::expected<void, SpeedTestError> {
+            std::error_code ec;
+            fs::create_directories(cli_dir_, ec);
+            return ec ? std::unexpected<SpeedTestError>(posix::SysCallError { ec, "Installation Directory" })
+                      : std::expected<void, SpeedTestError> {};
         })
-        .and_then([this]() -> std::expected<void, std::string> {
+        .and_then([this]() -> std::expected<void, SpeedTestError> {
+            return archive::TgzExtractor::extract(tgz_path_, cli_dir_)
+                .transform_error([](archive::ExtractError err) -> SpeedTestError { return err; });
+        })
+        .and_then([this]() -> std::expected<void, SpeedTestError> {
+            return fs::exists(cli_path_) ? std::expected<void, SpeedTestError> {}
+                                         : std::unexpected<SpeedTestError>(
+                                               SpeedTestLogicError { "Speedtest binary not found after extraction!" });
+        })
+        .and_then([this]() -> std::expected<void, SpeedTestError> {
             std::error_code ec;
             fs::permissions(cli_path_, fs::perms::owner_all, fs::perm_options::add, ec);
-            return ec ? std::unexpected(format_sys_error(ec.value(), "Permissions Update"))
-                      : std::expected<void, std::string> {};
+            return ec ? std::unexpected<SpeedTestError>(posix::SysCallError { ec, "Permissions Update" })
+                      : std::expected<void, SpeedTestError> {};
         });
 }
 
 SpeedTestResult SpeedTest::run() {
     SpeedTestResult result;
-    result.entries.reserve(kServers.size());
+    result.entries.reserve(st_impl::kServers.size());
 
-    const auto cert_expected = write_cert_file(base_dir_, std::span { cacert_pem, cacert_pem_len });
+    const auto cert_expected = st_impl::write_cert_file(base_dir_, std::span { cacert_pem, cacert_pem_len });
 
     if (!cert_expected) {
         SpeedEntryResult entry;
         entry.node_name = "System Error";
-        entry.error     = std::format("Certificate Error: {}", cert_expected.error().message());
+        entry.error     = format_sys_error(cert_expected.error(), "Certificate Error");
         entry.success   = false;
         result.entries.push_back(std::move(entry));
         return result;
@@ -438,22 +457,22 @@ SpeedTestResult SpeedTest::run() {
 
     const std::string cli_path = cli_path_.string();
 
-    for (const auto& node : kServers) {
+    for (const auto& node : st_impl::kServers) {
         if (check_interrupted()) { break; }
 
-        const auto node_result = run_speed_test_for_node(node,
-            NodeRunContext {
+        const auto node_result = st_impl::run_speed_test_for_node(node,
+            st_impl::NodeRunContext {
                 .cli_path  = cli_path,
                 .cert_path = cert_path,
             });
 
         result.entries.push_back(std::move(node_result.entry));
 
-        if (node_result.action == NodeExecutionAction::Return) {
+        if (node_result.action == st_impl::NodeExecutionAction::Return) {
             result.rate_limited = node_result.entry.rate_limited;
             return result;
         }
-        if (node_result.action == NodeExecutionAction::Break) { break; }
+        if (node_result.action == st_impl::NodeExecutionAction::Break) { break; }
     }
     return result;
 }

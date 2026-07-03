@@ -8,12 +8,28 @@
 #pragma once
 
 #include "http_client.hpp"
+#include "posix_error.hpp"
 #include "results.hpp"
+#include "tgz_extractor.hpp"
 
 #include <expected>
 #include <filesystem>
 #include <functional>
+#include <string>
 #include <string_view>
+#include <variant>
+
+struct HttpError {
+    std::string message;
+};
+
+struct SpeedTestLogicError {
+    std::string message;
+};
+
+using SpeedTestError = std::variant<posix::SysCallError, archive::ExtractError, HttpError, SpeedTestLogicError>;
+
+[[nodiscard]] std::string get_error_string(const SpeedTestError& err);
 
 class SpeedTest {
     HttpClient& http_;
@@ -33,9 +49,9 @@ public:
 
     ~SpeedTest();
 
-    [[nodiscard]] static std::expected<SpeedTest, std::string> create(HttpClient& h);
+    [[nodiscard]] static std::expected<SpeedTest, SpeedTestError> create(HttpClient& h);
 
-    [[nodiscard]] std::expected<void, std::string> install();
+    [[nodiscard]] std::expected<void, SpeedTestError> install();
     [[nodiscard]] SpeedTestResult run();
 
     [[nodiscard]] std::filesystem::path get_base_dir() const { return base_dir_; }
