@@ -195,7 +195,6 @@ void print_success_row(const SpeedEntryResult& entry) {
     return (total_weight > 0.0) ? weighted_bw / total_weight : 0.0;
 }
 
-
 [[nodiscard]] metrics::LatencyHistogram aggregate_histograms(
     std::span<const DiskIORunResult> disk_runs, auto phase_proj) {
     metrics::LatencyHistogram global_hist;
@@ -215,15 +214,13 @@ void print_latency_histogram(
 
     std::println("");
     std::println(" [{}]", color::colorize(title, phase_color));
-    std::println("   • Summary    :  Avg: {} │ Min: {} │ Max: {}", 
-        fmt_latency(hist.get_avg_duration(cycles_to_ns)), 
-        fmt_latency(hist.get_min_duration(cycles_to_ns)), 
+    std::println("   \u2022 Summary    :  Avg: {} \u2502 Min: {} \u2502 Max: {}",
+        fmt_latency(hist.get_avg_duration(cycles_to_ns)), fmt_latency(hist.get_min_duration(cycles_to_ns)),
         fmt_latency(hist.get_max_duration(cycles_to_ns)));
 
-    std::println("   • Percentile :  p50: {} │ p95: {} │ p99: {} │ p99.9: {}", 
-        fmt_latency(hist.get_percentile_duration(50.0, cycles_to_ns)), 
-        fmt_latency(hist.get_percentile_duration(95.0, cycles_to_ns)), 
-        fmt_latency(hist.get_p99_duration(cycles_to_ns)), 
+    std::println("   \u2022 Percentile :  p50: {} \u2502 p95: {} \u2502 p99: {} \u2502 p99.9: {}",
+        fmt_latency(hist.get_percentile_duration(50.0, cycles_to_ns)),
+        fmt_latency(hist.get_percentile_duration(95.0, cycles_to_ns)), fmt_latency(hist.get_p99_duration(cycles_to_ns)),
         fmt_latency(hist.get_percentile_duration(99.9, cycles_to_ns)));
 }
 
@@ -353,15 +350,17 @@ void render_progress_line(std::string_view label, std::size_t percent, std::uint
 }
 
 void print_disk_run_result(const DiskIORunResult& result) {
-    std::println("{:<{}} :  {}  │  {}", result.label, config::kIoLabelWidth,
-        color::colorize(std::format("Write {:>10}/s", format_bytes(toULong(result.write.bw_bytes_per_sec))), color::kYellow),
-        color::colorize(std::format("Read {:>10}/s", format_bytes(toULong(result.read.bw_bytes_per_sec))), color::kCyan));
+    std::println("{:<{}} :  {}  \u2502  {}", result.label, config::kIoLabelWidth,
+        color::colorize(
+            std::format("Write {:>10}/s", format_bytes(toULong(result.write.bw_bytes_per_sec))), color::kYellow),
+        color::colorize(
+            std::format("Read {:>10}/s", format_bytes(toULong(result.read.bw_bytes_per_sec))), color::kCyan));
 }
 
 void render_disk_results_summary(std::span<const DiskIORunResult> disk_runs, double cycles_to_ns) {
     const double avg_write_bps = weighted_avg_throughput(disk_runs, &DiskIORunResult::write);
     const double avg_read_bps  = weighted_avg_throughput(disk_runs, &DiskIORunResult::read);
-    std::println("{:<{}} :  {}  │  {}", "   I/O Speed (Average)", config::kIoLabelWidth,
+    std::println("{:<{}} :  {}  \u2502  {}", "   I/O Speed (Average)", config::kIoLabelWidth,
         color::colorize(std::format("Write {:>10}/s", format_bytes(toULong(avg_write_bps))), color::kYellow),
         color::colorize(std::format("Read {:>10}/s", format_bytes(toULong(avg_read_bps))), color::kCyan));
 

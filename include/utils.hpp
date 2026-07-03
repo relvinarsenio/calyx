@@ -155,11 +155,13 @@ inline constexpr auto get_term_width = []() noexcept -> std::size_t {
 };
 
 inline constexpr auto print_line = []() noexcept {
+    using namespace std::string_view_literals;
     const std::size_t width = get_term_width();
-    std::println("{:-<{}}", "", width);
+    std::println("{}", std::views::repeat("\u2500"sv, width) | std::views::join | std::ranges::to<std::string>());
 };
 
 inline constexpr auto print_centered_header = [](std::string_view text) noexcept {
+    using namespace std::string_view_literals;
     const std::size_t width    = get_term_width();
     const std::size_t text_len = text.length();
 
@@ -172,7 +174,11 @@ inline constexpr auto print_centered_header = [](std::string_view text) noexcept
     const std::size_t left_pad  = remaining / 2;
     const std::size_t right_pad = remaining - left_pad;
 
-    std::println("{0:-<{1}} {2} {0:-<{3}}", "", left_pad, text, right_pad);
+    const auto left_line = std::views::repeat("\u2500"sv, left_pad) | std::views::join | std::ranges::to<std::string>();
+    const auto right_line
+        = std::views::repeat("\u2500"sv, right_pad) | std::views::join | std::ranges::to<std::string>();
+
+    std::println("{} {} {}", left_line, text, right_line);
 };
 
 [[nodiscard]] constexpr std::string_view trim_sv(std::convertible_to<std::string_view> auto&& str) noexcept {
