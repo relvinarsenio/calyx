@@ -213,7 +213,7 @@ void print_latency_histogram(
     };
 
     std::println("");
-    std::println(" [{}]", color::colorize(title, phase_color));
+    std::println(" [ {} ]", color::colorize(title, phase_color));
     std::println("   \u2022 Summary    :  Avg: {} \u2502 Min: {} \u2502 Max: {}",
         fmt_latency(hist.get_avg_duration(cycles_to_ns)), fmt_latency(hist.get_min_duration(cycles_to_ns)),
         fmt_latency(hist.get_max_duration(cycles_to_ns)));
