@@ -14,7 +14,6 @@
 #include "locale_probe.hpp"
 #include "scope.hpp"
 #include "speed_test.hpp"
-#include "tsc.hpp"
 #include "utils.hpp"
 
 #include <algorithm>
@@ -196,8 +195,36 @@ void print_success_row(const SpeedEntryResult& entry) {
     return (total_weight > 0.0) ? weighted_bw / total_weight : 0.0;
 }
 
-[[nodiscard]] double to_mbps(const DiskIOMetrics& metrics) {
-    return metrics.bw_bytes_per_sec / (1024.0 * 1024.0);
+
+[[nodiscard]] metrics::LatencyHistogram aggregate_histograms(
+    std::span<const DiskIORunResult> disk_runs, auto phase_proj) {
+    metrics::LatencyHistogram global_hist;
+    for (const auto& run : disk_runs) {
+        global_hist.merge(std::invoke(phase_proj, run).histogram);
+    }
+    return global_hist;
+}
+
+void print_latency_histogram(
+    std::string_view title, const metrics::LatencyHistogram& hist, double cycles_to_ns, std::string_view phase_color) {
+
+    const auto fmt_latency = [phase_color](const auto ns) {
+        const double ms = std::chrono::duration<double, std::milli>(ns).count();
+        return color::colorize(std::format("{:>7.2f} ms", ms), phase_color);
+    };
+
+    std::println("");
+    std::println(" [{}]", color::colorize(title, phase_color));
+    std::println("   • Summary    :  Avg: {} │ Min: {} │ Max: {}", 
+        fmt_latency(hist.get_avg_duration(cycles_to_ns)), 
+        fmt_latency(hist.get_min_duration(cycles_to_ns)), 
+        fmt_latency(hist.get_max_duration(cycles_to_ns)));
+
+    std::println("   • Percentile :  p50: {} │ p95: {} │ p99: {} │ p99.9: {}", 
+        fmt_latency(hist.get_percentile_duration(50.0, cycles_to_ns)), 
+        fmt_latency(hist.get_percentile_duration(95.0, cycles_to_ns)), 
+        fmt_latency(hist.get_p99_duration(cycles_to_ns)), 
+        fmt_latency(hist.get_percentile_duration(99.9, cycles_to_ns)));
 }
 
 } // namespace
@@ -326,55 +353,23 @@ void render_progress_line(std::string_view label, std::size_t percent, std::uint
 }
 
 void print_disk_run_result(const DiskIORunResult& result) {
-    std::println("{:<{}}:  {}   |   {}", result.label, config::kIoLabelWidth,
-        color::colorize(std::format("Write {:>7.1f} MB/s", to_mbps(result.write)), color::kYellow),
-        color::colorize(std::format("Read {:>7.1f} MB/s", to_mbps(result.read)), color::kCyan));
+    std::println("{:<{}} :  {}  │  {}", result.label, config::kIoLabelWidth,
+        color::colorize(std::format("Write {:>10}/s", format_bytes(toULong(result.write.bw_bytes_per_sec))), color::kYellow),
+        color::colorize(std::format("Read {:>10}/s", format_bytes(toULong(result.read.bw_bytes_per_sec))), color::kCyan));
 }
 
-void render_disk_results_summary(std::span<const DiskIORunResult> disk_runs) {
+void render_disk_results_summary(std::span<const DiskIORunResult> disk_runs, double cycles_to_ns) {
     const double avg_write_bps = weighted_avg_throughput(disk_runs, &DiskIORunResult::write);
     const double avg_read_bps  = weighted_avg_throughput(disk_runs, &DiskIORunResult::read);
+    std::println("{:<{}} :  {}  │  {}", "   I/O Speed (Average)", config::kIoLabelWidth,
+        color::colorize(std::format("Write {:>10}/s", format_bytes(toULong(avg_write_bps))), color::kYellow),
+        color::colorize(std::format("Read {:>10}/s", format_bytes(toULong(avg_read_bps))), color::kCyan));
 
-    constexpr double kBytesToMiB = 1.0 / (1024.0 * 1024.0);
-    std::println(" ----------------------------------------------------------------------------");
-    std::println("{:<{}}:  {}   |   {}", " I/O Speed (Average)", config::kIoLabelWidth,
-        color::colorize(std::format("Write {:>7.1f} MB/s", avg_write_bps * kBytesToMiB), color::kYellow),
-        color::colorize(std::format("Read {:>7.1f} MB/s", avg_read_bps * kBytesToMiB), color::kCyan));
+    const metrics::LatencyHistogram write_hist = aggregate_histograms(disk_runs, &DiskIORunResult::write);
+    print_latency_histogram("Write Latency", write_hist, cycles_to_ns, color::kYellow);
 
-    const double cycles_to_ns = tsc::calibrate();
-
-    const auto print_latency = [cycles_to_ns, &disk_runs](
-                                   std::string_view title, auto phase_proj, std::string_view phase_color) {
-        std::println("");
-        std::println(" [ {} ]", title);
-
-        metrics::LatencyHistogram global_hist;
-        for (const auto& run : disk_runs) {
-            global_hist.merge(std::invoke(phase_proj, run).histogram);
-        }
-
-        const auto to_ms = [](auto duration) { return std::chrono::duration<double, std::milli>(duration).count(); };
-
-        const double avg_lat = to_ms(global_hist.get_avg_duration(cycles_to_ns));
-        const double min_lat = to_ms(global_hist.get_min_duration(cycles_to_ns));
-        const double max_lat = to_ms(global_hist.get_max_duration(cycles_to_ns));
-        const double p50     = to_ms(global_hist.get_percentile_duration(50.0, cycles_to_ns));
-        const double p95     = to_ms(global_hist.get_percentile_duration(95.0, cycles_to_ns));
-        const double p99     = to_ms(global_hist.get_p99_duration(cycles_to_ns));
-        const double p999    = to_ms(global_hist.get_percentile_duration(99.9, cycles_to_ns));
-
-        const auto fmt_val
-            = [phase_color](double v) { return color::colorize(std::format("{:>6.2f} ms", v), phase_color); };
-        const auto fmt_val5
-            = [phase_color](double v) { return color::colorize(std::format("{:>5.2f} ms", v), phase_color); };
-
-        std::println(" Avg: {}  |  Min: {}  |  Max: {}", fmt_val(avg_lat), fmt_val(min_lat), fmt_val(max_lat));
-        std::println(
-            " p50: {}  |  p95: {}  |  p99: {}  |  p99.9: {}", fmt_val(p50), fmt_val(p95), fmt_val(p99), fmt_val5(p999));
-    };
-
-    print_latency("Write Latency", &DiskIORunResult::write, color::kYellow);
-    print_latency("Read Latency", &DiskIORunResult::read, color::kCyan);
+    const metrics::LatencyHistogram read_hist = aggregate_histograms(disk_runs, &DiskIORunResult::read);
+    print_latency_histogram("Read Latency", read_hist, cycles_to_ns, color::kCyan);
 }
 
 } // namespace ui

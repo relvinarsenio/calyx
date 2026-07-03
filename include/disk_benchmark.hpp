@@ -49,6 +49,8 @@ public:
 
     [[nodiscard]] static std::string format_error(const BenchmarkError& err);
 
+    [[nodiscard]] static double get_timer_calibration_ns() noexcept;
+
     [[nodiscard]] static std::expected<DiskIORunResult, BenchmarkError> run_io_test(const BenchmarkConfig& config,
         const std::move_only_function<void(std::size_t, std::size_t, std::string_view) const>& progress_cb = {},
         std::stop_token stop = {}, const std::move_only_function<bool() const noexcept>& interrupt_cb = {});

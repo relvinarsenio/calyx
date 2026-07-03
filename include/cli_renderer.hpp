@@ -86,8 +86,9 @@ void print_disk_run_result(const DiskIORunResult& result);
 /**
  * @brief Renders the final average summary and latency tables of a disk benchmark.
  * @param disk_runs The list of disk benchmark results for each run.
+ * @param cycles_to_ns The hardware calibration multiplier to convert cycles to nanoseconds.
  */
-void render_disk_results_summary(std::span<const DiskIORunResult> disk_runs);
+void render_disk_results_summary(std::span<const DiskIORunResult> disk_runs, double cycles_to_ns);
 
 /**
  * @brief RAII Spinner that displays a progress animation in a background thread.

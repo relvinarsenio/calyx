@@ -374,7 +374,7 @@ void display_storage_memory() {
 }
 
 [[nodiscard]] std::expected<DiskIORunResult, std::string> run_single_disk_benchmark(std::uint32_t run_number) {
-    const auto label = std::format(" I/O Speed (Run #{})", run_number);
+    const auto label = std::format("   I/O Speed (Run #{})", run_number);
 
     scope_exit clear_line { [] {
         std::print("\r{}", ui::style::clear_line);
@@ -413,7 +413,9 @@ std::expected<void, std::string> run_disk_benchmarks() {
         for (const auto& result : disk_runs) {
             ui::print_disk_run_result(result);
         }
-        if (!disk_runs.empty()) { ui::render_disk_results_summary(disk_runs); }
+        if (!disk_runs.empty()) {
+            ui::render_disk_results_summary(disk_runs, DiskBenchmark::get_timer_calibration_ns());
+        }
     } };
 
     for (std::uint32_t run_number : std::views::iota(1u, toUInt(config::kDiskIoRuns) + 1u)) {
