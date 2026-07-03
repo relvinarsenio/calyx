@@ -312,26 +312,22 @@ namespace format_impl {
  */
 struct format_state {
     double scaled_value;
-    std::size_t decimal_places;
     std::size_t suffix_index;
 };
 
 inline constexpr auto adjust_overflow
     = [](format_state state, double base, std::size_t max_suffixes) noexcept -> format_state {
-    constexpr std::array kFactors = { 1.0, 10.0 };
-    const double factor           = kFactors[state.decimal_places];
-    const double rounded          = std::round(state.scaled_value * factor) / factor;
+    const double rounded = std::round(state.scaled_value * 100.0) / 100.0;
 
     const bool overflow = (rounded >= base) && (toSize(safe_add(state.suffix_index, 1uz).value_or(0uz)) < max_suffixes);
     const std::size_t next_suffix_index
         = toSize(safe_add(state.suffix_index, toSize(+overflow)).value_or(state.suffix_index));
 
-    const std::array kScaleValues  = { state.scaled_value, rounded / base };
+    const std::array kScaleValues  = { rounded, rounded / base };
     const double next_scaled_value = kScaleValues[toSize(+overflow)];
-    const std::size_t next_decimal_places
-        = std::min<std::size_t>(toSize(std::llround(next_scaled_value * 10.0) % 10), 1uz);
+    const double next_rounded      = std::round(next_scaled_value * 100.0) / 100.0;
 
-    return { next_scaled_value, next_decimal_places, next_suffix_index };
+    return { next_rounded, next_suffix_index };
 };
 
 } // namespace format_impl
@@ -348,12 +344,11 @@ inline constexpr auto format_bytes = [](std::uint64_t bytes) -> std::string {
     const std::size_t shift        = toSize(safe_sub(bits, toSize(+(bits > 0))).value_or(0uz));
     const std::size_t suffix_index = std::min<std::size_t>(shift / 10uz, kSuffixes.size() - 1uz);
     const double scaled_value = toDouble(bytes) / toDouble(1ULL << toSize(safe_mul(suffix_index, 10uz).value_or(0uz)));
-    const std::size_t decimal_places = std::min<std::size_t>(toSize(std::llround(scaled_value * 10.0) % 10), 1uz);
 
     const auto state = format_impl::adjust_overflow(
-        format_impl::format_state { scaled_value, decimal_places, suffix_index }, 1024.0, kSuffixes.size());
+        format_impl::format_state { scaled_value, suffix_index }, 1024.0, kSuffixes.size());
 
-    return std::format("{:.{}f} {}", state.scaled_value, state.decimal_places, kSuffixes[state.suffix_index]);
+    return std::format("{} {}", state.scaled_value, kSuffixes[state.suffix_index]);
 };
 
 /**
@@ -373,12 +368,11 @@ inline constexpr auto format_count = [](std::uint64_t count) -> std::string {
     const std::size_t suffix_index
         = toSize(safe_sub(toSize(std::ranges::distance(kPowersOfThousand.begin(), upper_bound_it)), 1uz).value_or(0uz));
     const double scaled_value        = toDouble(count) / toDouble(kPowersOfThousand[suffix_index]);
-    const std::size_t decimal_places = std::min<std::size_t>(toSize(std::llround(scaled_value * 10.0) % 10), 1uz);
 
     const auto state = format_impl::adjust_overflow(
-        format_impl::format_state { scaled_value, decimal_places, suffix_index }, 1000.0, kSuffixes.size());
+        format_impl::format_state { scaled_value, suffix_index }, 1000.0, kSuffixes.size());
 
-    return std::format("{:.{}f}{}", state.scaled_value, state.decimal_places, kSuffixes[state.suffix_index]);
+    return std::format("{}{}", state.scaled_value, kSuffixes[state.suffix_index]);
 };
 
 inline constexpr auto check_disk_space

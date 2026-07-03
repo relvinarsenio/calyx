@@ -209,7 +209,8 @@ void print_latency_histogram(
 
     const auto fmt_latency = [phase_color](const auto ns) {
         const double ms = std::chrono::duration<double, std::milli>(ns).count();
-        return color::colorize(std::format("{:>7.2f} ms", ms), phase_color);
+        const double rounded_ms = std::round(ms * 100.0) / 100.0;
+        return color::colorize(std::format("{:>7} ms", std::format("{}", rounded_ms)), phase_color);
     };
 
     std::println("");
