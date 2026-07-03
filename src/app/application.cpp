@@ -25,6 +25,7 @@
 #include <expected>
 #include <filesystem>
 #include <format>
+#include <functional>
 #include <future>
 #include <glaze/glaze.hpp>
 #include <optional>
@@ -372,35 +373,6 @@ void display_storage_memory() {
     }
 }
 
-/**
- * @brief Computes stability-weighted average throughput across benchmark runs.
- *
- * Uses the Coefficient of Variation (σ/μ) from each run's latency histogram as a quality
- * signal. Runs with lower CV (tighter latency distribution) receive proportionally higher
- * weight, reducing the influence of runs contaminated by system interference.
- *
- * Weight is capped at kMaxWeight to prevent a single low-CV run from dominating the
- * average — a Winsorization strategy standard in meta-analysis (Cochran, 1954).
- *
- * @param runs   Collected benchmark run results.
- * @param phase  Pointer-to-member selecting write or read metrics from each run.
- * @return Weighted average throughput in bytes/second.
- */
-[[nodiscard]] double weighted_avg_throughput(
-    std::span<const DiskIORunResult> runs, const DiskIOMetrics DiskIORunResult::* phase) {
-    const auto [weighted_bw, total_weight] = std::ranges::fold_left(
-        runs, std::pair { 0.0, 0.0 }, [phase](auto acc, const DiskIORunResult& run) {
-            static constexpr double kCvFloor    = 0.01;
-            static constexpr double kMaxWeight  = 10.0;
-            static constexpr double kUnitWeight = 1.0;
-            const auto& metrics                 = run.*phase;
-            const double stability_weight       = std::min(kUnitWeight / std::max(metrics.cv, kCvFloor), kMaxWeight);
-            return std::pair { acc.first + metrics.bw_bytes_per_sec * stability_weight, acc.second + stability_weight };
-        });
-
-    return (total_weight > 0.0) ? weighted_bw / total_weight : 0.0;
-}
-
 [[nodiscard]] std::expected<DiskIORunResult, std::string> run_single_disk_benchmark(std::uint32_t run_number) {
     const auto label = std::format(" I/O Speed (Run #{})", run_number);
 
@@ -433,28 +405,23 @@ std::expected<void, std::string> run_disk_benchmarks() {
     std::vector<DiskIORunResult> disk_runs;
     disk_runs.reserve(config::kDiskIoRuns);
 
-    const auto to_mbps = [](const DiskIOMetrics& metrics) { return metrics.bw_bytes_per_sec / (1024.0 * 1024.0); };
+    const std::uint64_t total_bytes = safe_mul(toULong(config::kDiskTestSizeMb), 1024ULL * 1024ULL).value_or(0ULL);
+    std::println("Running I/O Test ({} File)...", format_bytes(total_bytes));
+    std::println(" [ Throughput ]");
 
-    std::println("Running I/O Test ({} File)...", format_bytes(toSize(config::kDiskTestSizeMb) * 1024ULL * 1024ULL));
+    scope_exit flush_results { [&disk_runs] {
+        for (const auto& result : disk_runs) {
+            ui::print_disk_run_result(result);
+        }
+        if (!disk_runs.empty()) { ui::render_disk_results_summary(disk_runs); }
+    } };
 
     for (std::uint32_t run_number : std::views::iota(1u, toUInt(config::kDiskIoRuns) + 1u)) {
         const auto result = run_single_disk_benchmark(run_number);
         if (!result) { return std::unexpected(result.error()); }
 
-        std::println(" {:<{}}:  {}   {}", result->label, config::kIoLabelWidth,
-            color::colorize(std::format("Write {:>8.1f} MB/s", to_mbps(result->write)), color::kYellow),
-            color::colorize(std::format("Read {:>8.1f} MB/s", to_mbps(result->read)), color::kCyan));
-
         disk_runs.push_back(*result);
     }
-
-    const double avg_write_bps = weighted_avg_throughput(disk_runs, &DiskIORunResult::write);
-    const double avg_read_bps  = weighted_avg_throughput(disk_runs, &DiskIORunResult::read);
-
-    constexpr double kBytesToMiB = 1.0 / (1024.0 * 1024.0);
-    std::println(" {:<{}}:  {}   {}", " I/O Speed (Average)", config::kIoLabelWidth,
-        color::colorize(std::format("Write {:>8.1f} MB/s", avg_write_bps * kBytesToMiB), color::kYellow),
-        color::colorize(std::format("Read {:>8.1f} MB/s", avg_read_bps * kBytesToMiB), color::kCyan));
 
     return {};
 }

@@ -78,6 +78,18 @@ public:
 void render_speed_results(const SpeedTestResult& result);
 
 /**
+ * @brief Renders the result of a single disk benchmark run.
+ * @param result The result to render.
+ */
+void print_disk_run_result(const DiskIORunResult& result);
+
+/**
+ * @brief Renders the final average summary and latency tables of a disk benchmark.
+ * @param disk_runs The list of disk benchmark results for each run.
+ */
+void render_disk_results_summary(std::span<const DiskIORunResult> disk_runs);
+
+/**
  * @brief RAII Spinner that displays a progress animation in a background thread.
  * @details Starts spinning on construction, stops and cleans up terminal on destruction.
  */

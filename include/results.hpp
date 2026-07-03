@@ -7,13 +7,23 @@
  */
 #pragma once
 
+#include "latency_histogram.hpp"
+
 #include <cstdint>
 #include <string>
 #include <vector>
 
 struct [[nodiscard]] DiskIOMetrics {
+    metrics::LatencyHistogram histogram;
     double bw_bytes_per_sec = 0.0;
     double cv               = 0.0; ///< Coefficient of Variation (σ/μ) of latency — lower is more stable.
+    double avg_latency_ms   = 0.0;
+    double min_latency_ms   = 0.0;
+    double max_latency_ms   = 0.0;
+    double p50_latency_ms   = 0.0;
+    double p95_latency_ms   = 0.0;
+    double p99_latency_ms   = 0.0;
+    double p999_latency_ms  = 0.0;
 };
 
 struct [[nodiscard]] DiskIORunResult {

@@ -14,6 +14,7 @@
 #include "locale_probe.hpp"
 #include "scope.hpp"
 #include "speed_test.hpp"
+#include "tsc.hpp"
 #include "utils.hpp"
 
 #include <algorithm>
@@ -166,6 +167,39 @@ void print_success_row(const SpeedEntryResult& entry) {
         align_left(entry.loss.empty() ? "-" : entry.loss, config::kUiTableLossWidth), color::kReset);
 }
 
+/**
+ * @brief Computes stability-weighted average throughput across benchmark runs.
+ *
+ * Uses the Coefficient of Variation (σ/μ) from each run's latency histogram as a quality
+ * signal. Runs with lower CV (tighter latency distribution) receive proportionally higher
+ * weight, reducing the influence of runs contaminated by system interference.
+ *
+ * Weight is capped at kMaxWeight to prevent a single low-CV run from dominating the
+ * average — a Winsorization strategy standard in meta-analysis (Cochran, 1954).
+ *
+ * @param runs   Collected benchmark run results.
+ * @param phase  Pointer-to-member selecting write or read metrics from each run.
+ * @return Weighted average throughput in bytes/second.
+ */
+[[nodiscard]] double weighted_avg_throughput(
+    std::span<const DiskIORunResult> runs, const DiskIOMetrics DiskIORunResult::* phase) {
+    const auto [weighted_bw, total_weight] = std::ranges::fold_left(
+        runs, std::pair { 0.0, 0.0 }, [phase](auto acc, const DiskIORunResult& run) {
+            static constexpr double kCvFloor    = 0.01;
+            static constexpr double kMaxWeight  = 10.0;
+            static constexpr double kUnitWeight = 1.0;
+            const auto& metrics                 = run.*phase;
+            const double stability_weight       = std::min(kUnitWeight / std::max(metrics.cv, kCvFloor), kMaxWeight);
+            return std::pair { acc.first + metrics.bw_bytes_per_sec * stability_weight, acc.second + stability_weight };
+        });
+
+    return (total_weight > 0.0) ? weighted_bw / total_weight : 0.0;
+}
+
+[[nodiscard]] double to_mbps(const DiskIOMetrics& metrics) {
+    return metrics.bw_bytes_per_sec / (1024.0 * 1024.0);
+}
+
 } // namespace
 
 TerminalGuard::TerminalGuard() {
@@ -289,6 +323,58 @@ void render_progress_line(std::string_view label, std::size_t percent, std::uint
     std::print("{}\r{} {:<{}} [{}] {:3}%{}", term::sync_start, style::clear_line, label, label_width, bar, percent,
         term::sync_end);
     std::fflush(stdout);
+}
+
+void print_disk_run_result(const DiskIORunResult& result) {
+    std::println("{:<{}}:  {}   |   {}", result.label, config::kIoLabelWidth,
+        color::colorize(std::format("Write {:>7.1f} MB/s", to_mbps(result.write)), color::kYellow),
+        color::colorize(std::format("Read {:>7.1f} MB/s", to_mbps(result.read)), color::kCyan));
+}
+
+void render_disk_results_summary(std::span<const DiskIORunResult> disk_runs) {
+    const double avg_write_bps = weighted_avg_throughput(disk_runs, &DiskIORunResult::write);
+    const double avg_read_bps  = weighted_avg_throughput(disk_runs, &DiskIORunResult::read);
+
+    constexpr double kBytesToMiB = 1.0 / (1024.0 * 1024.0);
+    std::println(" ----------------------------------------------------------------------------");
+    std::println("{:<{}}:  {}   |   {}", " I/O Speed (Average)", config::kIoLabelWidth,
+        color::colorize(std::format("Write {:>7.1f} MB/s", avg_write_bps * kBytesToMiB), color::kYellow),
+        color::colorize(std::format("Read {:>7.1f} MB/s", avg_read_bps * kBytesToMiB), color::kCyan));
+
+    const double cycles_to_ns = tsc::calibrate();
+
+    const auto print_latency = [cycles_to_ns, &disk_runs](
+                                   std::string_view title, auto phase_proj, std::string_view phase_color) {
+        std::println("");
+        std::println(" [ {} ]", title);
+
+        metrics::LatencyHistogram global_hist;
+        for (const auto& run : disk_runs) {
+            global_hist.merge(std::invoke(phase_proj, run).histogram);
+        }
+
+        const auto to_ms = [](auto duration) { return std::chrono::duration<double, std::milli>(duration).count(); };
+
+        const double avg_lat = to_ms(global_hist.get_avg_duration(cycles_to_ns));
+        const double min_lat = to_ms(global_hist.get_min_duration(cycles_to_ns));
+        const double max_lat = to_ms(global_hist.get_max_duration(cycles_to_ns));
+        const double p50     = to_ms(global_hist.get_percentile_duration(50.0, cycles_to_ns));
+        const double p95     = to_ms(global_hist.get_percentile_duration(95.0, cycles_to_ns));
+        const double p99     = to_ms(global_hist.get_p99_duration(cycles_to_ns));
+        const double p999    = to_ms(global_hist.get_percentile_duration(99.9, cycles_to_ns));
+
+        const auto fmt_val
+            = [phase_color](double v) { return color::colorize(std::format("{:>6.2f} ms", v), phase_color); };
+        const auto fmt_val5
+            = [phase_color](double v) { return color::colorize(std::format("{:>5.2f} ms", v), phase_color); };
+
+        std::println(" Avg: {}  |  Min: {}  |  Max: {}", fmt_val(avg_lat), fmt_val(min_lat), fmt_val(max_lat));
+        std::println(
+            " p50: {}  |  p95: {}  |  p99: {}  |  p99.9: {}", fmt_val(p50), fmt_val(p95), fmt_val(p99), fmt_val5(p999));
+    };
+
+    print_latency("Write Latency", &DiskIORunResult::write, color::kYellow);
+    print_latency("Read Latency", &DiskIORunResult::read, color::kCyan);
 }
 
 } // namespace ui

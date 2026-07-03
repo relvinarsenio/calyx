@@ -13,6 +13,7 @@
 #include "config.hpp"
 #include "file_descriptor.hpp"
 #include "random_engine.hpp"
+#include "tsc.hpp"
 #include "uring_engine.hpp"
 #include "utils.hpp"
 
@@ -47,9 +48,21 @@ using prng::Xoshiro256PlusPlus;
 [[nodiscard]] DiskIOMetrics make_disk_metrics(const PhaseRunStats& stats) {
     const auto runtime_sec = stats.elapsed.count();
 
+    static const double cycles_to_ns = tsc::calibrate();
+
+    const auto to_ms = [](auto duration) { return std::chrono::duration<double, std::milli>(duration).count(); };
+
     return DiskIOMetrics {
+        .histogram        = stats.histogram,
         .bw_bytes_per_sec = (runtime_sec > 0.0) ? (toDouble(stats.io_bytes) / runtime_sec) : 0.0,
         .cv               = stats.histogram.get_cv(),
+        .avg_latency_ms   = to_ms(stats.histogram.get_avg_duration(cycles_to_ns)),
+        .min_latency_ms   = to_ms(stats.histogram.get_min_duration(cycles_to_ns)),
+        .max_latency_ms   = to_ms(stats.histogram.get_max_duration(cycles_to_ns)),
+        .p50_latency_ms   = to_ms(stats.histogram.get_percentile_duration(50.0, cycles_to_ns)),
+        .p95_latency_ms   = to_ms(stats.histogram.get_percentile_duration(95.0, cycles_to_ns)),
+        .p99_latency_ms   = to_ms(stats.histogram.get_percentile_duration(99.0, cycles_to_ns)),
+        .p999_latency_ms  = to_ms(stats.histogram.get_percentile_duration(99.9, cycles_to_ns)),
     };
 }
 
