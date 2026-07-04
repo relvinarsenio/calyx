@@ -113,6 +113,20 @@ void UringFileRegistrar::unregister_file(io_uring* ring) noexcept {
     registered_handle_ = std::nullopt;
 }
 
+std::chrono::nanoseconds UringTimeoutController::calculate_smart_timeout_ns(
+    const metrics::LatencyHistogram& hist) noexcept {
+    using namespace std::chrono_literals;
+    constexpr auto kMinTimeoutNs = std::chrono::nanoseconds(10ms); ///< 10 ms minimum guard
+    constexpr auto kMaxTimeoutNs = std::chrono::nanoseconds(1s); ///< 1000 ms maximum guard
+    constexpr auto kGuardBuffer  = std::chrono::nanoseconds(50ms); ///< 50 ms buffer above P99.9
+
+    static const double cycles_to_ns = tsc::calibrate();
+    const metrics::LatencyAnalyzer analyzer { hist, cycles_to_ns };
+    const auto p99_9_ns = std::chrono::nanoseconds(toLong(analyzer.percentile(99.9).count()));
+
+    return std::clamp(p99_9_ns + kGuardBuffer, kMinTimeoutNs, kMaxTimeoutNs);
+}
+
 std::expected<void, UringError> UringTimeoutController::arm_timeout_timer(io_uring* ring) {
     timeout_ts_ = { .tv_sec = ::config::kDiskBenchmarkMaxSeconds, .tv_nsec = 0 };
 
@@ -132,7 +146,7 @@ std::expected<void, UringError> UringTimeoutController::arm_timeout_timer(io_uri
         });
 }
 
-void UringTimeoutController::drain_pending_timer(io_uring* ring) noexcept {
+void UringTimeoutController::drain_pending_timer(io_uring* ring, std::chrono::nanoseconds timeout) noexcept {
     if (!timer_armed_) { return; }
     scope_exit reset_timer { [this]() noexcept { timer_armed_ = false; } };
 
@@ -153,12 +167,11 @@ void UringTimeoutController::drain_pending_timer(io_uring* ring) noexcept {
     io_uring_cqe* cqe = nullptr;
     bool cancel_seen  = false;
     bool timer_seen   = false;
-    __kernel_timespec ts {};
-    ts.tv_sec  = 0;
-    ts.tv_nsec = kDrainTimeoutNs;
+    drain_ts_         = to_kernel_timespec(timeout);
 
     while (!(timer_seen && cancel_seen)) {
-        if (!posix::expect_success<posix::error_style::linux_internal>(io_uring_wait_cqe_timeout(ring, &cqe, &ts))) {
+        if (!posix::expect_success<posix::error_style::linux_internal>(
+                io_uring_wait_cqe_timeout(ring, &cqe, &drain_ts_))) {
             break;
         }
 
@@ -290,7 +303,9 @@ void UringIoSubmitter::prepare_io_sqe(UringEngine& engine, io_uring_sqe* sqe, co
 std::expected<void, UringError> UringCqeProcessor::wait_for_submission(
     UringEngine& engine, const IoContext& ctx, std::uint32_t wait_nr) {
     io_uring_cqe* cqe_ptr = nullptr;
-    auto& wait_ts         = engine.timeout_controller_.prepare_wait_timeout(config::kUringWaitTimeoutNs);
+
+    const auto timeout_ns = UringTimeoutController::calculate_smart_timeout_ns(engine.hist_);
+    auto& wait_ts         = engine.timeout_controller_.prepare_wait_timeout(timeout_ns);
 
     return posix::expect_success<posix::error_style::linux_internal>(
         io_uring_submit_and_wait_timeout(engine.ring_.get_ring(), &cqe_ptr, wait_nr, &wait_ts, nullptr))
@@ -498,7 +513,10 @@ std::expected<PhaseRunStats, UringError> UringEngine::submit_and_wait(const IoCo
      * next completion-processing pass.
      */
     scope_exit drain_timer { [this]() noexcept {
-        if (timeout_controller_.is_timer_armed()) { timeout_controller_.drain_pending_timer(ring_.get_ring()); }
+        if (timeout_controller_.is_timer_armed()) {
+            const auto timeout_ns = UringTimeoutController::calculate_smart_timeout_ns(hist_);
+            timeout_controller_.drain_pending_timer(ring_.get_ring(), timeout_ns);
+        }
     } };
 
     /**

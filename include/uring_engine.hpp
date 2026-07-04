@@ -351,26 +351,35 @@ public:
 
 class UringTimeoutController {
 public:
-    static constexpr std::uint64_t kTimerTag      = UINT64_MAX; ///< user_data sentinel for the timeout SQE.
-    static constexpr std::uint64_t kCancelTag     = UINT64_MAX - 1; ///< user_data sentinel for the cancel SQE.
-    static constexpr std::int64_t kDrainTimeoutNs = 134'217'728LL; ///< ~134 ms drain guard.
+    static constexpr std::uint64_t kTimerTag  = UINT64_MAX; ///< user_data sentinel for the timeout SQE.
+    static constexpr std::uint64_t kCancelTag = UINT64_MAX - 1; ///< user_data sentinel for the cancel SQE.
+
+    [[nodiscard]] static std::chrono::nanoseconds calculate_smart_timeout_ns(
+        const metrics::LatencyHistogram& hist) noexcept;
+
+    [[nodiscard]] static constexpr __kernel_timespec to_kernel_timespec(std::chrono::nanoseconds duration) noexcept {
+        const auto secs  = std::chrono::duration_cast<std::chrono::seconds>(duration);
+        const auto nsecs = duration - secs;
+        return { .tv_sec = secs.count(), .tv_nsec = nsecs.count() };
+    }
 
     [[nodiscard]] bool is_timer_armed() const noexcept { return timer_armed_; }
     void set_timer_armed(bool armed) noexcept { timer_armed_ = armed; }
 
     /** @brief Sets the per-wait timeout and returns a stable reference for the kernel API. */
-    [[nodiscard]] __kernel_timespec& prepare_wait_timeout(std::int64_t nsec) noexcept {
-        wait_ts_ = { .tv_sec = 0, .tv_nsec = nsec };
+    [[nodiscard]] __kernel_timespec& prepare_wait_timeout(std::chrono::nanoseconds duration) noexcept {
+        wait_ts_ = to_kernel_timespec(duration);
         return wait_ts_;
     }
 
     [[nodiscard]] std::expected<void, UringError> arm_timeout_timer(io_uring* ring);
-    void drain_pending_timer(io_uring* ring) noexcept;
+    void drain_pending_timer(io_uring* ring, std::chrono::nanoseconds timeout) noexcept;
 
 private:
-    bool timer_armed_ = false;
     __kernel_timespec timeout_ts_ {};
     __kernel_timespec wait_ts_ {};
+    __kernel_timespec drain_ts_ {};
+    bool timer_armed_ = false;
 };
 
 class UringEngine {
