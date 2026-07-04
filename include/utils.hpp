@@ -367,7 +367,7 @@ inline constexpr auto format_count = [](std::uint64_t count) -> std::string {
     const auto upper_bound_it = std::ranges::upper_bound(kPowersOfThousand, count);
     const std::size_t suffix_index
         = toSize(safe_sub(toSize(std::ranges::distance(kPowersOfThousand.begin(), upper_bound_it)), 1uz).value_or(0uz));
-    const double scaled_value        = toDouble(count) / toDouble(kPowersOfThousand[suffix_index]);
+    const double scaled_value = toDouble(count) / toDouble(kPowersOfThousand[suffix_index]);
 
     const auto state = format_impl::adjust_overflow(
         format_impl::format_state { scaled_value, suffix_index }, 1000.0, kSuffixes.size());

@@ -48,11 +48,12 @@ using prng::Xoshiro256PlusPlus;
 
 [[nodiscard]] DiskIOMetrics make_disk_metrics(const PhaseRunStats& stats) {
     const auto runtime_sec = stats.elapsed.count();
+    const metrics::LatencyAnalyzer analyzer { stats.histogram, DiskBenchmark::get_timer_calibration_ns() };
 
     return DiskIOMetrics {
         .histogram        = stats.histogram,
         .bw_bytes_per_sec = (runtime_sec > 0.0) ? (toDouble(stats.io_bytes) / runtime_sec) : 0.0,
-        .cv               = stats.histogram.get_cv(),
+        .cv               = analyzer.cv(),
     };
 }
 

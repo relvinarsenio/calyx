@@ -15,11 +15,14 @@
 #include <bit>
 #include <chrono>
 #include <cmath>
+#include <concepts>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <new>
 #include <ranges>
 #include <span>
+#include <type_traits>
 
 namespace metrics {
 
@@ -32,11 +35,10 @@ namespace metrics {
  * within a typical 32KB L1 Data Cache. This helps keep the structure cache-friendly to minimize
  * cache overhead during hot-path execution.
  */
-class alignas(std::hardware_destructive_interference_size) LatencyHistogram {
-    static constexpr std::uint32_t kBinsPerGroup     = 64;
-    static constexpr std::uint32_t kLog2BinsPerGroup = 6;
-    static constexpr std::uint32_t kGroups           = 38;
-
+class alignas(std::hardware_destructive_interference_size) LatencyHistogram final {
+    static constexpr std::uint32_t kBinsPerGroup          = 64;
+    static constexpr std::uint32_t kLog2BinsPerGroup      = 6;
+    static constexpr std::uint32_t kGroups                = 38;
     static constexpr std::uint64_t kMaxRepresentableValue = (1ULL << kGroups) - 1;
 
     static_assert(std::has_single_bit(kBinsPerGroup), "kBinsPerGroup must be a power of two");
@@ -55,10 +57,10 @@ class alignas(std::hardware_destructive_interference_size) LatencyHistogram {
      * Separated from the bucket array by a cache line boundary to reduce accidental
      * cache-line sharing when colocated instances are updated independently.
      */
-    alignas(std::hardware_destructive_interference_size) std::uint64_t count_ = 0;
-    std::uint64_t total_cycles_                                               = 0;
-    std::uint64_t min_cycles_ = std::numeric_limits<std::uint64_t>::max();
-    std::uint64_t max_cycles_ = 0;
+    alignas(std::hardware_destructive_interference_size) std::uint64_t count_ {};
+    std::uint64_t total_cycles_ {};
+    std::uint64_t min_cycles_ { std::numeric_limits<std::uint64_t>::max() };
+    std::uint64_t max_cycles_ {};
 
     /**
      * @brief Provides read-only multidimensional access to the internal bucket distribution.
@@ -81,38 +83,21 @@ class alignas(std::hardware_destructive_interference_size) LatencyHistogram {
         };
     }
 
-    /**
-     * @brief Safely converts CPU cycles to std::chrono::nanoseconds without signed overflow.
-     */
-    [[nodiscard]] static std::chrono::nanoseconds to_nanoseconds(double cycles, double cycles_to_ns) noexcept {
-        if (!std::isfinite(cycles_to_ns) || cycles_to_ns <= 0.0) [[unlikely]] { return std::chrono::nanoseconds { 0 }; }
-        const double ns         = cycles / cycles_to_ns;
-        constexpr double max_ns = toDouble(std::chrono::nanoseconds::max().count());
-        if (ns >= max_ns) [[unlikely]] { return std::chrono::nanoseconds::max(); }
-        return std::chrono::nanoseconds { static_cast<std::chrono::nanoseconds::rep>(ns) };
-    }
-
 public:
-    LatencyHistogram() = default;
+    LatencyHistogram() noexcept = default;
 
     /**
-     * @brief Accumulates data from another histogram into this instance.
+     * @brief Resets the histogram to its initial empty state.
      *
-     * Enables parallel benchmark results to be aggregated into a single global view.
-     * Uses C++23 zip views to ensure efficient, vectorized addition of buckets.
-     *
-     * @param other The histogram containing the samples to be merged.
+     * Allows reusing the same histogram instance across multiple benchmark runs
+     * without reallocation overhead.
      */
-    void merge(const LatencyHistogram& other) noexcept {
-        if (this == &other || other.count_ == 0) [[unlikely]] { return; }
-
-        for (auto&& [mine, theirs] : std::views::zip(buckets_, other.buckets_)) {
-            mine += theirs;
-        }
-        min_cycles_ = std::min(min_cycles_, other.min_cycles_);
-        max_cycles_ = std::max(max_cycles_, other.max_cycles_);
-        total_cycles_ += other.total_cycles_;
-        count_ += other.count_;
+    void reset() noexcept {
+        buckets_.fill(0);
+        count_        = 0;
+        total_cycles_ = 0;
+        min_cycles_   = std::numeric_limits<std::uint64_t>::max();
+        max_cycles_   = 0;
     }
 
     /**
@@ -125,8 +110,10 @@ public:
      * @param cycles The measured latency duration in CPU cycles.
      */
     void add(std::uint64_t cycles) noexcept {
-        /// Normalize 0 cycles to 1 to accommodate low-resolution timers (e.g. ARM CNTVCT_EL0).
-        /// Otherwise std::bit_width(0) - 1 will underflow.
+        /**
+         * @note Normalize 0 cycles to 1 to accommodate low-resolution timers (e.g. ARM CNTVCT_EL0).
+         *       Otherwise, std::bit_width(0) - 1 will underflow.
+         */
         cycles = std::max<std::uint64_t>(cycles, 1);
 
         min_cycles_ = std::min(min_cycles_, cycles);
@@ -134,7 +121,6 @@ public:
         total_cycles_ += cycles;
         count_++;
 
-        /// Saturate to the maximum representable range so msb and group always agree.
         const std::uint64_t val      = std::min<std::uint64_t>(cycles, kMaxRepresentableValue);
         const std::uint32_t msb      = toUInt(std::bit_width(val)) - 1;
         const std::uint32_t group    = msb;
@@ -170,7 +156,6 @@ public:
                 std::uint64_t cycles_sum;
             };
 
-            /// IILE to isolate complex batch calculation for coordinated omission.
             const auto batch = [missing, expected_interval_cycles]() -> BatchUpdate {
                 const std::uint64_t val      = std::min<std::uint64_t>(missing, kMaxRepresentableValue);
                 const std::uint32_t msb      = toUInt(std::bit_width(val)) - 1;
@@ -194,7 +179,7 @@ public:
             }();
 
             view()[batch.group, batch.sub_bin] += batch.count;
-            count_ += batch.count;
+            count_ = safe_add(count_, batch.count).value_or(std::numeric_limits<std::uint64_t>::max());
             total_cycles_ += batch.cycles_sum;
             min_cycles_ = std::min(min_cycles_, batch.last_val);
 
@@ -204,43 +189,126 @@ public:
     }
 
     /**
-     * @brief Retrieves the total number of samples recorded.
-     * @return Total sample count across all bins.
+     * @brief Accumulates data from another histogram into this instance.
+     *
+     * Enables parallel benchmark results to be aggregated into a single global view.
+     * Uses C++23 zip views to ensure efficient, vectorized addition of buckets.
+     *
+     * @param other The histogram containing the samples to be merged.
      */
-    [[nodiscard]] std::uint64_t get_count() const noexcept { return count_; }
+    void merge(const LatencyHistogram& other) noexcept {
+        if (this == &other || other.count_ == 0) [[unlikely]] { return; }
 
-    /**
-     * @brief Calculates the arithmetic mean latency.
-     * @param cycles_to_ns The multiplier to convert CPU cycles to nanoseconds.
-     * @return The average latency as a nanosecond duration.
-     */
-    [[nodiscard]] std::chrono::duration<double, std::nano> get_avg_duration(double cycles_to_ns) const noexcept {
-        if (count_ == 0 || !std::isfinite(cycles_to_ns) || cycles_to_ns <= 0.0) [[unlikely]] {
-            return std::chrono::duration<double, std::nano> { 0.0 };
+        for (auto&& [mine, theirs] : std::views::zip(buckets_, other.buckets_)) {
+            mine += theirs;
         }
-
-        const double avg_cycles = toDouble(total_cycles_) / toDouble(count_);
-        return std::chrono::duration<double, std::nano> { avg_cycles / cycles_to_ns };
+        min_cycles_ = std::min(min_cycles_, other.min_cycles_);
+        max_cycles_ = std::max(max_cycles_, other.max_cycles_);
+        total_cycles_ += other.total_cycles_;
+        count_ += other.count_;
     }
 
     /**
+     * @brief Retrieves the total number of samples recorded.
+     * @return Total sample count across all bins.
+     */
+    [[nodiscard]] std::uint64_t count() const noexcept { return count_; }
+
+    /** @brief Retrieves the minimum observed latency in cycles. */
+    [[nodiscard]] std::uint64_t min_cycles() const noexcept { return min_cycles_; }
+
+    /** @brief Retrieves the maximum observed latency in cycles. */
+    [[nodiscard]] std::uint64_t max_cycles() const noexcept { return max_cycles_; }
+
+    /** @brief Retrieves the total sum of cycles recorded (for mean calculation). */
+    [[nodiscard]] std::uint64_t total_cycles() const noexcept { return total_cycles_; }
+
+    /**
+     * @brief Visits all buckets containing at least one sample.
+     * @details Provides a clean Visitor Pattern to allow external analyzers to compute
+     * metrics without needing to know the internal multidimensional layout or bucketing math.
+     * @param func A callable accepting (std::uint64_t lower_bound, std::uint64_t step, std::uint64_t freq).
+     */
+    template <std::invocable<std::uint64_t, std::uint64_t, std::uint64_t> F>
+    constexpr void for_each_active_bucket(F&& func) const
+        noexcept(std::is_nothrow_invocable_v<F&, std::uint64_t, std::uint64_t, std::uint64_t>) {
+
+        constexpr bool kCanShortCircuit
+            = std::convertible_to<std::invoke_result_t<F&, std::uint64_t, std::uint64_t, std::uint64_t>, bool>;
+
+        for (auto [group, sub_bin] :
+            std::views::cartesian_product(std::views::iota(0u, kGroups), std::views::iota(0u, kBinsPerGroup))) {
+
+            const std::uint64_t freq = view()[group, sub_bin];
+            if (freq == 0) { continue; }
+
+            const std::uint64_t base        = 1ULL << group;
+            const std::uint64_t step        = (group >= kLog2BinsPerGroup) ? (base >> kLog2BinsPerGroup) : 1;
+            const std::uint64_t lower_bound = base + (toULong(sub_bin) * step);
+
+            if constexpr (kCanShortCircuit) {
+                if (!std::invoke(func, lower_bound, step, freq)) { break; }
+            } else {
+                std::invoke(func, lower_bound, step, freq);
+            }
+        }
+    }
+};
+
+/**
+ * @brief Analyzes latency histogram data and converts cycles to temporal metrics.
+ *
+ * Provides a clean boundary (Single Responsibility Principle) between data storage (LatencyHistogram)
+ * and statistical analysis. Extracts metric computation out of the hot-path storage class.
+ */
+class LatencyAnalyzer final {
+    const LatencyHistogram& hist_;
+    const double cycles_to_ns_;
+
+    /**
+     * @brief Safely converts CPU cycles to std::chrono::nanoseconds without signed overflow.
+     */
+    [[nodiscard]] static std::chrono::nanoseconds to_nanoseconds(double cycles, double cycles_to_ns) noexcept {
+        if (!std::isfinite(cycles_to_ns) || cycles_to_ns <= 0.0) [[unlikely]] { return std::chrono::nanoseconds { 0 }; }
+        const double ns         = cycles / cycles_to_ns;
+        constexpr double max_ns = toDouble(std::chrono::nanoseconds::max().count());
+        if (ns >= max_ns) [[unlikely]] { return std::chrono::nanoseconds::max(); }
+        return std::chrono::nanoseconds { static_cast<std::chrono::nanoseconds::rep>(ns) };
+    }
+
+public:
+    LatencyAnalyzer(const LatencyHistogram& hist, double cycles_to_ns) noexcept
+        : hist_(hist)
+        , cycles_to_ns_(cycles_to_ns) {}
+
+    /**
      * @brief Retrieves the minimum observed latency.
-     * @param cycles_to_ns TSC multiplier for time conversion.
      * @return The shortest duration recorded.
      */
-    [[nodiscard]] std::chrono::nanoseconds get_min_duration(double cycles_to_ns) const noexcept {
-        if (count_ == 0) { return std::chrono::nanoseconds { 0 }; }
-        return to_nanoseconds(toDouble(min_cycles_), cycles_to_ns);
+    [[nodiscard]] std::chrono::nanoseconds min() const noexcept {
+        if (hist_.count() == 0) { return std::chrono::nanoseconds { 0 }; }
+        return to_nanoseconds(toDouble(hist_.min_cycles()), cycles_to_ns_);
     }
 
     /**
      * @brief Retrieves the maximum observed latency.
-     * @param cycles_to_ns TSC multiplier for time conversion.
      * @return The longest duration recorded.
      */
-    [[nodiscard]] std::chrono::nanoseconds get_max_duration(double cycles_to_ns) const noexcept {
-        if (count_ == 0) { return std::chrono::nanoseconds { 0 }; }
-        return to_nanoseconds(toDouble(max_cycles_), cycles_to_ns);
+    [[nodiscard]] std::chrono::nanoseconds max() const noexcept {
+        if (hist_.count() == 0) { return std::chrono::nanoseconds { 0 }; }
+        return to_nanoseconds(toDouble(hist_.max_cycles()), cycles_to_ns_);
+    }
+
+    /**
+     * @brief Calculates the arithmetic mean latency.
+     * @return The average latency as a nanosecond duration.
+     */
+    [[nodiscard]] std::chrono::duration<double, std::nano> avg() const noexcept {
+        if (hist_.count() == 0 || !std::isfinite(cycles_to_ns_) || cycles_to_ns_ <= 0.0) [[unlikely]] {
+            return std::chrono::duration<double, std::nano> { 0.0 };
+        }
+        const double avg_cycles = toDouble(hist_.total_cycles()) / toDouble(hist_.count());
+        return std::chrono::duration<double, std::nano> { avg_cycles / cycles_to_ns_ };
     }
 
     /**
@@ -250,47 +318,39 @@ public:
      * estimation of the latency distribution. This approach minimizes quantization errors
      * inherent in discrete bucketing.
      *
-     * @param percentile The target percentile (0.0 - 100.0).
-     * @param cycles_to_ns TSC multiplier for time conversion.
+     * @param target_percentile The target percentile (0.0 - 100.0).
      * @return The estimated latency duration for the requested percentile.
      */
-    [[nodiscard]] std::chrono::nanoseconds get_percentile_duration(
-        double percentile, double cycles_to_ns) const noexcept {
-        if (count_ == 0) { return std::chrono::nanoseconds { 0 }; }
+    [[nodiscard]] std::chrono::nanoseconds percentile(double target_percentile) const noexcept {
+        if (hist_.count() == 0) { return std::chrono::nanoseconds { 0 }; }
 
-        const double requested = std::clamp(percentile, 0.0, 100.0);
-        if (requested <= 0.0) { return get_min_duration(cycles_to_ns); }
-        if (requested >= 100.0) { return get_max_duration(cycles_to_ns); }
+        const double requested = std::clamp(target_percentile, 0.0, 100.0);
+        if (requested <= 0.0) { return min(); }
+        if (requested >= 100.0) { return max(); }
 
-        const double target = (requested / 100.0) * toDouble(count_);
+        const auto target = (requested / 100.0) * toDouble(hist_.count());
 
-        /// IILE for complex initialization of the percentile duration (Assignment Mandate).
-        const auto duration = [this, target, cycles_to_ns]() -> std::chrono::nanoseconds {
-            std::uint64_t cumulative = 0;
-            for (auto [group, sub_bin] :
-                std::views::cartesian_product(std::views::iota(0u, kGroups), std::views::iota(0u, kBinsPerGroup))) {
-                const std::uint64_t freq = view()[group, sub_bin];
-                if (freq == 0) { continue; }
+        std::uint64_t cumulative {};
+        auto result = max();
 
-                const std::uint64_t prev_cumulative = cumulative;
+        hist_.for_each_active_bucket([target, cycles_to_ns = this->cycles_to_ns_, &cumulative, &result](
+                                         const auto lower_bound, const auto step, const auto freq) -> bool {
+            if (toDouble(cumulative + freq) < target) {
                 cumulative += freq;
-
-                if (toDouble(cumulative) < target) { continue; }
-
-                const std::uint64_t base  = 1ULL << group;
-                const std::uint64_t step  = (group >= kLog2BinsPerGroup) ? (base >> kLog2BinsPerGroup) : 1;
-                const std::uint64_t lower = base + (toULong(sub_bin) * step);
-
-                if (step == 1) [[likely]] { return to_nanoseconds(toDouble(lower), cycles_to_ns); }
-
-                const double fraction     = (target - toDouble(prev_cumulative)) / toDouble(freq);
-                const double interpolated = toDouble(lower) + (fraction * toDouble(step - 1));
-                return to_nanoseconds(interpolated, cycles_to_ns);
+                return true; // continue iteration
             }
-            return get_max_duration(cycles_to_ns);
-        }();
 
-        return duration;
+            if (step == 1) [[likely]] {
+                result = to_nanoseconds(toDouble(lower_bound), cycles_to_ns);
+            } else {
+                const auto fraction     = (target - toDouble(cumulative)) / toDouble(freq);
+                const auto interpolated = toDouble(lower_bound) + (fraction * toDouble(step - 1));
+                result                  = to_nanoseconds(interpolated, cycles_to_ns);
+            }
+            return false; // break iteration
+        });
+
+        return result;
     }
 
     /**
@@ -304,52 +364,31 @@ public:
      *
      * @return CV as a non-negative double. Returns 0.0 when count < 2.
      */
-    [[nodiscard]] double get_cv() const noexcept {
-        if (count_ < 2) { return 0.0; }
+    [[nodiscard]] double cv() const noexcept {
+        if (hist_.count() < 2) { return 0.0; }
 
-        const double sample_count = toDouble(count_);
+        const auto sample_count = toDouble(hist_.count());
 
-        /// Pass 1: compute mean from bucket midpoints (consistent grouped-data mean).
-        double weighted_sum = 0.0;
-        for (auto [group, sub_bin] :
-            std::views::cartesian_product(std::views::iota(0u, kGroups), std::views::iota(0u, kBinsPerGroup))) {
-            const std::uint64_t freq = view()[group, sub_bin];
-            if (freq == 0) { continue; }
-
-            const std::uint64_t base = 1ULL << group;
-            const std::uint64_t step = (group >= kLog2BinsPerGroup) ? (base >> kLog2BinsPerGroup) : 1;
-            const double midpoint    = toDouble(base + toULong(sub_bin) * step) + toDouble(step - 1) * 0.5;
+        /** @note Pass 1: compute mean from bucket midpoints (consistent grouped-data mean). */
+        double weighted_sum {};
+        hist_.for_each_active_bucket([&weighted_sum](const auto lower_bound, const auto step, const auto freq) {
+            const auto midpoint = toDouble(lower_bound) + toDouble(step - 1) * 0.5;
             weighted_sum += toDouble(freq) * midpoint;
-        }
+        });
 
-        const double mean = weighted_sum / sample_count;
+        const auto mean = weighted_sum / sample_count;
         if (mean <= 0.0) [[unlikely]] { return 0.0; }
 
-        /// Pass 2: compute variance using midpoints to determine the stability of measured latencies.
-        double sum_sq_diff = 0.0;
-        for (auto [group, sub_bin] :
-            std::views::cartesian_product(std::views::iota(0u, kGroups), std::views::iota(0u, kBinsPerGroup))) {
-            const std::uint64_t freq = view()[group, sub_bin];
-            if (freq == 0) { continue; }
-
-            const std::uint64_t base = 1ULL << group;
-            const std::uint64_t step = (group >= kLog2BinsPerGroup) ? (base >> kLog2BinsPerGroup) : 1;
-            const double midpoint    = toDouble(base + toULong(sub_bin) * step) + toDouble(step - 1) * 0.5;
-            const double diff        = midpoint - mean;
+        /** @note Pass 2: compute variance using midpoints to determine the stability of measured latencies. */
+        double sum_sq_diff {};
+        hist_.for_each_active_bucket([mean, &sum_sq_diff](const auto lower_bound, const auto step, const auto freq) {
+            const auto midpoint = toDouble(lower_bound) + toDouble(step - 1) * 0.5;
+            const auto diff     = midpoint - mean;
             sum_sq_diff += toDouble(freq) * diff * diff;
-        }
+        });
 
-        const double stddev = std::sqrt(sum_sq_diff / sample_count);
+        const auto stddev = std::sqrt(sum_sq_diff / sample_count);
         return stddev / mean;
-    }
-
-    /**
-     * @brief Convenience method for the 99th percentile latency.
-     * @param cycles_to_ns TSC multiplier for time conversion.
-     * @return The P99 latency duration.
-     */
-    [[nodiscard]] std::chrono::nanoseconds get_p99_duration(double cycles_to_ns) const noexcept {
-        return get_percentile_duration(99.0, cycles_to_ns);
     }
 };
 

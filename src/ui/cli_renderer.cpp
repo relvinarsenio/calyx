@@ -208,21 +208,21 @@ void print_latency_histogram(
     std::string_view title, const metrics::LatencyHistogram& hist, double cycles_to_ns, std::string_view phase_color) {
 
     const auto fmt_latency = [phase_color](const auto ns) {
-        const double ms = std::chrono::duration<double, std::milli>(ns).count();
+        const double ms         = std::chrono::duration<double, std::milli>(ns).count();
         const double rounded_ms = std::round(ms * 100.0) / 100.0;
         return color::colorize(std::format("{:>7} ms", std::format("{}", rounded_ms)), phase_color);
     };
 
+    const metrics::LatencyAnalyzer analyzer { hist, cycles_to_ns };
+
     std::println("");
     std::println(" [ {} ]", color::colorize(title, phase_color));
-    std::println("   \u2022 Summary    :  Avg: {} \u2502 Min: {} \u2502 Max: {}",
-        fmt_latency(hist.get_avg_duration(cycles_to_ns)), fmt_latency(hist.get_min_duration(cycles_to_ns)),
-        fmt_latency(hist.get_max_duration(cycles_to_ns)));
+    std::println("   \u2022 Summary    :  Avg: {} \u2502 Min: {} \u2502 Max: {}", fmt_latency(analyzer.avg()),
+        fmt_latency(analyzer.min()), fmt_latency(analyzer.max()));
 
     std::println("   \u2022 Percentile :  p50: {} \u2502 p95: {} \u2502 p99: {} \u2502 p99.9: {}",
-        fmt_latency(hist.get_percentile_duration(50.0, cycles_to_ns)),
-        fmt_latency(hist.get_percentile_duration(95.0, cycles_to_ns)), fmt_latency(hist.get_p99_duration(cycles_to_ns)),
-        fmt_latency(hist.get_percentile_duration(99.9, cycles_to_ns)));
+        fmt_latency(analyzer.percentile(50.0)), fmt_latency(analyzer.percentile(95.0)),
+        fmt_latency(analyzer.percentile(99.0)), fmt_latency(analyzer.percentile(99.9)));
 }
 
 } // namespace
