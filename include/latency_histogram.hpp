@@ -205,7 +205,7 @@ public:
         min_cycles_ = std::min(min_cycles_, other.min_cycles_);
         max_cycles_ = std::max(max_cycles_, other.max_cycles_);
         total_cycles_ += other.total_cycles_;
-        count_ += other.count_;
+        count_ = safe_add(count_, other.count_).value_or(std::numeric_limits<std::uint64_t>::max());
     }
 
     /**
