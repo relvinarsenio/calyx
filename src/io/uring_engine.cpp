@@ -116,15 +116,19 @@ void UringFileRegistrar::unregister_file(io_uring* ring) noexcept {
 std::chrono::nanoseconds UringTimeoutController::calculate_smart_timeout_ns(
     const metrics::LatencyHistogram& hist) noexcept {
     using namespace std::chrono_literals;
-    constexpr auto kMinTimeoutNs = std::chrono::nanoseconds(10ms); ///< 10 ms minimum guard
-    constexpr auto kMaxTimeoutNs = std::chrono::nanoseconds(1s); ///< 1000 ms maximum guard
-    constexpr auto kGuardBuffer  = std::chrono::nanoseconds(50ms); ///< 50 ms buffer above P99.9
+    constexpr auto kMinTimeoutNs          = std::chrono::nanoseconds(10ms);
+    constexpr auto kMaxTimeoutNs          = std::chrono::nanoseconds(3s);
+    constexpr auto kOsTimerResolutionPad  = std::chrono::nanoseconds(1ms);
+    constexpr auto kJitterToleranceFactor = 4z; ///< Jacobson/Karels variance multiplier (RFC 6298) to absorb I/O jitter
 
     static const double cycles_to_ns = tsc::calibrate();
     const metrics::LatencyAnalyzer analyzer { hist, cycles_to_ns };
     const auto p99_9_ns = std::chrono::nanoseconds(toLong(analyzer.percentile(99.9).count()));
 
-    return std::clamp(p99_9_ns + kGuardBuffer, kMinTimeoutNs, kMaxTimeoutNs);
+    const auto jitter_margin  = p99_9_ns * kJitterToleranceFactor;
+    const auto target_timeout = jitter_margin + kOsTimerResolutionPad;
+
+    return std::clamp(target_timeout, kMinTimeoutNs, kMaxTimeoutNs);
 }
 
 std::expected<void, UringError> UringTimeoutController::arm_timeout_timer(io_uring* ring) {
