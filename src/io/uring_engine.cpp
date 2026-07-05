@@ -359,6 +359,7 @@ template <IsIoContext Context> std::expected<void, UringError> SubmissionQueue::
 
 template <IsIoContext Context> IoPath SubmissionQueue::determine_io_path(std::uint16_t idx) const noexcept {
     constexpr bool is_write = std::remove_cvref_t<Context>::is_write_op;
+    if (tracker_.state().downgrade_to_vector) { return IoPath::Vector; }
     if constexpr (is_write) { return write_path_; }
     if (read_path_ != IoPath::Fixed) { return read_path_; }
     return (toSize(idx) < read_buffers_registered_) ? IoPath::Fixed : IoPath::Plain;
@@ -489,6 +490,8 @@ std::expected<void, UringError> CompletionQueue::handle_completion(const io_urin
         return {};
     }
 
+    if (tag == UringTimeoutController::kCancelTag) { return {}; }
+
     const auto idx_res = tracker_.resolve_cqe_slot(tag);
     if (!idx_res) { return std::unexpected(idx_res.error()); }
     const std::uint16_t idx = *idx_res;
@@ -501,6 +504,7 @@ std::expected<void, UringError> CompletionQueue::handle_completion(const io_urin
         } else {
             read_path_ = IoPath::Vector;
         }
+        tracker_.state().downgrade_to_vector = true;
         return tracker_.queue_retry_slot(idx);
     }
 
@@ -677,7 +681,11 @@ template <IsIoContext Context> std::expected<PhaseRunStats, UringError> UringEve
                 return std::unexpected(wait.error());
             }
         } else {
-            io_uring_submit(ring_.get_ring());
+            if (const auto res
+                = posix::expect_success<posix::error_style::linux_internal>(io_uring_submit(ring_.get_ring()));
+                !res) {
+                return std::unexpected(UringError { posix::SysCallError { res.error(), "io_uring_submit" } });
+            }
         }
 
         const auto proc_res = cq_.process_completions(ctx);
@@ -711,7 +719,7 @@ UringEngine::UringEngine(UringRing ring)
     read_path_        = probed.read_path;
 }
 
-UringEngine::UringEngine(UringEngine&& other) noexcept
+UringEngine::UringEngine(UringEngine&& other)
     : ring_(std::move(other.ring_))
     , file_registrar_(std::move(other.file_registrar_))
     , timeout_controller_(std::move(other.timeout_controller_))
@@ -725,7 +733,7 @@ UringEngine::UringEngine(UringEngine&& other) noexcept
     other.read_buffers_registered_ = 0;
 }
 
-UringEngine& UringEngine::operator=(UringEngine&& other) noexcept {
+UringEngine& UringEngine::operator=(UringEngine&& other) {
     if (this != &other) {
         ring_               = std::move(other.ring_);
         file_registrar_     = std::move(other.file_registrar_);

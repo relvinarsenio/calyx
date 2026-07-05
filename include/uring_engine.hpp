@@ -418,6 +418,7 @@ struct IoTrackerState {
     std::uint16_t free_count      = 0;
     std::uint16_t delta_count     = 0;
     bool interrupt                = false;
+    bool downgrade_to_vector      = false;
 };
 
 class IoTracker {
@@ -548,8 +549,8 @@ public:
     UringEngine(const UringEngine&)            = delete;
     UringEngine& operator=(const UringEngine&) = delete;
 
-    UringEngine(UringEngine&& other) noexcept;
-    UringEngine& operator=(UringEngine&& other) noexcept;
+    UringEngine(UringEngine&& other);
+    UringEngine& operator=(UringEngine&& other);
 
     ~UringEngine();
 
