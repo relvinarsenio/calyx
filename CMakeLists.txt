@@ -124,8 +124,6 @@ endif()
 # =============================================================================
 include(StaticDeps)
 
-option(USE_IO_URING "Enable io_uring for disk benchmark" ON)
-
 # libcurl_static implicitly inherits Full LTO from global CMake settings
 # =============================================================================
 # 3. Compiler Configuration (Linking)
@@ -166,12 +164,12 @@ endif()
 # =============================================================================
 # 5. Embedded Certificate Generation
 # =============================================================================
-set(CACERT_HASH "SHA256=f1407d974c5ed87d544bd931a278232e13925177e239fca370619aba63c757b4")
+set(CACERT_HASH "SHA256=86a1f3366afac7c6f8ae9f3c779ac221129328c43f0ab2b8817eb2f362a5025c")
 
 message(STATUS "📥 Downloading CA Certificate bundle...")
 
 file(DOWNLOAD 
-    "https://curl.se/ca/cacert-2025-12-02.pem" 
+    "https://curl.se/ca/cacert-2026-05-14.pem" 
     "${CMAKE_BINARY_DIR}/cacert.pem"
     EXPECTED_HASH ${CACERT_HASH}
     TLS_VERIFY ON
@@ -258,20 +256,17 @@ target_link_libraries(calyx
     Threads::Threads
 )
 
-if(USE_IO_URING)
-    find_path(LIBURING_INCLUDE_DIR liburing.h)
-    set(_OLD_SUFFIXES ${CMAKE_FIND_LIBRARY_SUFFIXES})
-    set(CMAKE_FIND_LIBRARY_SUFFIXES ".a" ".so")
-    find_library(LIBURING_LIBRARY uring)
-    set(CMAKE_FIND_LIBRARY_SUFFIXES ${_OLD_SUFFIXES})
-    if(LIBURING_INCLUDE_DIR AND LIBURING_LIBRARY)
-        message(STATUS "🌀 io_uring enabled")
-        target_compile_definitions(calyx PRIVATE USE_IO_URING=1)
-        target_include_directories(calyx PRIVATE ${LIBURING_INCLUDE_DIR})
-        target_link_libraries(calyx PRIVATE ${LIBURING_LIBRARY})
-    else()
-        message(FATAL_ERROR "❌ liburing not found! Calyx requires io_uring for high-performance disk benchmarking. Please install liburing or use the provided build-static.sh toolchain.")
-    endif()
+find_path(LIBURING_INCLUDE_DIR liburing.h)
+set(_OLD_SUFFIXES ${CMAKE_FIND_LIBRARY_SUFFIXES})
+set(CMAKE_FIND_LIBRARY_SUFFIXES ".a" ".so")
+find_library(LIBURING_LIBRARY uring)
+set(CMAKE_FIND_LIBRARY_SUFFIXES ${_OLD_SUFFIXES})
+if(LIBURING_INCLUDE_DIR AND LIBURING_LIBRARY)
+    message(STATUS "🌀 liburing found")
+    target_include_directories(calyx PRIVATE ${LIBURING_INCLUDE_DIR})
+    target_link_libraries(calyx PRIVATE ${LIBURING_LIBRARY})
+else()
+    message(FATAL_ERROR "❌ liburing not found! Calyx requires io_uring for high-performance disk benchmarking. Please install liburing-dev or use the provided build-static.sh toolchain.")
 endif()
 
 if(USE_LIBCXX AND STL_STATIC_LIBS)

@@ -30,10 +30,14 @@
 #include <variant>
 #include <vector>
 
-#ifdef USE_IO_URING
+#if !defined(__linux__)
+#error "Calyx requires a Linux operating system for native io_uring support."
+#endif
+
+#if __has_include(<liburing.h>)
 #include <liburing.h>
 #else
-#error "Calyx requires Linux-native io_uring. Please install liburing or use the build-static.sh toolchain."
+#error "Calyx requires liburing. Please install liburing-dev or use the build-static.sh toolchain."
 #endif
 
 namespace uring {
