@@ -406,7 +406,11 @@ std::expected<void, std::string> run_disk_benchmarks() {
     disk_runs.reserve(config::kDiskIoRuns);
 
     const std::uint64_t total_bytes = safe_mul(toULong(config::kDiskTestSizeMb), 1024ULL * 1024ULL).value_or(0ULL);
-    std::println("Running I/O Test ({} File)...", format_bytes(total_bytes));
+    const auto bs_str               = format_bytes(config::kIoWriteBlockSize)
+        | std::views::filter([](char c) { return c != ' ' && c != 'B'; }) | std::ranges::to<std::string>();
+
+    std::println(
+        "Running I/O Test ({} File, Seq {} Q{}T1)...", format_bytes(total_bytes), bs_str, config::kIoWriteQueueDepth);
     std::println(" [ Throughput ]");
 
     scope_exit flush_results { [&disk_runs] {
