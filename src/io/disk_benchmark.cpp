@@ -257,7 +257,14 @@ struct IoParams {
      * IsolationError::context must be a static literal (see affinity.hpp).
      */
     try {
-        engine.emplace(max_queue_depth, target_cpu);
+        auto engine_res = UringEngine::create(max_queue_depth, target_cpu);
+        if (!engine_res) {
+            return std::unexpected(affinity::IsolationError {
+                .ec      = engine_res.error(),
+                .context = "UringEngine::create",
+            });
+        }
+        engine = std::move(engine_res).value();
     } catch (const std::bad_alloc&) {
         return std::unexpected(affinity::IsolationError {
             .ec      = std::make_error_code(std::errc::not_enough_memory),
@@ -272,13 +279,6 @@ struct IoParams {
         return std::unexpected(affinity::IsolationError {
             .ec      = std::make_error_code(std::errc::state_not_recoverable),
             .context = "UringEngine construction",
-        });
-    }
-
-    if (!engine->is_valid()) {
-        return std::unexpected(affinity::IsolationError {
-            .ec      = engine->get_error(),
-            .context = "io_uring_queue_init failed",
         });
     }
 
@@ -326,22 +326,25 @@ struct IoParams {
     }
 
     const std::string label_write = std::format("{} Write", params.label);
-    const auto ctx                = IoContext {
+    const auto ctx                = uring::WriteContext { {
+                       .buffers      = params.write_buffer,
                        .fd           = wf.descriptor(),
-                       .write_buffer = params.write_buffer,
-                       .read_buffers = {},
-                       .stop         = params.stop,
-                       .progress_cb  = params.progress_cb,
-                       .interrupt_cb = params.interrupt_cb,
-                       .total_blocks = params.total_bytes / params.write_block_size,
-                       .block_size   = params.write_block_size,
-                       .mem_stride   = params.write_mem_stride,
-                       .total_bytes  = params.total_bytes,
-                       .label        = label_write,
-                       .queue_depth  = params.write_queue_depth,
-    };
+                       .layout       = {
+                           .total_blocks = params.total_bytes / params.write_block_size,
+                           .block_size   = params.write_block_size,
+                           .mem_stride   = params.write_mem_stride,
+                           .total_bytes  = params.total_bytes,
+                           .queue_depth  = params.write_queue_depth,
+                       },
+                       .observer     = {
+                           .label        = label_write,
+                           .stop         = params.stop,
+                           .progress_cb  = params.progress_cb,
+                           .interrupt_cb = params.interrupt_cb,
+                       }
+    } };
 
-    return engine.submit_and_wait(ctx, true)
+    return engine.execute_write(ctx)
         .transform_error(
             [](const uring::UringError& err) { return BenchmarkError { BenchmarkError::Phase::WritePhase, err }; })
         .and_then([&wf](const PhaseRunStats& io_result) -> std::expected<PhaseRunStats, BenchmarkError> {
@@ -397,22 +400,25 @@ struct IoParams {
 [[nodiscard]] std::expected<PhaseRunStats, BenchmarkError> run_read_operations(
     IoFile rf, UringEngine& engine, const IoParams& params) {
     const std::string label_read = std::format("{} Read", params.label);
-    const auto ctx               = IoContext {
+    const auto ctx               = uring::ReadContext { {
+                      .buffers      = params.read_buffers,
                       .fd           = rf.descriptor(),
-                      .write_buffer = {},
-                      .read_buffers = params.read_buffers,
-                      .stop         = params.stop,
-                      .progress_cb  = params.progress_cb,
-                      .interrupt_cb = params.interrupt_cb,
-                      .total_blocks = params.total_bytes / params.read_block_size,
-                      .block_size   = params.read_block_size,
-                      .mem_stride   = params.read_mem_stride,
-                      .total_bytes  = params.total_bytes,
-                      .label        = label_read,
-                      .queue_depth  = params.read_queue_depth,
-    };
+                      .layout       = {
+                          .total_blocks = params.total_bytes / params.read_block_size,
+                          .block_size   = params.read_block_size,
+                          .mem_stride   = params.read_mem_stride,
+                          .total_bytes  = params.total_bytes,
+                          .queue_depth  = params.read_queue_depth,
+                      },
+                      .observer     = {
+                          .label        = label_read,
+                          .stop         = params.stop,
+                          .progress_cb  = params.progress_cb,
+                          .interrupt_cb = params.interrupt_cb,
+                      }
+    } };
 
-    return engine.submit_and_wait(ctx, false)
+    return engine.execute_read(ctx)
         .transform_error(
             [](const uring::UringError& err) { return BenchmarkError { BenchmarkError::Phase::ReadPhase, err }; })
         .transform([](const PhaseRunStats& io_result) { return io_result; });

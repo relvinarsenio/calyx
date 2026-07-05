@@ -20,7 +20,7 @@ namespace uring {
         err);
 }
 
-std::expected<void, std::error_code> UringRing::initialize_ring(
+std::expected<UringRing, std::error_code> UringRing::create(
     std::uint16_t queue_depth, std::optional<std::int32_t> sq_thread_cpu) noexcept {
     constexpr std::uint32_t kCoop      = IORING_SETUP_COOP_TASKRUN | IORING_SETUP_TASKRUN_FLAG;
     constexpr std::uint32_t kBase      = kCoop | IORING_SETUP_SINGLE_ISSUER;
@@ -36,54 +36,75 @@ std::expected<void, std::error_code> UringRing::initialize_ring(
     constexpr auto kFlagSets = std::to_array<std::uint32_t>(
         { kModern, kNoSqArray, kCoop | IORING_SETUP_SQPOLL, IORING_SETUP_SQPOLL, kBase, kCoop, 0u });
 
+    io_uring ring {};
     std::int32_t last_ret = -1;
-    const auto it
-        = std::ranges::find_if(kFlagSets, [this, queue_depth, sq_thread_cpu, &last_ret](std::uint32_t flags) noexcept {
-              struct io_uring_params params {};
-              params.flags = flags;
 
-              if (sq_thread_cpu.has_value() && (flags & IORING_SETUP_SQPOLL) != 0u) {
-                  params.flags |= IORING_SETUP_SQ_AFF;
-                  params.sq_thread_cpu = toUInt(*sq_thread_cpu);
-              }
+    for (const auto flags : kFlagSets) {
+        struct io_uring_params params {};
+        params.flags = flags;
 
-              last_ret = io_uring_queue_init_params(queue_depth, &ring_, &params);
-              return last_ret == 0;
-          });
+        if (sq_thread_cpu.has_value() && (flags & IORING_SETUP_SQPOLL) != 0u) {
+            params.flags |= IORING_SETUP_SQ_AFF;
+            params.sq_thread_cpu = toUInt(*sq_thread_cpu);
+        }
 
-    return (it != kFlagSets.end()) ? std::expected<void, std::error_code> {}
-                                   : posix::expect_success<posix::error_style::linux_internal>(last_ret);
+        last_ret = io_uring_queue_init_params(queue_depth, &ring, &params);
+        if (last_ret == 0) { break; }
+    }
+
+    if (last_ret != 0) { return std::unexpected(posix::make_error(last_ret)); }
+
+    const bool registered
+        = posix::expect_success<posix::error_style::linux_internal>(io_uring_register_ring_fd(&ring)).has_value();
+
+    return UringRing { ring, registered };
 }
 
-UringRing::UringRing(std::uint16_t queue_depth, std::optional<std::int32_t> sq_thread_cpu) {
-    const auto init_result = initialize_ring(queue_depth, sq_thread_cpu);
+UringRing::UringRing(io_uring ring, bool registered) noexcept
+    : ring_(ring)
+    , ring_fd_registered_(registered) {}
 
-    init_       = init_result.has_value();
-    init_error_ = init_result.error_or(std::error_code {});
-
-    if (init_) {
-        if (posix::expect_success<posix::error_style::linux_internal>(io_uring_register_ring_fd(&ring_))) {
-            ring_fd_registered_ = true;
-        }
-    }
+UringRing::UringRing() noexcept {
+    ring_.ring_fd = -1;
 }
 
 UringRing::~UringRing() {
-    if (init_) {
-        if (ring_fd_registered_) { io_uring_unregister_ring_fd(&ring_); }
-        io_uring_queue_exit(&ring_);
-    }
+    if (ring_fd_registered_) { io_uring_unregister_ring_fd(&ring_); }
+    if (ring_.ring_fd >= 0) { io_uring_queue_exit(&ring_); }
+}
+
+UringRing::UringRing(UringRing&& other) noexcept
+    : ring_(other.ring_)
+    , ring_fd_registered_(std::exchange(other.ring_fd_registered_, false)) {
+    other.ring_.ring_fd = -1;
+}
+
+UringRing& UringRing::operator=(UringRing&& other) noexcept {
+    if (this == &other) [[unlikely]] { return *this; }
+
+    if (ring_fd_registered_) { io_uring_unregister_ring_fd(&ring_); }
+    if (ring_.ring_fd >= 0) { io_uring_queue_exit(&ring_); }
+
+    ring_               = other.ring_;
+    ring_fd_registered_ = std::exchange(other.ring_fd_registered_, false);
+    other.ring_.ring_fd = -1;
+
+    return *this;
 }
 
 ProbedIoPaths UringProber::probe_io_paths(io_uring* ring) noexcept {
     struct io_uring_probe* probe = io_uring_get_probe_ring(ring);
-    if (probe == nullptr) {
-        ///< Probe unsupported (kernel < 5.6); default to Vector as a safe fallback
-        ///< for pre-5.6 kernels (READV/WRITEV exist since 5.1).
+    scope_exit cleanup_probe { [probe]() noexcept {
+        if (probe) { io_uring_free_probe(probe); }
+    } };
+
+    if (!probe) {
+        /**
+         * @brief Probe unsupported (kernel < 5.6).
+         * Default to Vector as a safe fallback for pre-5.6 kernels, as READV/WRITEV exist since 5.1.
+         */
         return { IoPath::Vector, IoPath::Vector };
     }
-
-    scope_exit free_probe { [probe]() noexcept { io_uring_free_probe(probe); } };
 
     IoPath write_path = IoPath::Plain;
     IoPath read_path  = IoPath::Plain;
@@ -113,6 +134,13 @@ void UringFileRegistrar::unregister_file(io_uring* ring) noexcept {
     registered_handle_ = std::nullopt;
 }
 
+/**
+ * @brief Dynamic timeout derivation.
+ *
+ * Calculate an adaptive wait timeout based on historical latency metrics (p99) to
+ * avoid indefinite blocking while remaining responsive to variable I/O speeds.
+ * Includes a generous multiplier to absorb jitter and prevent spurious ETIME wakeups.
+ */
 std::chrono::nanoseconds UringTimeoutController::calculate_smart_timeout_ns(
     const metrics::LatencyHistogram& hist) noexcept {
     using namespace std::chrono_literals;
@@ -168,14 +196,14 @@ void UringTimeoutController::drain_pending_timer(io_uring* ring, std::chrono::na
 
     if (!posix::expect_success<posix::error_style::linux_internal>(io_uring_submit(ring))) { return; }
 
-    io_uring_cqe* cqe = nullptr;
-    bool cancel_seen  = false;
-    bool timer_seen   = false;
-    drain_ts_         = to_kernel_timespec(timeout);
+    io_uring_cqe* cqe          = nullptr;
+    bool cancel_seen           = false;
+    bool timer_seen            = false;
+    __kernel_timespec drain_ts = to_kernel_timespec(timeout);
 
     while (!(timer_seen && cancel_seen)) {
         if (!posix::expect_success<posix::error_style::linux_internal>(
-                io_uring_wait_cqe_timeout(ring, &cqe, &drain_ts_))) {
+                io_uring_wait_cqe_timeout(ring, &cqe, &drain_ts))) {
             break;
         }
 
@@ -187,110 +215,192 @@ void UringTimeoutController::drain_pending_timer(io_uring* ring, std::chrono::na
 
         cancel_seen = true;
 
-        /// Distinguish genuine cancel failures from benign race outcomes.
+        /** @brief Distinguish genuine cancel failures from benign race outcomes. */
         const auto is_cancel_error
             = [](std::int32_t result) noexcept { return result < 0 && !is_one_of<-ENOENT, -EALREADY>(result); };
         if (is_cancel_error(res)) { print_warning(std::format("io_uring cancel failed: {}", res)); }
     }
 }
 
-std::expected<void, UringError> UringIoSubmitter::submit_batch(
-    UringEngine& engine, const IoContext& ctx, bool is_write, UringEngine::LoopState& state) {
-    const UringEngine::IoPrepContext prep { .io = ctx, .is_write = is_write };
+IoTracker::IoTracker(std::uint16_t queue_depth) {
+    requests_.resize(queue_depth);
+    retry_slots_.resize(queue_depth);
+    free_slots_.resize(queue_depth);
+    deltas_.resize(queue_depth);
+    reset(queue_depth);
+}
 
-    const auto retry_slots_view
-        = std::span { engine.retry_slots_ }.subspan(0, engine.retry_count_) | std::views::reverse;
+void IoTracker::reset(std::uint16_t queue_depth) noexcept {
+    state_       = IoTrackerState {};
+    hist_        = {};
+    retry_count_ = 0;
+    std::ranges::iota(free_slots_.begin(), free_slots_.begin() + queue_depth, std::uint16_t { 0 });
+    state_.free_count = queue_depth;
+}
+
+void IoTracker::finalize_deltas() noexcept {
+    std::ranges::for_each(
+        deltas_ | std::views::take(state_.delta_count), [this](const auto delta) noexcept { hist_.add(delta); });
+    state_.delta_count = 0;
+}
+
+std::span<const std::uint16_t> IoTracker::get_retry_slots() const noexcept {
+    return std::span { retry_slots_ }.subspan(0, retry_count_);
+}
+
+void IoTracker::consume_retries(std::size_t count) noexcept {
+    retry_count_ -= count;
+}
+
+std::span<const std::uint16_t> IoTracker::get_free_slots(std::size_t limit) const noexcept {
+    return std::span { free_slots_ }
+        .subspan(0, state_.free_count)
+        .subspan(0, std::min(limit, toSize(state_.free_count)));
+}
+
+void IoTracker::consume_free_slots(std::size_t count) noexcept {
+    state_.free_count -= count;
+}
+
+std::expected<void, UringError> IoTracker::queue_retry_slot(std::uint16_t idx) noexcept {
+    if (retry_count_ >= retry_slots_.size()) { return make_unexpected(LogicError::RetrySlotOverflow); }
+    retry_slots_[retry_count_] = idx;
+    ++retry_count_;
+    return {};
+}
+
+std::expected<std::uint16_t, UringError> IoTracker::resolve_cqe_slot(std::uint64_t tag) const noexcept {
+    const std::uint16_t idx = toUShort(tag);
+    if (toSize(idx) >= requests_.size()) [[unlikely]] { return make_unexpected(LogicError::CqeTagOutOfBounds); }
+    return idx;
+}
+
+void IoTracker::record_delta(std::uint64_t start_cycles) noexcept {
+    const auto end_cycles = tsc::rdtscp_ordered();
+    if (end_cycles > start_cycles) [[likely]] {
+        deltas_[state_.delta_count] = end_cycles - start_cycles;
+        ++state_.delta_count;
+    }
+}
+
+void IoTracker::push_free_slot(std::uint16_t idx) noexcept {
+    free_slots_[state_.free_count] = idx;
+    ++state_.free_count;
+}
+
+SubmissionQueue::SubmissionQueue(UringRing& ring, IoTracker& tracker, UringFileRegistrar& registrar) noexcept
+    : ring_(ring)
+    , tracker_(tracker)
+    , file_registrar_(registrar) {}
+
+void SubmissionQueue::set_paths(IoPath write, IoPath read, std::size_t read_registered) noexcept {
+    write_path_              = write;
+    read_path_               = read;
+    read_buffers_registered_ = read_registered;
+}
+
+template <IsIoContext Context> std::expected<void, UringError> SubmissionQueue::submit_batch(const Context& ctx) {
+    /**
+     * @brief Core Submission Loop
+     *
+     * 1. Re-submit any I/O requests that encountered transient EAGAIN/EINTR errors.
+     * 2. Populate available SQEs with new blocks from the context until the queue depth
+     *    or total block limit is reached.
+     */
+    auto& state                   = tracker_.state();
+    const auto retry_slots_view   = tracker_.get_retry_slots() | std::views::reverse;
     std::size_t retries_submitted = 0;
 
     for (const auto idx : retry_slots_view) {
-        const auto sqe_res
-            = posix::expect_result<posix::error_style::pointer>(io_uring_get_sqe(engine.ring_.get_ring()));
+        const auto sqe_res = posix::expect_result<posix::error_style::pointer>(io_uring_get_sqe(ring_.get_ring()));
         if (!sqe_res) { break; }
         io_uring_sqe* sqe = *sqe_res;
 
-        prepare_io_sqe(engine, sqe, prep, engine.requests_[idx], idx);
+        prepare_io_sqe(sqe, ctx, tracker_.request(idx), idx);
         retries_submitted += 1;
     }
-    engine.retry_count_ -= retries_submitted;
+    tracker_.consume_retries(retries_submitted);
 
-    const std::size_t queue_in_flight  = state.submitted - state.completed;
-    const std::size_t queue_limit      = ctx.queue_depth > queue_in_flight ? ctx.queue_depth - queue_in_flight : 0uz;
-    const std::size_t blocks_remaining = ctx.total_blocks > state.submitted ? ctx.total_blocks - state.submitted : 0uz;
-    const std::size_t limit            = std::min({ blocks_remaining, queue_limit, toSize(state.free_count) });
+    const std::size_t queue_in_flight = safe_sub(state.submitted, state.completed).value_or(0uz);
+    const std::size_t queue_limit
+        = ctx.layout.queue_depth > queue_in_flight ? ctx.layout.queue_depth - queue_in_flight : 0uz;
+    const std::size_t blocks_remaining
+        = ctx.layout.total_blocks > state.submitted ? ctx.layout.total_blocks - state.submitted : 0uz;
+    const std::size_t limit = std::min({ blocks_remaining, queue_limit, toSize(state.free_count) });
 
-    const auto free_slots_view
-        = state.free_slots.subspan(0, state.free_count) | std::views::reverse | std::views::take(limit);
+    const auto free_slots_view     = tracker_.get_free_slots(limit) | std::views::reverse;
     std::size_t submitted_in_batch = 0;
 
     for (const auto idx : free_slots_view) {
-        if (state.interrupt || ctx.stop.stop_requested()) {
-            state.interrupt  = true;
-            state.free_count = toUShort(state.free_count - submitted_in_batch);
+        if (state.interrupt || ctx.observer.stop.stop_requested()) {
+            state.interrupt = true;
+            tracker_.consume_free_slots(submitted_in_batch);
             return std::unexpected(UringError { InterruptError {} });
         }
 
-        const auto sqe_res
-            = posix::expect_result<posix::error_style::pointer>(io_uring_get_sqe(engine.ring_.get_ring()));
+        const auto sqe_res = posix::expect_result<posix::error_style::pointer>(io_uring_get_sqe(ring_.get_ring()));
         if (!sqe_res) { break; }
         io_uring_sqe* sqe = *sqe_res;
 
-        const std::uint64_t remaining_bytes = ctx.total_bytes - state.offset;
-        const std::size_t len               = toSize(std::ranges::min(ctx.block_size, remaining_bytes));
-        engine.requests_[idx]               = { state.offset, len, len, {} };
+        const std::uint64_t remaining_bytes = ctx.layout.total_bytes - state.offset;
+        const std::size_t len               = toSize(std::ranges::min(ctx.layout.block_size, remaining_bytes));
+        tracker_.request(idx)               = { {}, state.offset, len, len, 0 };
 
-        prepare_io_sqe(engine, sqe, prep, engine.requests_[idx], idx);
+        prepare_io_sqe(sqe, ctx, tracker_.request(idx), idx);
 
         state.offset += len;
         submitted_in_batch += 1;
     }
-    state.free_count = toUShort(state.free_count - submitted_in_batch);
+    tracker_.consume_free_slots(submitted_in_batch);
     state.submitted += submitted_in_batch;
 
     return {};
 }
 
-IoPath UringIoSubmitter::determine_io_path(
-    const UringEngine& engine, const UringEngine::IoPrepContext& prep, std::uint16_t idx) noexcept {
-    if (prep.is_write) { return engine.write_path_; }
-
-    if (engine.read_path_ != IoPath::Fixed) { return engine.read_path_; }
-
-    return (toSize(idx) < engine.read_buffers_registered_) ? IoPath::Fixed : IoPath::Plain;
+template <IsIoContext Context> IoPath SubmissionQueue::determine_io_path(std::uint16_t idx) const noexcept {
+    constexpr bool is_write = std::remove_cvref_t<Context>::is_write_op;
+    if constexpr (is_write) { return write_path_; }
+    if (read_path_ != IoPath::Fixed) { return read_path_; }
+    return (toSize(idx) < read_buffers_registered_) ? IoPath::Fixed : IoPath::Plain;
 }
 
-void UringIoSubmitter::prepare_io_sqe(UringEngine& engine, io_uring_sqe* sqe, const UringEngine::IoPrepContext& prep,
-    IoRequest& req, std::uint16_t idx) noexcept {
-    const std::size_t done    = req.total_len - req.remaining;
-    const auto stride_mul     = toSize(idx) * prep.io.mem_stride;
-    const auto subspan_offset = stride_mul + done;
-    const auto slice          = prep.is_write ? prep.io.write_buffer.subspan(subspan_offset, req.remaining)
-                                              : prep.io.read_buffers[idx].span().subspan(done, req.remaining);
+template <IsIoContext Context>
+void SubmissionQueue::prepare_io_sqe(
+    io_uring_sqe* sqe, const Context& ctx, IoRequest& req, std::uint16_t idx) noexcept {
+    constexpr bool is_write = std::remove_cvref_t<Context>::is_write_op;
+    const std::size_t done  = req.total_len - req.remaining;
 
-    const unsigned len = toUInt(slice.size());
+    const auto slice = ctx.get_slice(idx, done, req.remaining);
+
     /** @brief Use registered file index (0) if available, otherwise raw FD. */
     const posix::file_descriptor::native_handle_type fd
-        = engine.file_registrar_.registered_handle() ? 0 : prep.io.fd.native_handle();
+        = file_registrar_.registered_handle() ? 0 : ctx.fd.native_handle();
 
-    const IoPath current_path = determine_io_path(engine, prep, idx);
+    const IoPath current_path    = determine_io_path<Context>(idx);
+    const std::uint32_t len      = toUInt(slice.size());
+    const std::int32_t buf_index = is_write ? 0 : idx + 1;
 
     switch (current_path) {
         case IoPath::Fixed:
-            if (prep.is_write) {
-                io_uring_prep_write_fixed(sqe, fd, slice.data(), len, req.offset, 0);
+            if constexpr (is_write) {
+                io_uring_prep_write_fixed(sqe, fd, slice.data(), len, req.offset, buf_index);
             } else {
-                io_uring_prep_read_fixed(sqe, fd, slice.data(), len, req.offset, idx + 1);
+                io_uring_prep_read_fixed(sqe, fd, slice.data(), len, req.offset, buf_index);
             }
             break;
         case IoPath::Vector:
-            req.iov = { .iov_base = slice.data(), .iov_len = slice.size() };
-            if (prep.is_write) {
+            if constexpr (is_write) {
+                /** @brief POSIX iovec struct is shared and lacks constness. Safe to const_cast for writev. */
+                req.iov = { .iov_base = const_cast<void*>(static_cast<const void*>(slice.data())),
+                    .iov_len          = slice.size() };
                 io_uring_prep_writev(sqe, fd, &req.iov, 1, req.offset);
             } else {
+                req.iov = { .iov_base = slice.data(), .iov_len = slice.size() };
                 io_uring_prep_readv(sqe, fd, &req.iov, 1, req.offset);
             }
             break;
         case IoPath::Plain:
-            if (prep.is_write) {
+            if constexpr (is_write) {
                 io_uring_prep_write(sqe, fd, slice.data(), len, req.offset);
             } else {
                 io_uring_prep_read(sqe, fd, slice.data(), len, req.offset);
@@ -301,18 +411,35 @@ void UringIoSubmitter::prepare_io_sqe(UringEngine& engine, io_uring_sqe* sqe, co
     req.start_cycles = tsc::rdtsc_ordered();
     io_uring_sqe_set_data64(sqe, idx);
     /** @brief Mark as fixed file if we are using the registered table index. */
-    if (engine.file_registrar_.registered_handle()) { sqe->flags |= IOSQE_FIXED_FILE; }
+    if (file_registrar_.registered_handle()) { sqe->flags |= IOSQE_FIXED_FILE; }
 }
 
-std::expected<void, UringError> UringCqeProcessor::wait_for_submission(
-    UringEngine& engine, const IoContext& ctx, std::uint32_t wait_nr) {
+CompletionQueue::CompletionQueue(
+    UringRing& ring, IoTracker& tracker, UringTimeoutController& timeout, std::uint16_t queue_depth)
+    : ring_(ring)
+    , tracker_(tracker)
+    , timeout_controller_(timeout) {
+    cqe_buffer_.resize(queue_depth);
+}
+
+void CompletionQueue::set_paths(IoPath write, IoPath read) noexcept {
+    write_path_ = write;
+    read_path_  = read;
+}
+
+bool CompletionQueue::is_retryable_wait_error(std::int32_t rc) noexcept {
+    return is_one_of<ETIME, EINTR, EAGAIN, EBUSY>(rc);
+}
+
+template <IsIoContext Context>
+std::expected<void, UringError> CompletionQueue::wait_for_submission(const Context& ctx, std::uint32_t wait_nr) {
     io_uring_cqe* cqe_ptr = nullptr;
 
-    const auto timeout_ns = UringTimeoutController::calculate_smart_timeout_ns(engine.hist_);
-    auto& wait_ts         = engine.timeout_controller_.prepare_wait_timeout(timeout_ns);
+    const auto timeout_ns     = UringTimeoutController::calculate_smart_timeout_ns(tracker_.histogram());
+    __kernel_timespec wait_ts = UringTimeoutController::to_kernel_timespec(timeout_ns);
 
     return posix::expect_success<posix::error_style::linux_internal>(
-        io_uring_submit_and_wait_timeout(engine.ring_.get_ring(), &cqe_ptr, wait_nr, &wait_ts, nullptr))
+        io_uring_submit_and_wait_timeout(ring_.get_ring(), &cqe_ptr, wait_nr, &wait_ts, nullptr))
         .or_else([](std::error_code err) -> std::expected<void, std::error_code> {
             return is_retryable_wait_error(toInt(err.value())) ? std::expected<void, std::error_code> {}
                                                                : std::unexpected(err);
@@ -320,188 +447,163 @@ std::expected<void, UringError> UringCqeProcessor::wait_for_submission(
         .transform_error(
             [](auto err) { return UringError { posix::SysCallError { err, "io_uring_submit_and_wait" } }; })
         .and_then([&ctx]() -> std::expected<void, UringError> {
-            return (ctx.interrupt_cb.get()() || ctx.stop.stop_requested())
+            return (ctx.observer.interrupt_cb.get()() || ctx.observer.stop.stop_requested())
                 ? std::unexpected(UringError { InterruptError {} })
                 : std::expected<void, UringError> {};
         });
 }
 
-std::expected<void, UringError> UringCqeProcessor::process_completions(
-    UringEngine& engine, const IoContext& ctx, bool is_write, UringEngine::LoopState& state) {
-    const unsigned count = io_uring_peek_batch_cqe(
-        engine.ring_.get_ring(), engine.cqe_buffer_.data(), toUInt(engine.cqe_buffer_.size()));
+template <IsIoContext Context>
+std::expected<void, UringError> CompletionQueue::process_completions(const Context& ctx) {
+    const std::uint32_t count
+        = toUInt(io_uring_peek_batch_cqe(ring_.get_ring(), cqe_buffer_.data(), toUInt(cqe_buffer_.size())));
     if (count == 0) { return {}; }
 
-    const auto cqe_span   = std::span { engine.cqe_buffer_ }.subspan(0, count);
+    const auto cqe_span   = std::span { cqe_buffer_ }.subspan(0, count);
     std::size_t processed = 0;
 
-    scope_exit advance_cq { [&engine, &processed, &state]() noexcept {
-        if (processed > 0) { io_uring_cq_advance(engine.ring_.get_ring(), toUInt(processed)); }
-        std::ranges::for_each(state.deltas | std::views::take(state.delta_count),
-            [&engine](const auto delta) noexcept { engine.hist_.add(delta); });
-        state.delta_count = 0;
+    scope_exit advance_cq { [this, &processed]() noexcept {
+        if (processed > 0) { io_uring_cq_advance(ring_.get_ring(), toUInt(processed)); }
+        tracker_.finalize_deltas();
     } };
 
     for (const auto* cqe : cqe_span) {
-        if (const auto res = handle_completion(engine, cqe, is_write, state); !res) {
+        if (const auto res = handle_completion<Context>(cqe); !res) {
             processed += 1;
             return res;
         }
         processed += 1;
     }
 
-    ctx.progress_cb.get()(state.completed, ctx.total_blocks, ctx.label);
+    ctx.observer.progress_cb.get()(tracker_.state().completed, ctx.layout.total_blocks, ctx.observer.label);
     return {};
 }
 
-std::expected<void, UringError> UringCqeProcessor::handle_completion(
-    UringEngine& engine, const io_uring_cqe* cqe, bool is_write, UringEngine::LoopState& state) {
-    const auto tag = io_uring_cqe_get_data64(cqe);
+template <IsIoContext Context>
+std::expected<void, UringError> CompletionQueue::handle_completion(const io_uring_cqe* cqe) {
+    constexpr bool is_write = std::remove_cvref_t<Context>::is_write_op;
+    const auto tag          = io_uring_cqe_get_data64(cqe);
     if (tag == UringTimeoutController::kTimerTag) {
-        engine.timeout_controller_.set_timer_armed(false);
+        timeout_controller_.set_timer_armed(false);
         if (cqe->res == -ETIME) { return make_unexpected(ExecutionError::Timeout); }
         return {};
     }
 
-    const auto idx_res = resolve_cqe_slot(engine, tag);
+    const auto idx_res = tracker_.resolve_cqe_slot(tag);
     if (!idx_res) { return std::unexpected(idx_res.error()); }
     const std::uint16_t idx = *idx_res;
 
-    if (is_one_of<-EAGAIN, -EINTR>(cqe->res)) { return queue_retry_slot(engine, idx); }
+    if (is_one_of<-EAGAIN, -EINTR>(cqe->res)) { return tracker_.queue_retry_slot(idx); }
 
-    if (cqe->res == -EINVAL && (is_write ? engine.write_path_ : engine.read_path_) != IoPath::Vector) {
+    if (cqe->res == -EINVAL && (is_write ? write_path_ : read_path_) != IoPath::Vector) {
         if (is_write) {
-            engine.write_path_ = IoPath::Vector;
+            write_path_ = IoPath::Vector;
         } else {
-            engine.read_path_ = IoPath::Vector;
+            read_path_ = IoPath::Vector;
         }
-        return queue_retry_slot(engine, idx);
+        return tracker_.queue_retry_slot(idx);
     }
 
-    return finalize_cqe(engine, cqe, is_write, idx, state);
+    return finalize_cqe<Context>(cqe, idx);
 }
 
-std::expected<void, UringError> UringCqeProcessor::finalize_cqe(
-    UringEngine& engine, const io_uring_cqe* cqe, bool is_write, std::uint16_t idx, UringEngine::LoopState& state) {
-    const auto res_opt = posix::expect_result<posix::error_style::linux_internal>(cqe->res);
+template <IsIoContext Context>
+std::expected<void, UringError> CompletionQueue::finalize_cqe(const io_uring_cqe* cqe, std::uint16_t idx) {
+    constexpr bool is_write = std::remove_cvref_t<Context>::is_write_op;
+    const auto res_opt      = posix::expect_result<posix::error_style::linux_internal>(cqe->res);
     if (!res_opt) {
         return std::unexpected(UringError { posix::SysCallError { res_opt.error(), is_write ? "write" : "read" } });
     }
     const std::int32_t res = *res_opt;
     const auto bytes       = toSize(res);
+
+    auto& state = tracker_.state();
     state.bytes_completed += bytes;
 
     if (bytes == 0) [[unlikely]] {
         return make_unexpected(is_write ? ExecutionError::WriteStalled : ExecutionError::UnexpectedEof);
     }
 
-    if (bytes < engine.requests_[idx].remaining) {
-        engine.requests_[idx].remaining -= bytes;
-        engine.requests_[idx].offset += bytes;
-        return queue_retry_slot(engine, idx);
+    auto& req = tracker_.request(idx);
+    if (bytes < req.remaining) {
+        req.remaining -= bytes;
+        req.offset += bytes;
+        return tracker_.queue_retry_slot(idx);
     }
 
     ++state.completed;
     ++state.io_completed;
 
-    const auto end_cycles = tsc::rdtscp_ordered();
-    if (end_cycles > engine.requests_[idx].start_cycles) [[likely]] {
-        state.deltas[state.delta_count] = end_cycles - engine.requests_[idx].start_cycles;
-        ++state.delta_count;
-    }
-
-    state.free_slots[state.free_count] = idx;
-    ++state.free_count;
+    tracker_.record_delta(req.start_cycles);
+    tracker_.push_free_slot(idx);
     return {};
 }
 
-std::expected<void, UringError> UringCqeProcessor::queue_retry_slot(UringEngine& engine, std::uint16_t idx) noexcept {
-    if (engine.retry_count_ >= engine.retry_slots_.size()) { return make_unexpected(LogicError::RetrySlotOverflow); }
+template <IsIoContext Context> void CompletionQueue::drain_all_completions(const Context& ctx) noexcept {
+    constexpr std::uint32_t kMaxDrainRetries = 3;
 
-    engine.retry_slots_[engine.retry_count_] = idx;
-    ++engine.retry_count_;
-    return {};
-}
-
-std::expected<std::uint16_t, UringError> UringCqeProcessor::resolve_cqe_slot(
-    const UringEngine& engine, std::uint64_t tag) noexcept {
-    const std::uint16_t idx = toUShort(tag);
-    if (toSize(idx) >= engine.requests_.size()) [[unlikely]] { return make_unexpected(LogicError::CqeTagOutOfBounds); }
-
-    return idx;
-}
-
-void UringCqeProcessor::drain_all_completions(
-    UringEngine& engine, const IoContext& ctx, bool is_write, UringEngine::LoopState& state) noexcept {
-    const auto drain_step = [&engine, &ctx, is_write, &state]() noexcept -> bool {
+    auto& state           = tracker_.state();
+    const auto drain_step = [this, &ctx, &state]() noexcept -> bool {
         const auto initial = state.completed;
-        return wait_one_cqe(engine)
+        return wait_one_cqe()
             /** @brief Error from wait_one_cqe is intentionally ignored during drain. */
             .or_else([](auto) { return std::expected<void, UringError> {}; })
-            .and_then([&engine, &ctx, is_write, &state]() -> std::expected<void, UringError> {
-                return process_completions(engine, ctx, is_write, state);
-            })
+            .and_then([this, &ctx]() -> std::expected<void, UringError> { return process_completions(ctx); })
             .transform([&state, initial]() { return state.completed > initial || state.completed == state.submitted; })
             .value_or(false);
     };
 
+    std::uint32_t consecutive_stalls = 0;
     while (state.completed < state.submitted) {
-        if (drain_step()) [[likely]] { continue; }
-        print_warning(std::format("io_uring: drain stalled at {}/{} completions", state.completed, state.submitted));
-        break;
-    }
-}
-
-std::expected<void, std::error_code> UringCqeProcessor::wait_one_cqe(UringEngine& engine) noexcept {
-    io_uring_cqe* cqe = nullptr;
-    __kernel_timespec ts { .tv_sec = 0, .tv_nsec = config::kUringWaitTimeoutNs };
-    return posix::expect_success<posix::error_style::linux_internal>(
-        ::io_uring_wait_cqe_timeout(engine.ring_.get_ring(), &cqe, &ts));
-}
-
-UringEngine::UringEngine(std::uint16_t queue_depth, std::optional<std::int32_t> sq_thread_cpu)
-    : ring_(queue_depth, sq_thread_cpu) {
-    if (ring_.is_valid()) {
-        requests_.resize(queue_depth);
-        retry_slots_.resize(queue_depth);
-        free_slots_.resize(queue_depth);
-        deltas_.resize(queue_depth);
-        cqe_buffer_.resize(queue_depth);
-        registered_iovecs_.resize(safe_add(toSize(queue_depth), 1uz).value_or(0uz));
-        retry_count_ = 0;
-
-        const auto probed = prober_.probe_io_paths(ring_.get_ring());
-        write_path_       = probed.write_path;
-        read_path_        = probed.read_path;
-    }
-}
-
-UringEngine::~UringEngine() {
-    if (ring_.is_valid()) {
-        file_registrar_.unregister_file(ring_.get_ring());
-        if (write_path_ == IoPath::Fixed || read_buffers_registered_ > 0) {
-            io_uring_unregister_buffers(ring_.get_ring());
+        if (drain_step()) [[likely]] {
+            consecutive_stalls = 0;
+            continue;
+        }
+        ++consecutive_stalls;
+        if (consecutive_stalls >= kMaxDrainRetries) {
+            print_warning(std::format("io_uring: drain stalled at {}/{} completions after {} retries", state.completed,
+                state.submitted, kMaxDrainRetries));
+            break;
         }
     }
 }
 
-std::expected<void, UringError> UringEngine::register_buffers(
-    std::span<std::byte> write_buf, std::span<AlignedBuffer> read_bufs) noexcept {
-    return BufferRegistrar { *this }.register_buffers(write_buf, read_bufs).transform_error([](std::error_code ec) {
-        return UringError { ec };
-    });
+std::expected<void, std::error_code> CompletionQueue::wait_one_cqe() noexcept {
+    io_uring_cqe* cqe = nullptr;
+    __kernel_timespec ts { .tv_sec = 0, .tv_nsec = config::kUringWaitTimeoutNs };
+    return posix::expect_success<posix::error_style::linux_internal>(
+        ::io_uring_wait_cqe_timeout(ring_.get_ring(), &cqe, &ts));
 }
 
-std::expected<PhaseRunStats, UringError> UringEngine::submit_and_wait(const IoContext& ctx, bool is_write) {
+UringEventLoop::UringEventLoop(
+    UringRing& ring, UringFileRegistrar& file_registrar, UringTimeoutController& timeout, std::uint16_t queue_depth)
+    : ring_(ring)
+    , tracker_(queue_depth)
+    , file_registrar_(file_registrar)
+    , timeout_controller_(timeout)
+    , sq_(ring, tracker_, file_registrar)
+    , cq_(ring, tracker_, timeout, queue_depth) {}
+
+void UringEventLoop::set_paths(IoPath write, IoPath read, std::size_t read_registered) noexcept {
+    sq_.set_paths(write, read, read_registered);
+    cq_.set_paths(write, read);
+}
+
+template <IsIoContext Context> std::expected<PhaseRunStats, UringError> UringEventLoop::execute(const Context& ctx) {
+
+    /**
+     * @brief Register the file for I/O operations to eliminate FD instantiation overhead during submit.
+     *
+     * If the file descriptor is already registered or registration fails with EBUSY, we fallback to
+     * traditional FD usage without aborting, ensuring robustness in varied execution contexts.
+     */
     if (const auto res = file_registrar_.register_file(ring_.get_ring(), ctx.fd); !res) {
         if (res.error().value() == EBUSY) { return make_unexpected(ExecutionError::FileRegistrationConflict); }
         print_warning("io_uring: fixed-file registration failed, using raw fd");
     }
     scope_exit unreg_file { [this]() noexcept { file_registrar_.unregister_file(ring_.get_ring()); } };
 
-    LoopState state { .free_slots = free_slots_, .deltas = deltas_ };
-    state.reset_free_slots(ctx.queue_depth);
-    hist_ = {};
+    tracker_.reset(ctx.layout.queue_depth);
 
     if (const auto arm = timeout_controller_.arm_timeout_timer(ring_.get_ring()); !arm) {
         return std::unexpected(arm.error());
@@ -518,7 +620,7 @@ std::expected<PhaseRunStats, UringError> UringEngine::submit_and_wait(const IoCo
      */
     scope_exit drain_timer { [this]() noexcept {
         if (timeout_controller_.is_timer_armed()) {
-            const auto timeout_ns = UringTimeoutController::calculate_smart_timeout_ns(hist_);
+            const auto timeout_ns = UringTimeoutController::calculate_smart_timeout_ns(tracker_.histogram());
             timeout_controller_.drain_pending_timer(ring_.get_ring(), timeout_ns);
         }
     } };
@@ -531,10 +633,8 @@ std::expected<PhaseRunStats, UringError> UringEngine::submit_and_wait(const IoCo
      * destroy the I/O buffers. Failure to do so would cause a Use-After-Free
      * when the kernel eventually writes to the (freed) buffer memory.
      */
-    scope_exit drain_all { [this, &ctx, is_write, &state]() noexcept {
-        if (state.completed < state.submitted) {
-            UringCqeProcessor::drain_all_completions(*this, ctx, is_write, state);
-        }
+    scope_exit drain_all { [this, &ctx]() noexcept {
+        if (tracker_.state().completed < tracker_.state().submitted) { cq_.drain_all_completions(ctx); }
     } };
 
     /**
@@ -545,18 +645,18 @@ std::expected<PhaseRunStats, UringError> UringEngine::submit_and_wait(const IoCo
      * the storage controller saturated while reducing syscalls.
      */
     const std::uint32_t batch_size
-        = std::max<std::uint32_t>(1, (toUInt(ctx.queue_depth) * ::config::kIoBatchPercent) / 100);
+        = std::max<std::uint32_t>(1, (toUInt(ctx.layout.queue_depth) * ::config::kIoBatchPercent) / 100);
 
-    while (state.completed < ctx.total_blocks) {
-        if (const auto res = UringIoSubmitter::submit_batch(*this, ctx, is_write, state); !res) {
-            return std::unexpected(res.error());
-        }
+    auto& state = tracker_.state();
+
+    while (state.completed < ctx.layout.total_blocks) {
+        if (const auto res = sq_.submit_batch(ctx); !res) { return std::unexpected(res.error()); }
 
         const auto active_requests_opt = safe_sub(state.submitted, state.completed);
         if (!active_requests_opt) [[unlikely]] { return make_unexpected(LogicError::CompletedBlocksExceedSubmitted); }
         const std::size_t active_requests = *active_requests_opt;
 
-        const auto in_kernel_opt = safe_sub(active_requests, retry_count_);
+        const auto in_kernel_opt = safe_sub(active_requests, tracker_.get_retry_slots().size());
         if (!in_kernel_opt) [[unlikely]] { return make_unexpected(LogicError::RetrySlotsExceedActiveRequests); }
         const std::size_t in_kernel = *in_kernel_opt;
 
@@ -568,17 +668,19 @@ std::expected<PhaseRunStats, UringError> UringEngine::submit_and_wait(const IoCo
          * Blocking wait is enforced when the queue capacity is exhausted or all blocks have been submitted,
          * avoiding CPU spinning while preserving device pipeline saturation.
          */
-        const std::uint32_t wait_nr = determine_wait_count(in_kernel, batch_size, state, ctx);
+        const std::uint32_t wait_nr = (state.free_count == 0 || state.submitted == ctx.layout.total_blocks)
+            ? std::min<std::uint32_t>(toUInt(in_kernel), batch_size)
+            : 0u;
 
         if (wait_nr > 0) {
-            if (const auto wait = UringCqeProcessor::wait_for_submission(*this, ctx, wait_nr); !wait) {
+            if (const auto wait = cq_.wait_for_submission(ctx, wait_nr); !wait) {
                 return std::unexpected(wait.error());
             }
         } else {
             io_uring_submit(ring_.get_ring());
         }
 
-        const auto proc_res = UringCqeProcessor::process_completions(*this, ctx, is_write, state);
+        const auto proc_res = cq_.process_completions(ctx);
         if (!proc_res) { return std::unexpected(proc_res.error()); }
     }
 
@@ -587,41 +689,120 @@ std::expected<PhaseRunStats, UringError> UringEngine::submit_and_wait(const IoCo
         .elapsed   = t1 - t0,
         .io_bytes  = state.bytes_completed,
         .total_ios = state.io_completed,
-        .histogram = std::move(hist_),
+        .histogram = tracker_.histogram(),
     };
+}
+
+std::expected<UringEngine, std::error_code> UringEngine::create(
+    std::uint16_t queue_depth, std::optional<std::int32_t> sq_thread_cpu) {
+    return UringRing::create(queue_depth, sq_thread_cpu).transform([](UringRing ring) {
+        return UringEngine(std::move(ring));
+    });
+}
+
+UringEngine::UringEngine(UringRing ring)
+    : ring_(std::move(ring))
+    , event_loop_(ring_, file_registrar_, timeout_controller_, toUShort(ring_.get_ring()->sq.ring_entries)) {
+    const auto queue_depth = ring_.get_ring()->sq.ring_entries;
+    registered_iovecs_.resize(safe_add(toSize(queue_depth), 1uz).value_or(0uz));
+
+    const auto probed = prober_.probe_io_paths(ring_.get_ring());
+    write_path_       = probed.write_path;
+    read_path_        = probed.read_path;
+}
+
+UringEngine::UringEngine(UringEngine&& other) noexcept
+    : ring_(std::move(other.ring_))
+    , file_registrar_(std::move(other.file_registrar_))
+    , timeout_controller_(std::move(other.timeout_controller_))
+    , event_loop_(ring_, file_registrar_, timeout_controller_, toUShort(ring_.get_ring()->sq.ring_entries))
+    , read_buffers_registered_(other.read_buffers_registered_)
+    , registered_iovecs_(std::move(other.registered_iovecs_))
+    , buffer_register_error_(other.buffer_register_error_)
+    , prober_(std::move(other.prober_))
+    , write_path_(other.write_path_)
+    , read_path_(other.read_path_) {
+    other.read_buffers_registered_ = 0;
+}
+
+UringEngine& UringEngine::operator=(UringEngine&& other) noexcept {
+    if (this != &other) {
+        ring_               = std::move(other.ring_);
+        file_registrar_     = std::move(other.file_registrar_);
+        timeout_controller_ = std::move(other.timeout_controller_);
+
+        std::destroy_at(&event_loop_);
+        std::construct_at(
+            &event_loop_, ring_, file_registrar_, timeout_controller_, toUShort(ring_.get_ring()->sq.ring_entries));
+
+        read_buffers_registered_ = other.read_buffers_registered_;
+        registered_iovecs_       = std::move(other.registered_iovecs_);
+        buffer_register_error_   = other.buffer_register_error_;
+
+        prober_     = std::move(other.prober_);
+        write_path_ = other.write_path_;
+        read_path_  = other.read_path_;
+
+        other.read_buffers_registered_ = 0;
+    }
+    return *this;
+}
+
+UringEngine::~UringEngine() {
+    if (ring_.get_ring()->ring_fd < 0) { return; }
+    file_registrar_.unregister_file(ring_.get_ring());
+    if (write_path_ == IoPath::Fixed || read_buffers_registered_ > 0) { io_uring_unregister_buffers(ring_.get_ring()); }
+}
+
+std::expected<void, UringError> UringEngine::register_buffers(
+    std::span<std::byte> write_buf, std::span<AlignedBuffer> read_bufs) noexcept {
+    return BufferRegistrar { *this }.register_buffers(write_buf, read_bufs).transform_error([](std::error_code ec) {
+        return UringError { ec };
+    });
+}
+
+auto UringEngine::register_worker_affinity(const cpu_set_t* mask, std::size_t size) noexcept
+    -> std::expected<void, UringError> {
+    return posix::expect_success<posix::error_style::linux_internal>(
+        io_uring_register_iowq_aff(ring_.get_ring(), size, mask))
+        .transform_error(
+            [](std::error_code ec) { return UringError { posix::SysCallError { ec, "io_uring_register_iowq_aff" } }; });
+}
+
+std::expected<PhaseRunStats, UringError> UringEngine::execute_write(const WriteContext& ctx) {
+    event_loop_.set_paths(write_path_, read_path_, read_buffers_registered_);
+    return event_loop_.execute(ctx);
+}
+
+std::expected<PhaseRunStats, UringError> UringEngine::execute_read(const ReadContext& ctx) {
+    event_loop_.set_paths(write_path_, read_path_, read_buffers_registered_);
+    return event_loop_.execute(ctx);
 }
 
 std::expected<void, std::error_code> BufferRegistrar::register_buffers(
     std::span<std::byte> write_buf, std::span<AlignedBuffer> read_bufs) noexcept {
-    std::error_code error_code = posix::make_error(EINVAL);
-    scope_exit rollback { [this, &error_code]() noexcept { fail_buffer_registration(error_code); } };
 
-    if (!has_valid_buffer_registration_inputs(write_buf)) { return std::unexpected(posix::make_error(EINVAL)); }
-
-    const auto target_read_count = compute_target_read_count(write_buf, read_bufs);
-    if (!target_read_count) {
-        error_code = target_read_count.error();
-        return std::unexpected(error_code);
+    if (!has_valid_buffer_registration_inputs(write_buf)) {
+        fail_buffer_registration(posix::make_error(EINVAL));
+        return std::unexpected(posix::make_error(EINVAL));
     }
 
-    populate_registered_iovecs(write_buf, read_bufs, *target_read_count);
-
-    const auto read_count = probe_adaptive_read_registration(*target_read_count);
-
-    if (read_count) {
-        set_buffer_registration_state(*read_count);
-        engine_.write_path_ = IoPath::Fixed;
-        engine_.read_path_  = IoPath::Fixed;
-    } else {
-        engine_.write_path_ = IoPath::Plain;
-        engine_.read_path_  = IoPath::Plain;
-        error_code          = read_count.error();
-        return std::unexpected(error_code);
-    }
-
-    error_code = std::error_code {};
-    rollback.release();
-    return {};
+    return compute_target_read_count(write_buf, read_bufs)
+        .and_then([this, write_buf, read_bufs](std::size_t target_count) {
+            populate_registered_iovecs(write_buf, read_bufs, target_count);
+            return probe_adaptive_read_registration(target_count);
+        })
+        .transform([this](std::size_t read_count) {
+            set_buffer_registration_state(read_count);
+            engine_.write_path_ = IoPath::Fixed;
+            engine_.read_path_  = IoPath::Fixed;
+        })
+        .transform_error([this](std::error_code error_code) {
+            fail_buffer_registration(error_code);
+            engine_.write_path_ = IoPath::Plain;
+            engine_.read_path_  = IoPath::Plain;
+            return error_code;
+        });
 }
 
 std::size_t BufferRegistrar::max_registerable_iovecs() noexcept {
@@ -642,8 +823,8 @@ std::size_t BufferRegistrar::max_registerable_iovecs() noexcept {
 }
 
 bool BufferRegistrar::has_valid_buffer_registration_inputs(std::span<std::byte> write_buf) const noexcept {
-    return engine_.ring_.is_valid() && !write_buf.empty()
-        && engine_.registered_iovecs_.size() == safe_add(engine_.requests_.size(), 1uz).value_or(0uz);
+    const auto queue_depth = engine_.ring_.get_ring()->sq.ring_entries;
+    return !write_buf.empty() && engine_.registered_iovecs_.size() == safe_add(toSize(queue_depth), 1uz).value_or(0uz);
 }
 
 std::expected<std::size_t, std::error_code> BufferRegistrar::compute_memlock_read_limit(
@@ -726,35 +907,19 @@ std::expected<void, std::error_code> BufferRegistrar::probe_register_buffers(
         });
 }
 
-std::uint32_t UringEngine::determine_wait_count(
-    std::size_t in_kernel, std::uint32_t batch_size, const LoopState& state, const IoContext& ctx) noexcept {
-    if (state.free_count == 0 || state.submitted == ctx.total_blocks) {
-        return std::min<std::uint32_t>(toUInt(in_kernel), batch_size);
+BufferRegistrar::MemlockBudget BufferRegistrar::map_rlimit_to_budget(const struct rlimit& limit) noexcept {
+    if (limit.rlim_cur == RLIM_INFINITY) {
+        return MemlockBudget { .bytes = 0, .state = MemlockBudgetState::Unlimited };
     }
-    return 0;
+    return MemlockBudget { .bytes = toULong(limit.rlim_cur), .state = MemlockBudgetState::Limited };
 }
 
 BufferRegistrar::MemlockBudget BufferRegistrar::pinned_memory_budget() const noexcept {
-    const auto root_result = check_root_memlock_budget();
+    if (::geteuid() == 0) { return MemlockBudget { .bytes = 0, .state = MemlockBudgetState::Unlimited }; }
 
-    return root_result
-        .or_else([](auto) {
-            return posix::get_rlimit(RLIMIT_MEMLOCK).transform([](const rlimit& limit) noexcept {
-                return map_rlimit_to_budget(limit);
-            });
-        })
-        .value_or(MemlockBudget { .state = MemlockBudgetState::Unknown, .bytes = 0 });
-}
-
-std::expected<BufferRegistrar::MemlockBudget, std::error_code>
-BufferRegistrar::check_root_memlock_budget() const noexcept {
-    if (::geteuid() == 0) { return MemlockBudget { .state = MemlockBudgetState::Unlimited, .bytes = 0 }; }
-    return std::unexpected(posix::make_error(EPERM));
-}
-
-BufferRegistrar::MemlockBudget BufferRegistrar::map_rlimit_to_budget(const rlimit& limit) noexcept {
-    if (limit.rlim_cur == RLIM_INFINITY) { return { .state = MemlockBudgetState::Unlimited, .bytes = 0 }; }
-    return { .state = MemlockBudgetState::Limited, .bytes = toULong(limit.rlim_cur) };
+    return posix::get_rlimit(RLIMIT_MEMLOCK)
+        .transform(map_rlimit_to_budget)
+        .value_or(MemlockBudget { .bytes = 0, .state = MemlockBudgetState::Unknown });
 }
 
 } // namespace uring

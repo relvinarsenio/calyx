@@ -169,27 +169,16 @@ struct PhaseRunStats {
     metrics::LatencyHistogram histogram;
 };
 
-struct IoContext {
-    const posix::file_descriptor& fd;
-    std::span<std::byte> write_buffer;
-    std::span<AlignedBuffer> read_buffers;
-    std::stop_token stop;
-    std::reference_wrapper<const std::move_only_function<void(std::size_t, std::size_t, std::string_view) const>>
-        progress_cb;
-    std::reference_wrapper<const std::move_only_function<bool() const noexcept>> interrupt_cb;
-    std::uint64_t total_blocks {};
-    std::uint64_t block_size {};
-    std::uint64_t mem_stride {};
-    std::uint64_t total_bytes {};
-    std::string_view label;
-    std::uint16_t queue_depth {};
-};
+template <typename T>
+concept IoBufferSpan = std::ranges::contiguous_range<T>
+    && (std::same_as<std::remove_cvref_t<std::ranges::range_value_t<T>>, std::byte>
+        || std::same_as<std::remove_cvref_t<std::ranges::range_value_t<T>>, AlignedBuffer>);
 
 struct IoRequest {
+    iovec iov;
     std::uint64_t offset {};
     std::size_t remaining {};
     std::size_t total_len {};
-    iovec iov;
     std::uint64_t start_cycles = 0;
 };
 
@@ -203,6 +192,53 @@ struct ProbedIoPaths {
     IoPath write_path = IoPath::Plain;
     IoPath read_path  = IoPath::Plain;
 };
+
+struct IoLayout {
+    std::uint64_t total_blocks {};
+    std::uint64_t block_size {};
+    std::uint64_t mem_stride {};
+    std::uint64_t total_bytes {};
+    std::uint16_t queue_depth {};
+};
+
+struct IoObserver {
+    std::string_view label;
+    std::stop_token stop;
+    std::reference_wrapper<const std::move_only_function<void(std::size_t, std::size_t, std::string_view) const>>
+        progress_cb;
+    std::reference_wrapper<const std::move_only_function<bool() const noexcept>> interrupt_cb;
+};
+
+template <IoBufferSpan BufferType> struct IoContextBase {
+    BufferType buffers;
+    const posix::file_descriptor& fd;
+    IoLayout layout;
+    IoObserver observer;
+
+    template <typename Self>
+    [[nodiscard]] auto get_slice(
+        this const Self& self, std::uint16_t idx, std::size_t done, std::size_t remaining) noexcept {
+        constexpr bool is_write = Self::is_write_op;
+        if constexpr (is_write) {
+            const auto subspan_offset = toSize(idx) * self.layout.mem_stride + done;
+            return self.buffers.subspan(subspan_offset, remaining);
+        } else {
+            return self.buffers[idx].span().subspan(done, remaining);
+        }
+    }
+};
+
+struct WriteContext final : IoContextBase<std::span<const std::byte>> {
+    static constexpr bool is_write_op = true;
+};
+
+struct ReadContext final : IoContextBase<std::span<AlignedBuffer>> {
+    static constexpr bool is_write_op = false;
+};
+
+template <typename Context>
+concept IsIoContext = std::same_as<std::remove_cvref_t<Context>, WriteContext>
+    || std::same_as<std::remove_cvref_t<Context>, ReadContext>;
 
 template <typename T>
 concept ProberStrategy = requires(T& t, std::size_t count, bool keep) {
@@ -313,27 +349,23 @@ protected:
 
 class UringRing {
     io_uring ring_ {};
-    bool init_ = false;
-    std::error_code init_error_ {};
     bool ring_fd_registered_ = false;
 
-    [[nodiscard]] std::expected<void, std::error_code> initialize_ring(
-        std::uint16_t queue_depth, std::optional<std::int32_t> sq_thread_cpu) noexcept;
+    explicit UringRing(io_uring ring, bool registered) noexcept;
 
 public:
-    explicit UringRing(std::uint16_t queue_depth, std::optional<std::int32_t> sq_thread_cpu = std::nullopt);
+    UringRing() noexcept;
     ~UringRing();
-
+    UringRing(UringRing&& other) noexcept;
+    UringRing& operator=(UringRing&& other) noexcept;
     UringRing(const UringRing&)            = delete;
     UringRing& operator=(const UringRing&) = delete;
-    UringRing(UringRing&&)                 = delete;
-    UringRing& operator=(UringRing&&)      = delete;
 
-    [[nodiscard]] bool is_valid() const noexcept { return init_; }
-    [[nodiscard]] std::error_code get_error() const noexcept { return init_error_; }
+    [[nodiscard]] static std::expected<UringRing, std::error_code> create(
+        std::uint16_t queue_depth, std::optional<std::int32_t> sq_thread_cpu = std::nullopt) noexcept;
+
     [[nodiscard]] io_uring* get_ring() noexcept { return &ring_; }
-    [[nodiscard]] bool is_ring_fd_registered() const noexcept { return ring_fd_registered_; }
-    void set_ring_fd_registered(bool registered) noexcept { ring_fd_registered_ = registered; }
+    [[nodiscard]] const io_uring* get_ring() const noexcept { return &ring_; }
 };
 
 class UringProber {
@@ -354,6 +386,9 @@ public:
 };
 
 class UringTimeoutController {
+    __kernel_timespec timeout_ts_ {};
+    bool timer_armed_ = false;
+
 public:
     static constexpr std::uint64_t kTimerTag  = UINT64_MAX; ///< user_data sentinel for the timeout SQE.
     static constexpr std::uint64_t kCancelTag = UINT64_MAX - 1; ///< user_data sentinel for the cancel SQE.
@@ -370,136 +405,164 @@ public:
     [[nodiscard]] bool is_timer_armed() const noexcept { return timer_armed_; }
     void set_timer_armed(bool armed) noexcept { timer_armed_ = armed; }
 
-    /** @brief Sets the per-wait timeout and returns a stable reference for the kernel API. */
-    [[nodiscard]] __kernel_timespec& prepare_wait_timeout(std::chrono::nanoseconds duration) noexcept {
-        wait_ts_ = to_kernel_timespec(duration);
-        return wait_ts_;
-    }
-
     [[nodiscard]] std::expected<void, UringError> arm_timeout_timer(io_uring* ring);
     void drain_pending_timer(io_uring* ring, std::chrono::nanoseconds timeout) noexcept;
+};
 
-private:
-    __kernel_timespec timeout_ts_ {};
-    __kernel_timespec wait_ts_ {};
-    __kernel_timespec drain_ts_ {};
-    bool timer_armed_ = false;
+struct IoTrackerState {
+    std::uint64_t submitted       = 0;
+    std::uint64_t completed       = 0;
+    std::uint64_t bytes_completed = 0;
+    std::uint64_t io_completed    = 0;
+    std::uint64_t offset          = 0;
+    std::uint16_t free_count      = 0;
+    std::uint16_t delta_count     = 0;
+    bool interrupt                = false;
+};
+
+class IoTracker {
+    std::vector<IoRequest> requests_;
+    std::vector<std::uint16_t> retry_slots_;
+    std::vector<std::uint16_t> free_slots_;
+    std::vector<std::uint64_t> deltas_;
+    std::size_t retry_count_ = 0;
+    IoTrackerState state_ {};
+    metrics::LatencyHistogram hist_ {};
+
+public:
+    explicit IoTracker(std::uint16_t queue_depth);
+
+    [[nodiscard]] IoTrackerState& state() noexcept { return state_; }
+    [[nodiscard]] const IoTrackerState& state() const noexcept { return state_; }
+    [[nodiscard]] IoRequest& request(std::uint16_t idx) noexcept { return requests_[idx]; }
+    [[nodiscard]] metrics::LatencyHistogram& histogram() noexcept { return hist_; }
+    [[nodiscard]] const metrics::LatencyHistogram& histogram() const noexcept { return hist_; }
+
+    void reset(std::uint16_t queue_depth) noexcept;
+    void finalize_deltas() noexcept;
+
+    [[nodiscard]] std::span<const std::uint16_t> get_retry_slots() const noexcept;
+    void consume_retries(std::size_t count) noexcept;
+
+    [[nodiscard]] std::span<const std::uint16_t> get_free_slots(std::size_t limit) const noexcept;
+    void consume_free_slots(std::size_t count) noexcept;
+
+    [[nodiscard]] std::expected<void, UringError> queue_retry_slot(std::uint16_t idx) noexcept;
+    [[nodiscard]] std::expected<std::uint16_t, UringError> resolve_cqe_slot(std::uint64_t tag) const noexcept;
+    void record_delta(std::uint64_t start_cycles) noexcept;
+    void push_free_slot(std::uint16_t idx) noexcept;
+};
+
+class SubmissionQueue {
+    UringRing& ring_;
+    IoTracker& tracker_;
+    UringFileRegistrar& file_registrar_;
+    std::size_t read_buffers_registered_ = 0;
+    IoPath write_path_                   = IoPath::Plain;
+    IoPath read_path_                    = IoPath::Plain;
+
+    template <IsIoContext Context>
+    void prepare_io_sqe(io_uring_sqe* sqe, const Context& ctx, IoRequest& req, std::uint16_t idx) noexcept;
+    template <IsIoContext Context> [[nodiscard]] IoPath determine_io_path(std::uint16_t idx) const noexcept;
+
+public:
+    SubmissionQueue(UringRing& ring, IoTracker& tracker, UringFileRegistrar& registrar) noexcept;
+
+    void set_paths(IoPath write, IoPath read, std::size_t read_registered) noexcept;
+
+    template <IsIoContext Context> [[nodiscard]] std::expected<void, UringError> submit_batch(const Context& ctx);
+};
+
+class CompletionQueue {
+    UringRing& ring_;
+    IoTracker& tracker_;
+    UringTimeoutController& timeout_controller_;
+    std::vector<io_uring_cqe*> cqe_buffer_;
+    IoPath write_path_ = IoPath::Plain;
+    IoPath read_path_  = IoPath::Plain;
+
+    [[nodiscard]] static bool is_retryable_wait_error(std::int32_t rc) noexcept;
+
+    template <IsIoContext Context>
+    [[nodiscard]] std::expected<void, UringError> handle_completion(const io_uring_cqe* cqe);
+
+    template <IsIoContext Context>
+    [[nodiscard]] std::expected<void, UringError> finalize_cqe(const io_uring_cqe* cqe, std::uint16_t idx);
+    [[nodiscard]] std::expected<void, std::error_code> wait_one_cqe() noexcept;
+
+public:
+    CompletionQueue(UringRing& ring, IoTracker& tracker, UringTimeoutController& timeout, std::uint16_t queue_depth);
+
+    void set_paths(IoPath write, IoPath read) noexcept;
+
+    template <IsIoContext Context>
+    [[nodiscard]] std::expected<void, UringError> wait_for_submission(const Context& ctx, std::uint32_t wait_nr);
+
+    template <IsIoContext Context>
+    [[nodiscard]] std::expected<void, UringError> process_completions(const Context& ctx);
+
+    template <IsIoContext Context> void drain_all_completions(const Context& ctx) noexcept;
+};
+
+class UringEventLoop {
+    UringRing& ring_;
+    IoTracker tracker_;
+    UringFileRegistrar& file_registrar_;
+    UringTimeoutController& timeout_controller_;
+    SubmissionQueue sq_;
+    CompletionQueue cq_;
+
+public:
+    UringEventLoop(UringRing& ring, UringFileRegistrar& file_registrar, UringTimeoutController& timeout,
+        std::uint16_t queue_depth);
+
+    void set_paths(IoPath write, IoPath read, std::size_t read_registered) noexcept;
+
+    template <IsIoContext Context> [[nodiscard]] std::expected<PhaseRunStats, UringError> execute(const Context& ctx);
 };
 
 class UringEngine {
     friend class BufferRegistrar;
-    friend class UringIoSubmitter;
-    friend class UringCqeProcessor;
+
+    UringRing ring_;
+    UringFileRegistrar file_registrar_;
+    UringTimeoutController timeout_controller_;
+    UringEventLoop event_loop_;
+
+    std::size_t read_buffers_registered_ = 0;
+    std::vector<iovec> registered_iovecs_ {};
+    std::error_code buffer_register_error_ {};
+
+    UringProber prober_;
+    IoPath write_path_ = IoPath::Plain;
+    IoPath read_path_  = IoPath::Plain;
+
+    explicit UringEngine(UringRing ring);
 
 public:
     using IoPath = uring::IoPath;
 
-    struct LoopState {
-        std::uint64_t submitted             = 0;
-        std::uint64_t completed             = 0;
-        std::uint64_t bytes_completed       = 0;
-        std::uint64_t io_completed          = 0;
-        std::uint64_t offset                = 0;
-        std::span<std::uint16_t> free_slots = {};
-        std::span<std::uint64_t> deltas     = {};
-        std::uint16_t free_count            = 0;
-        std::uint16_t delta_count           = 0;
-        bool interrupt                      = false;
-
-        void reset_free_slots(std::uint16_t count) noexcept {
-            std::ranges::iota(free_slots.subspan(0, count), std::uint16_t { 0 });
-            free_count = count;
-        }
-    };
-
-    struct IoPrepContext {
-        const IoContext& io;
-        bool is_write = false;
-    };
-
-private:
-    UringRing ring_;
-    UringProber prober_;
-    UringFileRegistrar file_registrar_;
-    UringTimeoutController timeout_controller_;
-
-    [[nodiscard]] static std::uint32_t determine_wait_count(
-        std::size_t in_kernel, std::uint32_t batch_size, const LoopState& state, const IoContext& ctx) noexcept;
-
-    IoPath write_path_                   = IoPath::Plain;
-    IoPath read_path_                    = IoPath::Plain;
-    std::size_t read_buffers_registered_ = 0;
-
-    std::vector<IoRequest> requests_;
-    std::vector<std::uint16_t> retry_slots_ {};
-    std::vector<std::uint16_t> free_slots_ {};
-    std::vector<std::uint64_t> deltas_ {};
-    std::vector<iovec> registered_iovecs_ {};
-    std::vector<io_uring_cqe*> cqe_buffer_ {};
-    std::size_t retry_count_ = 0;
-    std::error_code buffer_register_error_ {};
-    metrics::LatencyHistogram hist_ {};
-
-public:
-    explicit UringEngine(std::uint16_t queue_depth, std::optional<std::int32_t> sq_thread_cpu = std::nullopt);
+    [[nodiscard]] static std::expected<UringEngine, std::error_code> create(
+        std::uint16_t queue_depth, std::optional<std::int32_t> sq_thread_cpu = std::nullopt);
 
     UringEngine(const UringEngine&)            = delete;
     UringEngine& operator=(const UringEngine&) = delete;
-    UringEngine(UringEngine&&)                 = delete;
-    UringEngine& operator=(UringEngine&&)      = delete;
+
+    UringEngine(UringEngine&& other) noexcept;
+    UringEngine& operator=(UringEngine&& other) noexcept;
 
     ~UringEngine();
 
-    [[nodiscard]] bool is_valid() const noexcept { return ring_.is_valid(); }
-    [[nodiscard]] std::error_code get_error() const noexcept { return ring_.get_error(); }
     [[nodiscard]] std::error_code get_buffer_register_error() const noexcept { return buffer_register_error_; }
 
     [[nodiscard]] auto register_worker_affinity(const cpu_set_t* mask, std::size_t size) noexcept
-        -> std::expected<void, UringError> {
-        if (!ring_.is_valid()) { return std::unexpected(UringError { posix::make_error(EINVAL) }); }
-        return posix::expect_success<posix::error_style::linux_internal>(
-            ::io_uring_register_iowq_aff(ring_.get_ring(), size, mask))
-            .transform_error([](std::error_code ec) { return UringError { ec }; });
-    }
+        -> std::expected<void, UringError>;
 
     [[nodiscard]] std::expected<void, UringError> register_buffers(
         std::span<std::byte> write_buf, std::span<AlignedBuffer> read_bufs) noexcept;
 
-    [[nodiscard]] std::expected<PhaseRunStats, UringError> submit_and_wait(const IoContext& ctx, bool is_write);
-};
-
-class UringIoSubmitter {
-public:
-    static std::expected<void, UringError> submit_batch(
-        UringEngine& engine, const IoContext& ctx, bool is_write, UringEngine::LoopState& state);
-    static void prepare_io_sqe(UringEngine& engine, io_uring_sqe* sqe, const UringEngine::IoPrepContext& prep,
-        IoRequest& req, std::uint16_t idx) noexcept;
-
-private:
-    [[nodiscard]] static IoPath determine_io_path(
-        const UringEngine& engine, const UringEngine::IoPrepContext& prep, std::uint16_t idx) noexcept;
-};
-
-class UringCqeProcessor {
-public:
-    [[nodiscard]] static bool is_retryable_wait_error(std::int32_t rc) noexcept {
-        return is_one_of<ETIME, EINTR, EAGAIN, EBUSY>(rc);
-    }
-
-    static std::expected<void, UringError> wait_for_submission(
-        UringEngine& engine, const IoContext& ctx, std::uint32_t wait_nr);
-    static std::expected<void, UringError> process_completions(
-        UringEngine& engine, const IoContext& ctx, bool is_write, UringEngine::LoopState& state);
-    static std::expected<void, UringError> handle_completion(
-        UringEngine& engine, const io_uring_cqe* cqe, bool is_write, UringEngine::LoopState& state);
-    static std::expected<void, UringError> finalize_cqe(
-        UringEngine& engine, const io_uring_cqe* cqe, bool is_write, std::uint16_t idx, UringEngine::LoopState& state);
-    static std::expected<void, UringError> queue_retry_slot(UringEngine& engine, std::uint16_t idx) noexcept;
-    [[nodiscard]] static std::expected<std::uint16_t, UringError> resolve_cqe_slot(
-        const UringEngine& engine, std::uint64_t tag) noexcept;
-    static void drain_all_completions(
-        UringEngine& engine, const IoContext& ctx, bool is_write, UringEngine::LoopState& state) noexcept;
-    [[nodiscard]] static std::expected<void, std::error_code> wait_one_cqe(UringEngine& engine) noexcept;
+    [[nodiscard]] std::expected<PhaseRunStats, UringError> execute_write(const WriteContext& ctx);
+    [[nodiscard]] std::expected<PhaseRunStats, UringError> execute_read(const ReadContext& ctx);
 };
 
 class BufferRegistrar : private ResourceProber {
@@ -513,8 +576,8 @@ class BufferRegistrar : private ResourceProber {
     };
 
     struct MemlockBudget {
-        MemlockBudgetState state;
         std::uint64_t bytes {};
+        MemlockBudgetState state;
     };
 
     UringEngine& engine_;
@@ -522,12 +585,6 @@ class BufferRegistrar : private ResourceProber {
 
     explicit BufferRegistrar(UringEngine& engine) noexcept
         : engine_(engine) {}
-
-public:
-    [[nodiscard]] std::expected<void, std::error_code> register_buffers(
-        std::span<std::byte> write_buf, std::span<AlignedBuffer> read_bufs) noexcept;
-
-private:
     [[nodiscard]] std::expected<MemlockBudget, std::error_code> check_root_memlock_budget() const noexcept;
     [[nodiscard]] static MemlockBudget map_rlimit_to_budget(const rlimit& limit) noexcept;
     [[nodiscard]] static constexpr std::size_t compile_time_iovec_limit() noexcept {
@@ -555,10 +612,16 @@ private:
     [[nodiscard]] std::expected<void, std::error_code> probe_register_buffers(
         std::size_t read_count, bool keep_registered) noexcept;
     [[nodiscard]] MemlockBudget pinned_memory_budget() const noexcept;
+
+public:
+    [[nodiscard]] std::expected<void, std::error_code> register_buffers(
+        std::span<std::byte> write_buf, std::span<AlignedBuffer> read_bufs) noexcept;
 };
 
 } // namespace uring
 
-using uring::IoContext;
+using uring::IoContextBase;
 using uring::PhaseRunStats;
+using uring::ReadContext;
 using uring::UringEngine;
+using uring::WriteContext;
