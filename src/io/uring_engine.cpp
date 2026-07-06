@@ -282,16 +282,9 @@ void IoTracker::push_free_slot(std::uint16_t idx) noexcept {
     ++state_.free_count;
 }
 
-SubmissionQueue::SubmissionQueue(UringRing& ring, IoTracker& tracker, UringFileRegistrar& registrar) noexcept
-    : ring_(ring)
-    , tracker_(tracker)
-    , file_registrar_(registrar) {}
-
-void SubmissionQueue::set_paths(IoPath write, IoPath read, std::size_t read_registered) noexcept {
-    write_path_              = write;
-    read_path_               = read;
-    read_buffers_registered_ = read_registered;
-}
+SubmissionQueue::SubmissionQueue(UringSharedState shared_state, IoTracker& tracker) noexcept
+    : shared_state_(shared_state)
+    , tracker_(tracker) {}
 
 template <IsIoContext Context> std::expected<void, UringError> SubmissionQueue::submit_batch(const Context& ctx) {
     /**
@@ -306,7 +299,8 @@ template <IsIoContext Context> std::expected<void, UringError> SubmissionQueue::
     std::size_t retries_submitted = 0;
 
     for (const auto idx : retry_slots_view) {
-        const auto sqe_res = posix::expect_result<posix::error_style::pointer>(io_uring_get_sqe(ring_.get_ring()));
+        const auto sqe_res
+            = posix::expect_result<posix::error_style::pointer>(io_uring_get_sqe(shared_state_.ring.get_ring()));
         if (!sqe_res) { break; }
         io_uring_sqe* sqe = *sqe_res;
 
@@ -332,7 +326,8 @@ template <IsIoContext Context> std::expected<void, UringError> SubmissionQueue::
             return std::unexpected(UringError { InterruptError {} });
         }
 
-        const auto sqe_res = posix::expect_result<posix::error_style::pointer>(io_uring_get_sqe(ring_.get_ring()));
+        const auto sqe_res
+            = posix::expect_result<posix::error_style::pointer>(io_uring_get_sqe(shared_state_.ring.get_ring()));
         if (!sqe_res) { break; }
         io_uring_sqe* sqe = *sqe_res;
 
@@ -353,10 +348,9 @@ template <IsIoContext Context> std::expected<void, UringError> SubmissionQueue::
 
 template <IsIoContext Context> IoPath SubmissionQueue::determine_io_path(std::uint16_t idx) const noexcept {
     constexpr bool is_write = std::remove_cvref_t<Context>::is_write_op;
-    if (tracker_.state().downgrade_to_vector) { return IoPath::Vector; }
-    if constexpr (is_write) { return write_path_; }
-    if (read_path_ != IoPath::Fixed) { return read_path_; }
-    return (toSize(idx) < read_buffers_registered_) ? IoPath::Fixed : IoPath::Plain;
+    if constexpr (is_write) { return shared_state_.path_state.write; }
+    if (shared_state_.path_state.read != IoPath::Fixed) { return shared_state_.path_state.read; }
+    return (toSize(idx) < shared_state_.path_state.read_buffers_registered) ? IoPath::Fixed : IoPath::Plain;
 }
 
 template <IsIoContext Context>
@@ -369,7 +363,7 @@ void SubmissionQueue::prepare_io_sqe(
 
     /** @brief Use registered file index (0) if available, otherwise raw FD. */
     const posix::file_descriptor::native_handle_type fd
-        = file_registrar_.registered_handle() ? 0 : ctx.fd.native_handle();
+        = shared_state_.file_registrar.registered_handle() ? 0 : ctx.fd.native_handle();
 
     const IoPath current_path    = determine_io_path<Context>(idx);
     const std::uint32_t len      = toUInt(slice.size());
@@ -406,20 +400,13 @@ void SubmissionQueue::prepare_io_sqe(
     req.start_cycles = tsc::rdtsc_ordered();
     io_uring_sqe_set_data64(sqe, idx);
     /** @brief Mark as fixed file if we are using the registered table index. */
-    if (file_registrar_.registered_handle()) { sqe->flags |= IOSQE_FIXED_FILE; }
+    if (shared_state_.file_registrar.registered_handle()) { sqe->flags |= IOSQE_FIXED_FILE; }
 }
 
-CompletionQueue::CompletionQueue(
-    UringRing& ring, IoTracker& tracker, UringTimeoutController& timeout, std::uint16_t queue_depth)
-    : ring_(ring)
-    , tracker_(tracker)
-    , timeout_controller_(timeout) {
+CompletionQueue::CompletionQueue(UringSharedState shared_state, IoTracker& tracker, std::uint16_t queue_depth)
+    : shared_state_(shared_state)
+    , tracker_(tracker) {
     cqe_buffer_.resize(queue_depth);
-}
-
-void CompletionQueue::set_paths(IoPath write, IoPath read) noexcept {
-    write_path_ = write;
-    read_path_  = read;
 }
 
 bool CompletionQueue::is_retryable_wait_error(std::int32_t rc) noexcept {
@@ -434,7 +421,7 @@ std::expected<void, UringError> CompletionQueue::wait_for_submission(const Conte
     __kernel_timespec wait_ts = UringTimeoutController::to_kernel_timespec(timeout_ns);
 
     const auto res = posix::expect_success<posix::error_style::linux_internal>(
-        io_uring_submit_and_wait_timeout(ring_.get_ring(), &cqe_ptr, wait_nr, &wait_ts, nullptr));
+        io_uring_submit_and_wait_timeout(shared_state_.ring.get_ring(), &cqe_ptr, wait_nr, &wait_ts, nullptr));
 
     if (!res && !is_retryable_wait_error(toInt(res.error().value()))) {
         return std::unexpected(UringError { posix::SysCallError { res.error(), "io_uring_submit_and_wait" } });
@@ -449,15 +436,15 @@ std::expected<void, UringError> CompletionQueue::wait_for_submission(const Conte
 
 template <IsIoContext Context>
 std::expected<void, UringError> CompletionQueue::process_completions(const Context& ctx) {
-    const std::uint32_t count
-        = toUInt(io_uring_peek_batch_cqe(ring_.get_ring(), cqe_buffer_.data(), toUInt(cqe_buffer_.size())));
-    if (count == 0) { return {}; }
+    const auto cqe_count
+        = io_uring_peek_batch_cqe(shared_state_.ring.get_ring(), cqe_buffer_.data(), toUInt(cqe_buffer_.size()));
+    if (cqe_count == 0) { return {}; }
 
-    const auto cqe_span   = std::span { cqe_buffer_ }.subspan(0, count);
-    std::size_t processed = 0;
+    const auto cqe_span = std::span { cqe_buffer_ }.subspan(0, cqe_count);
+    auto processed      = 0u;
 
     scope_exit advance_cq { [this, &processed]() noexcept {
-        if (processed > 0) { io_uring_cq_advance(ring_.get_ring(), toUInt(processed)); }
+        if (processed > 0) { io_uring_cq_advance(shared_state_.ring.get_ring(), processed); }
         tracker_.finalize_deltas();
     } };
 
@@ -478,7 +465,7 @@ std::expected<void, UringError> CompletionQueue::handle_completion(const io_urin
     constexpr bool is_write = std::remove_cvref_t<Context>::is_write_op;
     const auto tag          = io_uring_cqe_get_data64(cqe);
     if (tag == UringTimeoutController::kTimerTag) {
-        timeout_controller_.set_timer_armed(false);
+        shared_state_.timeout_controller.set_timer_armed(false);
         if (cqe->res == -ETIME) { return make_unexpected(ExecutionError::Timeout); }
         return {};
     }
@@ -491,13 +478,13 @@ std::expected<void, UringError> CompletionQueue::handle_completion(const io_urin
 
     if (is_one_of<-EAGAIN, -EINTR>(cqe->res)) { return tracker_.queue_retry_slot(idx); }
 
-    if (cqe->res == -EINVAL && (is_write ? write_path_ : read_path_) != IoPath::Vector) {
-        if (is_write) {
-            write_path_ = IoPath::Vector;
+    if (cqe->res == -EINVAL
+        && (is_write ? shared_state_.path_state.write : shared_state_.path_state.read) != IoPath::Vector) {
+        if constexpr (is_write) {
+            shared_state_.path_state.write = IoPath::Vector;
         } else {
-            read_path_ = IoPath::Vector;
+            shared_state_.path_state.read = IoPath::Vector;
         }
-        tracker_.state().downgrade_to_vector = true;
         return tracker_.queue_retry_slot(idx);
     }
 
@@ -569,22 +556,14 @@ std::expected<void, std::error_code> CompletionQueue::wait_one_cqe() noexcept {
     io_uring_cqe* cqe = nullptr;
     __kernel_timespec ts { .tv_sec = 0, .tv_nsec = config::kUringWaitTimeoutNs };
     return posix::expect_success<posix::error_style::linux_internal>(
-        ::io_uring_wait_cqe_timeout(ring_.get_ring(), &cqe, &ts));
+        ::io_uring_wait_cqe_timeout(shared_state_.ring.get_ring(), &cqe, &ts));
 }
 
-UringEventLoop::UringEventLoop(
-    UringRing& ring, UringFileRegistrar& file_registrar, UringTimeoutController& timeout, std::uint16_t queue_depth)
-    : ring_(ring)
+UringEventLoop::UringEventLoop(UringSharedState shared_state, std::uint16_t queue_depth)
+    : shared_state_(shared_state)
     , tracker_(queue_depth)
-    , file_registrar_(file_registrar)
-    , timeout_controller_(timeout)
-    , sq_(ring, tracker_, file_registrar)
-    , cq_(ring, tracker_, timeout, queue_depth) {}
-
-void UringEventLoop::set_paths(IoPath write, IoPath read, std::size_t read_registered) noexcept {
-    sq_.set_paths(write, read, read_registered);
-    cq_.set_paths(write, read);
-}
+    , sq_(shared_state_, tracker_)
+    , cq_(shared_state_, tracker_, queue_depth) {}
 
 template <IsIoContext Context> std::expected<PhaseRunStats, UringError> UringEventLoop::execute(const Context& ctx) {
 
@@ -594,15 +573,17 @@ template <IsIoContext Context> std::expected<PhaseRunStats, UringError> UringEve
      * If the file descriptor is already registered or registration fails with EBUSY, we fallback to
      * traditional FD usage without aborting, ensuring robustness in varied execution contexts.
      */
-    if (const auto res = file_registrar_.register_file(ring_.get_ring(), ctx.fd); !res) {
+    if (const auto res = shared_state_.file_registrar.register_file(shared_state_.ring.get_ring(), ctx.fd); !res) {
         if (res.error().value() == EBUSY) { return make_unexpected(ExecutionError::FileRegistrationConflict); }
         print_warning("io_uring: fixed-file registration failed, using raw fd");
     }
-    scope_exit unreg_file { [this]() noexcept { file_registrar_.unregister_file(ring_.get_ring()); } };
+    scope_exit unreg_file { [this]() noexcept {
+        shared_state_.file_registrar.unregister_file(shared_state_.ring.get_ring());
+    } };
 
     tracker_.reset(ctx.layout.queue_depth);
 
-    if (const auto arm = timeout_controller_.arm_timeout_timer(ring_.get_ring()); !arm) {
+    if (const auto arm = shared_state_.timeout_controller.arm_timeout_timer(shared_state_.ring.get_ring()); !arm) {
         return std::unexpected(arm.error());
     }
 
@@ -616,9 +597,9 @@ template <IsIoContext Context> std::expected<PhaseRunStats, UringError> UringEve
      * next completion-processing pass.
      */
     scope_exit drain_timer { [this]() noexcept {
-        if (timeout_controller_.is_timer_armed()) {
+        if (shared_state_.timeout_controller.is_timer_armed()) {
             const auto timeout_ns = UringTimeoutController::calculate_smart_timeout_ns(tracker_.histogram());
-            timeout_controller_.drain_pending_timer(ring_.get_ring(), timeout_ns);
+            shared_state_.timeout_controller.drain_pending_timer(shared_state_.ring.get_ring(), timeout_ns);
         }
     } };
 
@@ -674,8 +655,8 @@ template <IsIoContext Context> std::expected<PhaseRunStats, UringError> UringEve
                 return std::unexpected(wait.error());
             }
         } else {
-            if (const auto res
-                = posix::expect_success<posix::error_style::linux_internal>(io_uring_submit(ring_.get_ring()));
+            if (const auto res = posix::expect_success<posix::error_style::linux_internal>(
+                    io_uring_submit(shared_state_.ring.get_ring()));
                 !res) {
                 return std::unexpected(UringError { posix::SysCallError { res.error(), "io_uring_submit" } });
             }
@@ -703,27 +684,27 @@ std::expected<UringEngine, std::error_code> UringEngine::create(
 
 UringEngine::UringEngine(UringRing ring)
     : ring_(std::move(ring))
-    , event_loop_(ring_, file_registrar_, timeout_controller_, toUShort(ring_.get_ring()->sq.ring_entries)) {
+    , event_loop_(UringSharedState { ring_, file_registrar_, timeout_controller_, path_state_ },
+          toUShort(ring_.get_ring()->sq.ring_entries)) {
     const auto queue_depth = ring_.get_ring()->sq.ring_entries;
     registered_iovecs_.resize(safe_add(toSize(queue_depth), 1uz).value_or(0uz));
 
     const auto probed = prober_.probe_io_paths(ring_.get_ring());
-    write_path_       = probed.write_path;
-    read_path_        = probed.read_path;
+    path_state_.write = probed.write_path;
+    path_state_.read  = probed.read_path;
 }
 
 UringEngine::UringEngine(UringEngine&& other)
     : ring_(std::move(other.ring_))
     , file_registrar_(std::move(other.file_registrar_))
     , timeout_controller_(std::move(other.timeout_controller_))
-    , event_loop_(ring_, file_registrar_, timeout_controller_, toUShort(ring_.get_ring()->sq.ring_entries))
-    , read_buffers_registered_(other.read_buffers_registered_)
+    , event_loop_(UringSharedState { ring_, file_registrar_, timeout_controller_, path_state_ },
+          toUShort(ring_.get_ring()->sq.ring_entries))
+    , path_state_(other.path_state_)
     , registered_iovecs_(std::move(other.registered_iovecs_))
     , buffer_register_error_(other.buffer_register_error_)
-    , prober_(std::move(other.prober_))
-    , write_path_(other.write_path_)
-    , read_path_(other.read_path_) {
-    other.read_buffers_registered_ = 0;
+    , prober_(std::move(other.prober_)) {
+    other.path_state_.read_buffers_registered = 0;
 }
 
 UringEngine& UringEngine::operator=(UringEngine&& other) {
@@ -733,18 +714,16 @@ UringEngine& UringEngine::operator=(UringEngine&& other) {
         timeout_controller_ = std::move(other.timeout_controller_);
 
         std::destroy_at(&event_loop_);
-        std::construct_at(
-            &event_loop_, ring_, file_registrar_, timeout_controller_, toUShort(ring_.get_ring()->sq.ring_entries));
+        std::construct_at(&event_loop_, UringSharedState { ring_, file_registrar_, timeout_controller_, path_state_ },
+            toUShort(ring_.get_ring()->sq.ring_entries));
 
-        read_buffers_registered_ = other.read_buffers_registered_;
-        registered_iovecs_       = std::move(other.registered_iovecs_);
-        buffer_register_error_   = other.buffer_register_error_;
+        path_state_            = other.path_state_;
+        registered_iovecs_     = std::move(other.registered_iovecs_);
+        buffer_register_error_ = other.buffer_register_error_;
 
-        prober_     = std::move(other.prober_);
-        write_path_ = other.write_path_;
-        read_path_  = other.read_path_;
+        prober_ = std::move(other.prober_);
 
-        other.read_buffers_registered_ = 0;
+        other.path_state_.read_buffers_registered = 0;
     }
     return *this;
 }
@@ -752,14 +731,16 @@ UringEngine& UringEngine::operator=(UringEngine&& other) {
 UringEngine::~UringEngine() {
     if (ring_.get_ring()->ring_fd < 0) { return; }
     file_registrar_.unregister_file(ring_.get_ring());
-    if (write_path_ == IoPath::Fixed || read_buffers_registered_ > 0) { io_uring_unregister_buffers(ring_.get_ring()); }
+    if (path_state_.write == IoPath::Fixed || path_state_.read_buffers_registered > 0) {
+        io_uring_unregister_buffers(ring_.get_ring());
+    }
 }
 
 void UringEngine::apply_registration_result(const BufferRegistrationResult& result) noexcept {
-    read_buffers_registered_ = result.read_buffers_registered;
-    write_path_              = result.write_path;
-    read_path_               = result.read_path;
-    buffer_register_error_   = result.error;
+    path_state_.read_buffers_registered = result.read_buffers_registered;
+    path_state_.write                   = result.write_path;
+    path_state_.read                    = result.read_path;
+    buffer_register_error_              = result.error;
 }
 
 std::expected<void, UringError> UringEngine::register_buffers(
@@ -780,12 +761,10 @@ auto UringEngine::register_worker_affinity(const cpu_set_t* mask, std::size_t si
 }
 
 std::expected<PhaseRunStats, UringError> UringEngine::execute_write(const WriteContext& ctx) {
-    event_loop_.set_paths(write_path_, read_path_, read_buffers_registered_);
     return event_loop_.execute(ctx);
 }
 
 std::expected<PhaseRunStats, UringError> UringEngine::execute_read(const ReadContext& ctx) {
-    event_loop_.set_paths(write_path_, read_path_, read_buffers_registered_);
     return event_loop_.execute(ctx);
 }
 

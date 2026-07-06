@@ -416,7 +416,6 @@ struct IoTrackerState {
     std::uint16_t free_count      = 0;
     std::uint16_t delta_count     = 0;
     bool interrupt                = false;
-    bool downgrade_to_vector      = false;
 };
 
 class IoTracker {
@@ -452,33 +451,37 @@ public:
     void push_free_slot(std::uint16_t idx) noexcept;
 };
 
+struct IoPathState {
+    IoPath write                        = IoPath::Plain;
+    IoPath read                         = IoPath::Plain;
+    std::size_t read_buffers_registered = 0;
+};
+
+struct UringSharedState {
+    UringRing& ring;
+    UringFileRegistrar& file_registrar;
+    UringTimeoutController& timeout_controller;
+    IoPathState& path_state;
+};
+
 class SubmissionQueue {
-    UringRing& ring_;
+    UringSharedState shared_state_;
     IoTracker& tracker_;
-    UringFileRegistrar& file_registrar_;
-    std::size_t read_buffers_registered_ = 0;
-    IoPath write_path_                   = IoPath::Plain;
-    IoPath read_path_                    = IoPath::Plain;
 
     template <IsIoContext Context>
     void prepare_io_sqe(io_uring_sqe* sqe, const Context& ctx, IoRequest& req, std::uint16_t idx) noexcept;
     template <IsIoContext Context> [[nodiscard]] IoPath determine_io_path(std::uint16_t idx) const noexcept;
 
 public:
-    SubmissionQueue(UringRing& ring, IoTracker& tracker, UringFileRegistrar& registrar) noexcept;
-
-    void set_paths(IoPath write, IoPath read, std::size_t read_registered) noexcept;
+    SubmissionQueue(UringSharedState shared_state, IoTracker& tracker) noexcept;
 
     template <IsIoContext Context> [[nodiscard]] std::expected<void, UringError> submit_batch(const Context& ctx);
 };
 
 class CompletionQueue {
-    UringRing& ring_;
+    UringSharedState shared_state_;
     IoTracker& tracker_;
-    UringTimeoutController& timeout_controller_;
     std::vector<io_uring_cqe*> cqe_buffer_ {};
-    IoPath write_path_ = IoPath::Plain;
-    IoPath read_path_  = IoPath::Plain;
 
     [[nodiscard]] static bool is_retryable_wait_error(std::int32_t rc) noexcept;
 
@@ -490,9 +493,7 @@ class CompletionQueue {
     [[nodiscard]] std::expected<void, std::error_code> wait_one_cqe() noexcept;
 
 public:
-    CompletionQueue(UringRing& ring, IoTracker& tracker, UringTimeoutController& timeout, std::uint16_t queue_depth);
-
-    void set_paths(IoPath write, IoPath read) noexcept;
+    CompletionQueue(UringSharedState shared_state, IoTracker& tracker, std::uint16_t queue_depth);
 
     template <IsIoContext Context>
     [[nodiscard]] std::expected<void, UringError> wait_for_submission(const Context& ctx, std::uint32_t wait_nr);
@@ -504,18 +505,13 @@ public:
 };
 
 class UringEventLoop {
-    UringRing& ring_;
+    UringSharedState shared_state_;
     IoTracker tracker_;
-    UringFileRegistrar& file_registrar_;
-    UringTimeoutController& timeout_controller_;
     SubmissionQueue sq_;
     CompletionQueue cq_;
 
 public:
-    UringEventLoop(UringRing& ring, UringFileRegistrar& file_registrar, UringTimeoutController& timeout,
-        std::uint16_t queue_depth);
-
-    void set_paths(IoPath write, IoPath read, std::size_t read_registered) noexcept;
+    UringEventLoop(UringSharedState shared_state, std::uint16_t queue_depth);
 
     template <IsIoContext Context> [[nodiscard]] std::expected<PhaseRunStats, UringError> execute(const Context& ctx);
 };
@@ -534,13 +530,11 @@ class UringEngine {
     UringTimeoutController timeout_controller_;
     UringEventLoop event_loop_;
 
-    std::size_t read_buffers_registered_ = 0;
+    IoPathState path_state_ {};
     std::vector<iovec> registered_iovecs_ {};
     std::error_code buffer_register_error_ {};
 
     UringProber prober_;
-    IoPath write_path_ = IoPath::Plain;
-    IoPath read_path_  = IoPath::Plain;
 
     explicit UringEngine(UringRing ring);
     void apply_registration_result(const BufferRegistrationResult& result) noexcept;
