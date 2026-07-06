@@ -698,9 +698,9 @@ UringEngine::UringEngine(UringEngine&& other)
     : ring_(std::move(other.ring_))
     , file_registrar_(std::move(other.file_registrar_))
     , timeout_controller_(std::move(other.timeout_controller_))
+    , path_state_(other.path_state_)
     , event_loop_(UringSharedState { ring_, file_registrar_, timeout_controller_, path_state_ },
           toUShort(ring_.get_ring()->sq.ring_entries))
-    , path_state_(other.path_state_)
     , registered_iovecs_(std::move(other.registered_iovecs_))
     , buffer_register_error_(other.buffer_register_error_)
     , prober_(std::move(other.prober_)) {
@@ -712,12 +712,12 @@ UringEngine& UringEngine::operator=(UringEngine&& other) {
         ring_               = std::move(other.ring_);
         file_registrar_     = std::move(other.file_registrar_);
         timeout_controller_ = std::move(other.timeout_controller_);
+        path_state_         = other.path_state_;
 
         std::destroy_at(&event_loop_);
         std::construct_at(&event_loop_, UringSharedState { ring_, file_registrar_, timeout_controller_, path_state_ },
             toUShort(ring_.get_ring()->sq.ring_entries));
 
-        path_state_            = other.path_state_;
         registered_iovecs_     = std::move(other.registered_iovecs_);
         buffer_register_error_ = other.buffer_register_error_;
 
@@ -744,7 +744,7 @@ void UringEngine::apply_registration_result(const BufferRegistrationResult& resu
 }
 
 std::expected<void, UringError> UringEngine::register_buffers(
-    std::span<std::byte> write_buf, std::span<AlignedBuffer> read_bufs) noexcept {
+    std::span<std::byte> write_buf, std::span<memory::AlignedBuffer> read_bufs) noexcept {
     auto result = BufferRegistrar { ring_.get_ring(), registered_iovecs_ }.register_buffers(write_buf, read_bufs);
     apply_registration_result(result);
 
@@ -769,7 +769,7 @@ std::expected<PhaseRunStats, UringError> UringEngine::execute_read(const ReadCon
 }
 
 BufferRegistrationResult BufferRegistrar::register_buffers(
-    std::span<std::byte> write_buf, std::span<AlignedBuffer> read_bufs) noexcept {
+    std::span<std::byte> write_buf, std::span<memory::AlignedBuffer> read_bufs) noexcept {
 
     if (!has_valid_buffer_registration_inputs(write_buf)) {
         return BufferRegistrationResult { .error = posix::make_error(EINVAL) };
@@ -813,7 +813,7 @@ bool BufferRegistrar::has_valid_buffer_registration_inputs(std::span<std::byte> 
 }
 
 std::expected<std::size_t, std::error_code> BufferRegistrar::compute_memlock_read_limit(
-    std::span<std::byte> write_buf, std::span<AlignedBuffer> read_bufs) const noexcept {
+    std::span<std::byte> write_buf, std::span<memory::AlignedBuffer> read_bufs) const noexcept {
     const auto memlock_budget = pinned_memory_budget();
     if (memlock_budget.state != MemlockBudgetState::Limited) { return read_bufs.size(); }
 
@@ -832,7 +832,7 @@ std::expected<std::size_t, std::error_code> BufferRegistrar::compute_memlock_rea
 }
 
 std::expected<std::size_t, std::error_code> BufferRegistrar::compute_target_read_count(
-    std::span<std::byte> write_buf, std::span<AlignedBuffer> read_bufs) const noexcept {
+    std::span<std::byte> write_buf, std::span<memory::AlignedBuffer> read_bufs) const noexcept {
     const std::size_t max_iovecs = std::min(max_registerable_iovecs(), iovecs_.size());
     if (max_iovecs == 0) { return std::unexpected(posix::make_error(E2BIG)); }
 
@@ -844,13 +844,13 @@ std::expected<std::size_t, std::error_code> BufferRegistrar::compute_target_read
 }
 
 void BufferRegistrar::populate_registered_iovecs(
-    std::span<std::byte> write_buf, std::span<AlignedBuffer> read_bufs, std::size_t read_count) noexcept {
+    std::span<std::byte> write_buf, std::span<memory::AlignedBuffer> read_bufs, std::size_t read_count) noexcept {
     iovecs_[0] = { .iov_base = write_buf.data(), .iov_len = write_buf.size() };
 
     const auto targets = iovecs_ | std::views::drop(1) | std::views::take(read_count);
     std::ranges::for_each(std::views::zip(targets, read_bufs), [](auto&& pair) noexcept {
         auto&& [dest, src] = pair;
-        dest               = { .iov_base = src.span().data(), .iov_len = src.span().size() };
+        dest               = { .iov_base = src.data(), .iov_len = src.size() };
     });
 }
 

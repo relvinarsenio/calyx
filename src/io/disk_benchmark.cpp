@@ -142,8 +142,8 @@ void fill_pattern_fast(std::span<std::byte> buffer) noexcept {
 }
 
 struct Buffers {
-    AlignedBuffer write {};
-    std::vector<AlignedBuffer> read {};
+    memory::AlignedBuffer write {};
+    std::vector<memory::AlignedBuffer> read {};
 };
 
 /**
@@ -155,7 +155,7 @@ struct Buffers {
  */
 struct IoParams {
     std::span<std::byte> write_buffer {};
-    std::span<AlignedBuffer> read_buffers {};
+    std::span<memory::AlignedBuffer> read_buffers {};
     std::stop_token stop {};
     std::reference_wrapper<const std::move_only_function<void(std::size_t, std::size_t, std::string_view) const>>
         progress_cb;
@@ -200,13 +200,13 @@ struct IoParams {
             uring::UringError { uring::AllocationError::WriteBufAlignOverflow } });
     }
     const auto write_buf_alloc = *write_buf_alloc_opt;
-    auto write_buf_opt         = AlignedBuffer::create(write_buf_alloc, alignment);
+    auto write_buf_opt         = memory::AlignedBuffer::create(write_buf_alloc, alignment);
     if (!write_buf_opt) {
         return std::unexpected(BenchmarkError {
             BenchmarkError::Phase::BufferAllocation, uring::UringError { uring::AllocationError::WriteBufOom } });
     }
-    AlignedBuffer write_buf_local = std::move(*write_buf_opt);
-    fill_pattern_fast(write_buf_local.span());
+    memory::AlignedBuffer write_buf_local = std::move(*write_buf_opt);
+    fill_pattern_fast(write_buf_local);
 
     const auto read_buf_alloc_opt = round_up(read_block_size, get_page_size());
     if (!read_buf_alloc_opt) {
@@ -216,16 +216,17 @@ struct IoParams {
     const auto read_buf_alloc = *read_buf_alloc_opt;
 
     const auto init_vector = [depth = config.read_queue_depth]() {
-        std::vector<AlignedBuffer> vec;
+        std::vector<memory::AlignedBuffer> vec;
         vec.reserve(depth);
         return vec;
     };
 
     auto read_buffers_res = std::ranges::fold_left(std::views::iota(0uz, toSize(config.read_queue_depth)),
-        std::expected<std::vector<AlignedBuffer>, BenchmarkError> { init_vector() },
-        [read_buf_alloc, alignment](auto&& acc, auto) -> std::expected<std::vector<AlignedBuffer>, BenchmarkError> {
+        std::expected<std::vector<memory::AlignedBuffer>, BenchmarkError> { init_vector() },
+        [read_buf_alloc, alignment](
+            auto&& acc, auto) -> std::expected<std::vector<memory::AlignedBuffer>, BenchmarkError> {
             if (!acc) { return std::move(acc); }
-            auto read_buf_opt = AlignedBuffer::create(read_buf_alloc, alignment);
+            auto read_buf_opt = memory::AlignedBuffer::create(read_buf_alloc, alignment);
             if (!read_buf_opt) {
                 return std::unexpected(BenchmarkError { BenchmarkError::Phase::BufferAllocation,
                     uring::UringError { uring::AllocationError::ReadBufOom } });
@@ -580,7 +581,7 @@ std::string DiskBenchmark::format_error(const BenchmarkError& err) {
     if (const auto res = setup_engine_affinity(engine, max_queue_depth); !res) { return std::unexpected(res.error()); }
 
     static std::atomic<bool> warned { false };
-    if (const auto res = engine->register_buffers(write_buf.span(), read_buffers); !res && !warned.exchange(true)) {
+    if (const auto res = engine->register_buffers(write_buf, read_buffers); !res && !warned.exchange(true)) {
         const bool is_enomem = std::holds_alternative<std::error_code>(res.error())
             && std::get<std::error_code>(res.error()).value() == ENOMEM;
         print_warning(std::format("Performance Hint: io_uring fixed buffers disabled ({}), using fallback.",
@@ -604,7 +605,7 @@ std::string DiskBenchmark::format_error(const BenchmarkError& err) {
     const auto& eff_progress  = progress_cb ? progress_cb : kNoopProgress;
 
     const IoParams params {
-        .write_buffer      = write_buf.span(),
+        .write_buffer      = write_buf,
         .read_buffers      = read_buffers,
         .stop              = stop,
         .progress_cb       = std::cref(eff_progress),

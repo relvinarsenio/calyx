@@ -172,7 +172,7 @@ struct PhaseRunStats {
 template <typename T>
 concept IoBufferSpan = std::ranges::contiguous_range<T>
     && (std::same_as<std::remove_cvref_t<std::ranges::range_value_t<T>>, std::byte>
-        || std::same_as<std::remove_cvref_t<std::ranges::range_value_t<T>>, AlignedBuffer>);
+        || std::same_as<std::remove_cvref_t<std::ranges::range_value_t<T>>, memory::AlignedBuffer>);
 
 struct IoRequest {
     iovec iov {};
@@ -232,7 +232,7 @@ struct WriteContext final : IoContextBase<std::span<const std::byte>> {
     static constexpr bool is_write_op = true;
 };
 
-struct ReadContext final : IoContextBase<std::span<AlignedBuffer>> {
+struct ReadContext final : IoContextBase<std::span<memory::AlignedBuffer>> {
     static constexpr bool is_write_op = false;
 };
 
@@ -528,9 +528,9 @@ class UringEngine {
     UringRing ring_;
     UringFileRegistrar file_registrar_;
     UringTimeoutController timeout_controller_;
+    IoPathState path_state_ {};
     UringEventLoop event_loop_;
 
-    IoPathState path_state_ {};
     std::vector<iovec> registered_iovecs_ {};
     std::error_code buffer_register_error_ {};
 
@@ -559,7 +559,7 @@ public:
         -> std::expected<void, UringError>;
 
     [[nodiscard]] std::expected<void, UringError> register_buffers(
-        std::span<std::byte> write_buf, std::span<AlignedBuffer> read_bufs) noexcept;
+        std::span<std::byte> write_buf, std::span<memory::AlignedBuffer> read_bufs) noexcept;
 
     [[nodiscard]] std::expected<PhaseRunStats, UringError> execute_write(const WriteContext& ctx);
     [[nodiscard]] std::expected<PhaseRunStats, UringError> execute_read(const ReadContext& ctx);
@@ -594,11 +594,11 @@ class BufferRegistrar {
     [[nodiscard]] static std::size_t max_registerable_iovecs() noexcept;
     [[nodiscard]] bool has_valid_buffer_registration_inputs(std::span<std::byte> write_buf) const noexcept;
     [[nodiscard]] std::expected<std::size_t, std::error_code> compute_memlock_read_limit(
-        std::span<std::byte> write_buf, std::span<AlignedBuffer> read_bufs) const noexcept;
+        std::span<std::byte> write_buf, std::span<memory::AlignedBuffer> read_bufs) const noexcept;
     [[nodiscard]] std::expected<std::size_t, std::error_code> compute_target_read_count(
-        std::span<std::byte> write_buf, std::span<AlignedBuffer> read_bufs) const noexcept;
+        std::span<std::byte> write_buf, std::span<memory::AlignedBuffer> read_bufs) const noexcept;
     void populate_registered_iovecs(
-        std::span<std::byte> write_buf, std::span<AlignedBuffer> read_bufs, std::size_t read_count) noexcept;
+        std::span<std::byte> write_buf, std::span<memory::AlignedBuffer> read_bufs, std::size_t read_count) noexcept;
     [[nodiscard]] std::expected<std::size_t, std::error_code> probe_adaptive_read_registration(
         std::size_t target_read_count) noexcept;
     [[nodiscard]] std::expected<void, std::error_code> probe_register_buffers(
@@ -611,7 +611,7 @@ public:
         , iovecs_(iovecs) {}
 
     [[nodiscard]] BufferRegistrationResult register_buffers(
-        std::span<std::byte> write_buf, std::span<AlignedBuffer> read_bufs) noexcept;
+        std::span<std::byte> write_buf, std::span<memory::AlignedBuffer> read_bufs) noexcept;
 };
 
 } // namespace uring
