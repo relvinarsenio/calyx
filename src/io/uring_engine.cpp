@@ -122,10 +122,7 @@ auto UringFileRegistrar::register_file(io_uring* ring, const posix::file_descrip
     }
 
     return posix::expect_success<posix::error_style::linux_internal>(io_uring_register_files(ring, &fd, 1))
-        .and_then([this, fd]() -> std::expected<void, std::error_code> {
-            registered_handle_ = fd;
-            return {};
-        });
+        .transform([this, fd]() { registered_handle_ = fd; });
 }
 
 void UringFileRegistrar::unregister_file(io_uring* ring) noexcept {
@@ -172,10 +169,7 @@ std::expected<void, UringError> UringTimeoutController::arm_timeout_timer(io_uri
                 .transform_error(
                     [](auto err) { return UringError { posix::SysCallError { err, "io_uring_submit (timer)" } }; });
         })
-        .and_then([this]() -> std::expected<void, UringError> {
-            timer_armed_ = true;
-            return {};
-        });
+        .transform([this]() { timer_armed_ = true; });
 }
 
 void UringTimeoutController::drain_pending_timer(io_uring* ring, std::chrono::nanoseconds timeout) noexcept {
@@ -439,19 +433,18 @@ std::expected<void, UringError> CompletionQueue::wait_for_submission(const Conte
     const auto timeout_ns     = UringTimeoutController::calculate_smart_timeout_ns(tracker_.histogram());
     __kernel_timespec wait_ts = UringTimeoutController::to_kernel_timespec(timeout_ns);
 
-    return posix::expect_success<posix::error_style::linux_internal>(
-        io_uring_submit_and_wait_timeout(ring_.get_ring(), &cqe_ptr, wait_nr, &wait_ts, nullptr))
-        .or_else([](std::error_code err) -> std::expected<void, std::error_code> {
-            return is_retryable_wait_error(toInt(err.value())) ? std::expected<void, std::error_code> {}
-                                                               : std::unexpected(err);
-        })
-        .transform_error(
-            [](auto err) { return UringError { posix::SysCallError { err, "io_uring_submit_and_wait" } }; })
-        .and_then([&ctx]() -> std::expected<void, UringError> {
-            return (ctx.observer.interrupt_cb.get()() || ctx.observer.stop.stop_requested())
-                ? std::unexpected(UringError { InterruptError {} })
-                : std::expected<void, UringError> {};
-        });
+    const auto res = posix::expect_success<posix::error_style::linux_internal>(
+        io_uring_submit_and_wait_timeout(ring_.get_ring(), &cqe_ptr, wait_nr, &wait_ts, nullptr));
+
+    if (!res && !is_retryable_wait_error(toInt(res.error().value()))) {
+        return std::unexpected(UringError { posix::SysCallError { res.error(), "io_uring_submit_and_wait" } });
+    }
+
+    if (ctx.observer.interrupt_cb.get()() || ctx.observer.stop.stop_requested()) {
+        return std::unexpected(UringError { InterruptError {} });
+    }
+
+    return {};
 }
 
 template <IsIoContext Context>
@@ -762,11 +755,20 @@ UringEngine::~UringEngine() {
     if (write_path_ == IoPath::Fixed || read_buffers_registered_ > 0) { io_uring_unregister_buffers(ring_.get_ring()); }
 }
 
+void UringEngine::apply_registration_result(const BufferRegistrationResult& result) noexcept {
+    read_buffers_registered_ = result.read_buffers_registered;
+    write_path_              = result.write_path;
+    read_path_               = result.read_path;
+    buffer_register_error_   = result.error;
+}
+
 std::expected<void, UringError> UringEngine::register_buffers(
     std::span<std::byte> write_buf, std::span<AlignedBuffer> read_bufs) noexcept {
-    return BufferRegistrar { *this }.register_buffers(write_buf, read_bufs).transform_error([](std::error_code ec) {
-        return UringError { ec };
-    });
+    auto result = BufferRegistrar { ring_.get_ring(), registered_iovecs_ }.register_buffers(write_buf, read_bufs);
+    apply_registration_result(result);
+
+    if (result.error) { return std::unexpected<UringError>(result.error); }
+    return {};
 }
 
 auto UringEngine::register_worker_affinity(const cpu_set_t* mask, std::size_t size) noexcept
@@ -787,30 +789,26 @@ std::expected<PhaseRunStats, UringError> UringEngine::execute_read(const ReadCon
     return event_loop_.execute(ctx);
 }
 
-std::expected<void, std::error_code> BufferRegistrar::register_buffers(
+BufferRegistrationResult BufferRegistrar::register_buffers(
     std::span<std::byte> write_buf, std::span<AlignedBuffer> read_bufs) noexcept {
 
     if (!has_valid_buffer_registration_inputs(write_buf)) {
-        fail_buffer_registration(posix::make_error(EINVAL));
-        return std::unexpected(posix::make_error(EINVAL));
+        return BufferRegistrationResult { .error = posix::make_error(EINVAL) };
     }
 
-    return compute_target_read_count(write_buf, read_bufs)
-        .and_then([this, write_buf, read_bufs](std::size_t target_count) {
-            populate_registered_iovecs(write_buf, read_bufs, target_count);
-            return probe_adaptive_read_registration(target_count);
-        })
-        .transform([this](std::size_t read_count) {
-            set_buffer_registration_state(read_count);
-            engine_.write_path_ = IoPath::Fixed;
-            engine_.read_path_  = IoPath::Fixed;
-        })
-        .transform_error([this](std::error_code error_code) {
-            fail_buffer_registration(error_code);
-            engine_.write_path_ = IoPath::Plain;
-            engine_.read_path_  = IoPath::Plain;
-            return error_code;
-        });
+    const auto target_count = compute_target_read_count(write_buf, read_bufs);
+    if (!target_count) { return BufferRegistrationResult { .error = target_count.error() }; }
+
+    populate_registered_iovecs(write_buf, read_bufs, *target_count);
+
+    const auto read_count = probe_adaptive_read_registration(*target_count);
+    if (!read_count) { return BufferRegistrationResult { .error = read_count.error() }; }
+
+    return BufferRegistrationResult {
+        .read_buffers_registered = *read_count,
+        .write_path              = IoPath::Fixed,
+        .read_path               = IoPath::Fixed,
+    };
 }
 
 std::size_t BufferRegistrar::max_registerable_iovecs() noexcept {
@@ -831,8 +829,8 @@ std::size_t BufferRegistrar::max_registerable_iovecs() noexcept {
 }
 
 bool BufferRegistrar::has_valid_buffer_registration_inputs(std::span<std::byte> write_buf) const noexcept {
-    const auto queue_depth = engine_.ring_.get_ring()->sq.ring_entries;
-    return !write_buf.empty() && engine_.registered_iovecs_.size() == safe_add(toSize(queue_depth), 1uz).value_or(0uz);
+    const auto queue_depth = ring_->sq.ring_entries;
+    return !write_buf.empty() && iovecs_.size() == safe_add(toSize(queue_depth), 1uz).value_or(0uz);
 }
 
 std::expected<std::size_t, std::error_code> BufferRegistrar::compute_memlock_read_limit(
@@ -856,7 +854,7 @@ std::expected<std::size_t, std::error_code> BufferRegistrar::compute_memlock_rea
 
 std::expected<std::size_t, std::error_code> BufferRegistrar::compute_target_read_count(
     std::span<std::byte> write_buf, std::span<AlignedBuffer> read_bufs) const noexcept {
-    const std::size_t max_iovecs = std::min(max_registerable_iovecs(), engine_.registered_iovecs_.size());
+    const std::size_t max_iovecs = std::min(max_registerable_iovecs(), iovecs_.size());
     if (max_iovecs == 0) { return std::unexpected(posix::make_error(E2BIG)); }
 
     return compute_memlock_read_limit(write_buf, read_bufs)
@@ -868,51 +866,42 @@ std::expected<std::size_t, std::error_code> BufferRegistrar::compute_target_read
 
 void BufferRegistrar::populate_registered_iovecs(
     std::span<std::byte> write_buf, std::span<AlignedBuffer> read_bufs, std::size_t read_count) noexcept {
-    engine_.registered_iovecs_[0] = { .iov_base = write_buf.data(), .iov_len = write_buf.size() };
+    iovecs_[0] = { .iov_base = write_buf.data(), .iov_len = write_buf.size() };
 
-    const auto targets = engine_.registered_iovecs_ | std::views::drop(1) | std::views::take(read_count);
+    const auto targets = iovecs_ | std::views::drop(1) | std::views::take(read_count);
     std::ranges::for_each(std::views::zip(targets, read_bufs), [](auto&& pair) noexcept {
         auto&& [dest, src] = pair;
         dest               = { .iov_base = src.span().data(), .iov_len = src.span().size() };
     });
 }
 
-void BufferRegistrar::set_buffer_registration_state(std::size_t read_count) noexcept {
-    engine_.read_buffers_registered_ = read_count;
-    engine_.buffer_register_error_   = std::error_code {};
-}
-
-void BufferRegistrar::fail_buffer_registration(std::error_code error_code) noexcept {
-    engine_.write_path_              = IoPath::Plain;
-    engine_.read_path_               = IoPath::Plain;
-    engine_.read_buffers_registered_ = 0;
-    engine_.buffer_register_error_   = error_code;
-}
-
 std::expected<std::size_t, std::error_code> BufferRegistrar::probe_adaptive_read_registration(
     std::size_t target_read_count) noexcept {
-    return probe_register_buffers(target_read_count, true)
-        .transform([target_read_count]() { return target_read_count; })
-        .or_else([this, target_read_count](std::error_code err) -> std::expected<std::size_t, std::error_code> {
-            return (!is_buffer_register_resource_error(err) || target_read_count == 0)
-                ? std::unexpected(err)
-                : find_successful_probe_floor(target_read_count).and_then([this, target_read_count](std::size_t floor) {
-                      return probe_max_read_count(floor, target_read_count);
-                  });
-        });
+
+    if (const auto initial_probe = probe_register_buffers(target_read_count, true)) {
+        return target_read_count;
+    } else if (const std::error_code err = initial_probe.error();
+        !probing::is_resource_error(err) || target_read_count == 0) {
+        return std::unexpected(err);
+    }
+
+    const auto probe_fn = [this](std::size_t count, bool keep) noexcept { return probe_register_buffers(count, keep); };
+
+    return probing::find_successful_probe_floor(probe_fn, target_read_count)
+        .and_then([&probe_fn, target_read_count](
+                      std::size_t floor) { return probing::probe_max_count(probe_fn, floor, target_read_count); });
 }
 
 std::expected<void, std::error_code> BufferRegistrar::probe_register_buffers(
     std::size_t read_count, bool keep_registered) noexcept {
     const std::size_t iovec_count = safe_add(read_count, 1uz).value_or(0uz);
 
-    return posix::expect_success<posix::error_style::linux_internal>(
-        io_uring_register_buffers(engine_.ring_.get_ring(), engine_.registered_iovecs_.data(), toUInt(iovec_count)))
-        .and_then([this, keep_registered]() -> std::expected<void, std::error_code> {
-            return keep_registered ? std::expected<void, std::error_code> {}
-                                   : posix::expect_success<posix::error_style::linux_internal>(
-                                         io_uring_unregister_buffers(engine_.ring_.get_ring()));
-        });
+    const auto register_res = posix::expect_success<posix::error_style::linux_internal>(
+        io_uring_register_buffers(ring_, iovecs_.data(), toUInt(iovec_count)));
+
+    if (!register_res || keep_registered) { return register_res; }
+
+    return posix::expect_success<posix::error_style::linux_internal>(io_uring_unregister_buffers(ring_));
 }
 
 BufferRegistrar::MemlockBudget BufferRegistrar::map_rlimit_to_budget(const struct rlimit& limit) noexcept {

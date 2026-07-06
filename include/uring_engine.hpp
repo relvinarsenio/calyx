@@ -166,7 +166,7 @@ struct PhaseRunStats {
     std::chrono::duration<double> elapsed {};
     std::uint64_t io_bytes  = 0;
     std::uint64_t total_ios = 0;
-    metrics::LatencyHistogram histogram;
+    metrics::LatencyHistogram histogram {};
 };
 
 template <typename T>
@@ -175,7 +175,7 @@ concept IoBufferSpan = std::ranges::contiguous_range<T>
         || std::same_as<std::remove_cvref_t<std::ranges::range_value_t<T>>, AlignedBuffer>);
 
 struct IoRequest {
-    iovec iov;
+    iovec iov {};
     std::uint64_t offset {};
     std::size_t remaining {};
     std::size_t total_len {};
@@ -202,8 +202,8 @@ struct IoLayout {
 };
 
 struct IoObserver {
-    std::string_view label;
-    std::stop_token stop;
+    std::string_view label {};
+    std::stop_token stop {};
     std::reference_wrapper<const std::move_only_function<void(std::size_t, std::size_t, std::string_view) const>>
         progress_cb;
     std::reference_wrapper<const std::move_only_function<bool() const noexcept>> interrupt_cb;
@@ -240,112 +240,110 @@ template <typename Context>
 concept IsIoContext = std::same_as<std::remove_cvref_t<Context>, WriteContext>
     || std::same_as<std::remove_cvref_t<Context>, ReadContext>;
 
-template <typename T>
-concept ProberStrategy = requires(T& t, std::size_t count, bool keep) {
-    { t.probe_register_buffers(count, keep) } -> std::same_as<std::expected<void, std::error_code>>;
+/**
+ * @brief Generic probing algorithms for adaptive kernel resource registration.
+ *
+ * @details Provides stateless free function templates parametrised on a callable
+ *          probe function, eliminating the need for inheritance or friend access.
+ */
+namespace probing {
+
+struct ProbeBounds {
+    std::size_t low = 0, high = 0;
 };
 
-class ResourceProber {
-protected:
-    struct ProbeBounds {
-        std::size_t low, high;
+[[nodiscard]] inline bool is_resource_error(std::error_code ret) noexcept {
+    return is_one_of<ENOMEM, E2BIG>(ret.value());
+}
+
+/**
+ * @brief Performs an exponential backoff search to find a successful probe point.
+ */
+template <typename ProbeFn>
+    requires std::invocable<ProbeFn, std::size_t, bool>
+[[nodiscard]] std::expected<std::size_t, std::error_code> find_successful_probe_floor(
+    ProbeFn&& probe_fn, std::size_t high_fail) noexcept {
+    if (high_fail == 0) [[unlikely]] { return std::unexpected(posix::make_error(EINVAL)); }
+
+    struct State {
+        std::optional<std::expected<std::size_t, std::error_code>> result;
+        std::size_t probe;
     };
 
-    [[nodiscard]] static bool is_buffer_register_resource_error(std::error_code ret) noexcept {
-        return is_one_of<ENOMEM, E2BIG>(ret.value());
+    const std::size_t iterations = toSize(std::bit_width(high_fail));
+
+    const auto final_state = std::ranges::fold_left(std::views::iota(0uz, iterations),
+        State { .result = std::nullopt, .probe = high_fail },
+        [&probe_fn](const State& state, const auto) noexcept -> State {
+            if (state.result) { return state; }
+            const std::size_t next_probe = state.probe / 2uz;
+            const auto res               = probe_fn(next_probe, false);
+            if (res) { return State { .result = next_probe, .probe = next_probe }; }
+            if (!is_resource_error(res.error()) || next_probe == 0) {
+                return State { .result = std::unexpected(res.error()), .probe = next_probe };
+            }
+            return State { .result = std::nullopt, .probe = next_probe };
+        });
+
+    return final_state.result.value_or(std::unexpected(posix::make_error(EINVAL)));
+}
+
+/**
+ * @brief Evaluates a single iteration step of the buffer registration bisection search.
+ *
+ * @details Isolates search state transitions into a stateless monadic flow to enforce
+ *          monotonicity invariants and prevent undefined behavior. Supports early exit
+ *          to avoid redundant system calls when the boundaries converge, and applies
+ *          upward midpoint rounding to guarantee loop termination when retaining successful candidates.
+ */
+template <typename ProbeFn>
+    requires std::invocable<ProbeFn, std::size_t, bool>
+[[nodiscard]] std::expected<ProbeBounds, std::error_code> bisection_step(
+    ProbeFn&& probe_fn, std::expected<ProbeBounds, std::error_code> state) noexcept {
+    if (!state) { return state; }
+    const ProbeBounds bounds = *state;
+    if (bounds.low >= bounds.high) { return bounds; }
+
+    const std::size_t diff = safe_sub(bounds.high, bounds.low).value_or(0uz);
+    const std::size_t half = safe_add(diff, 1uz).value_or(0uz) / 2uz;
+    const std::size_t mid  = safe_add(bounds.low, half).value_or(0uz);
+
+    const auto probe_res = probe_fn(mid, false);
+    if (probe_res) { return ProbeBounds { mid, bounds.high }; }
+
+    const std::error_code err = probe_res.error();
+    if (!is_resource_error(err)) { return std::unexpected(err); }
+    return ProbeBounds { bounds.low, safe_sub(mid, 1uz).value_or(0uz) };
+}
+
+/**
+ * @brief Determines the maximum registerable count through bisection.
+ *
+ * @details Coordinates search boundaries between a confirmed success floor and a
+ *          known failure limit to converge on the optimal memory-lock footprint.
+ *          Once the optimal count is identified, it persistently registers the buffer table
+ *          to transition the engine to high-performance registered-buffer I/O.
+ */
+template <typename ProbeFn>
+    requires std::invocable<ProbeFn, std::size_t, bool>
+[[nodiscard]] std::expected<std::size_t, std::error_code> probe_max_count(
+    ProbeFn&& probe_fn, std::size_t low_success, std::size_t high_fail) noexcept {
+    if (high_fail == 0) [[unlikely]] {
+        return probe_fn(low_success, true).transform([low_success]() noexcept { return low_success; });
     }
 
-    /**
-     * @brief Performs an exponential backoff search to find a successful probe point.
-     */
-    template <typename Self>
-        requires ProberStrategy<Self>
-    [[nodiscard]] std::expected<std::size_t, std::error_code> find_successful_probe_floor(
-        this Self& self, std::size_t high_fail) noexcept {
-        if (high_fail == 0) [[unlikely]] { return std::unexpected(posix::make_error(EINVAL)); }
+    const std::size_t iterations = toSize(std::bit_width(safe_sub(high_fail, low_success).value_or(0uz)));
 
-        struct State {
-            std::optional<std::expected<std::size_t, std::error_code>> result;
-            std::size_t probe;
-        };
+    return std::ranges::fold_left(std::views::iota(0uz, iterations),
+        std::expected<ProbeBounds, std::error_code> {
+            ProbeBounds { low_success, safe_sub(high_fail, 1uz).value_or(0uz) } },
+        [&probe_fn](const auto& state, const auto) noexcept { return bisection_step(probe_fn, state); })
+        .and_then([&probe_fn](ProbeBounds bounds) noexcept {
+            return probe_fn(bounds.low, true).transform([bounds]() noexcept { return bounds.low; });
+        });
+}
 
-        const std::size_t iterations = toSize(std::bit_width(high_fail));
-
-        const auto final_state = std::ranges::fold_left(std::views::iota(0uz, iterations),
-            State { .result = std::nullopt, .probe = high_fail },
-            [&self](const State& state, const auto) noexcept -> State {
-                if (state.result) { return state; }
-                const std::size_t next_probe = state.probe / 2uz;
-                const auto res               = self.probe_register_buffers(next_probe, false);
-                if (res) { return State { .result = next_probe, .probe = next_probe }; }
-                if (!is_buffer_register_resource_error(res.error()) || next_probe == 0) {
-                    return State { .result = std::unexpected(res.error()), .probe = next_probe };
-                }
-                return State { .result = std::nullopt, .probe = next_probe };
-            });
-
-        return final_state.result.value_or(std::unexpected(posix::make_error(EINVAL)));
-    }
-
-    /**
-     * @brief Evaluates a single iteration step of the buffer registration bisection search.
-     *
-     * @details Isolates search state transitions into a stateless monadic flow to enforce
-     *          monotonicity invariants and prevent undefined behavior. Supports early exit
-     *          to avoid redundant system calls when the boundaries converge, and applies
-     *          upward midpoint rounding to guarantee loop termination when retaining successful candidates.
-     */
-    template <typename Self>
-        requires ProberStrategy<Self>
-    [[nodiscard]] static auto probe_bisection_step(Self& self,
-        std::expected<ProbeBounds, std::error_code> state) noexcept -> std::expected<ProbeBounds, std::error_code> {
-        if (!state) { return state; }
-        const ProbeBounds bounds = *state;
-        if (bounds.low >= bounds.high) { return bounds; }
-
-        const std::size_t diff = safe_sub(bounds.high, bounds.low).value_or(0uz);
-        const std::size_t half = safe_add(diff, 1uz).value_or(0uz) / 2uz;
-        const std::size_t mid  = safe_add(bounds.low, half).value_or(0uz);
-
-        const auto probe_res = self.probe_register_buffers(mid, false);
-        if (probe_res) { return ProbeBounds { mid, bounds.high }; }
-
-        const std::error_code err = probe_res.error();
-        if (!is_buffer_register_resource_error(err)) { return std::unexpected(err); }
-        return ProbeBounds { bounds.low, safe_sub(mid, 1uz).value_or(0uz) };
-    }
-
-    /**
-     * @brief Determines the maximum registerable I/O buffer count through bisection.
-     *
-     * @details Coordinates search boundaries between a confirmed success floor and a
-     *          known failure limit to converge on the optimal memory-lock footprint.
-     *          Once the optimal count is identified, it persistently registers the buffer table
-     *          to transition the engine to high-performance registered-buffer I/O.
-     */
-    template <typename Self>
-        requires ProberStrategy<Self>
-    [[nodiscard]] std::expected<std::size_t, std::error_code> probe_max_read_count(
-        this Self& self, std::size_t low_success, std::size_t high_fail) noexcept {
-        if (high_fail == 0) [[unlikely]] {
-            return self.probe_register_buffers(low_success, true).transform([low_success]() noexcept {
-                return low_success;
-            });
-        }
-
-        const std::size_t iterations = toSize(std::bit_width(safe_sub(high_fail, low_success).value_or(0uz)));
-
-        return std::ranges::fold_left(std::views::iota(0uz, iterations),
-            std::expected<ProbeBounds, std::error_code> {
-                ProbeBounds { low_success, safe_sub(high_fail, 1uz).value_or(0uz) } },
-            [&self](const auto& state, const auto) noexcept { return probe_bisection_step(self, state); })
-            .and_then([&self](ProbeBounds bounds) noexcept {
-                return self.probe_register_buffers(bounds.low, true).transform([bounds]() noexcept {
-                    return bounds.low;
-                });
-            });
-    }
-};
+} // namespace probing
 
 class UringRing {
     io_uring ring_ {};
@@ -422,10 +420,10 @@ struct IoTrackerState {
 };
 
 class IoTracker {
-    std::vector<IoRequest> requests_;
-    std::vector<std::uint16_t> retry_slots_;
-    std::vector<std::uint16_t> free_slots_;
-    std::vector<std::uint64_t> deltas_;
+    std::vector<IoRequest> requests_ {};
+    std::vector<std::uint16_t> retry_slots_ {};
+    std::vector<std::uint16_t> free_slots_ {};
+    std::vector<std::uint64_t> deltas_ {};
     std::size_t retry_count_ = 0;
     IoTrackerState state_ {};
     metrics::LatencyHistogram hist_ {};
@@ -478,7 +476,7 @@ class CompletionQueue {
     UringRing& ring_;
     IoTracker& tracker_;
     UringTimeoutController& timeout_controller_;
-    std::vector<io_uring_cqe*> cqe_buffer_;
+    std::vector<io_uring_cqe*> cqe_buffer_ {};
     IoPath write_path_ = IoPath::Plain;
     IoPath read_path_  = IoPath::Plain;
 
@@ -523,8 +521,6 @@ public:
 };
 
 class UringEngine {
-    friend class BufferRegistrar;
-
     UringRing ring_;
     UringFileRegistrar file_registrar_;
     UringTimeoutController timeout_controller_;
@@ -539,6 +535,7 @@ class UringEngine {
     IoPath read_path_  = IoPath::Plain;
 
     explicit UringEngine(UringRing ring);
+    void apply_registration_result(const BufferRegistrationResult& result) noexcept;
 
 public:
     using IoPath = uring::IoPath;
@@ -566,10 +563,15 @@ public:
     [[nodiscard]] std::expected<PhaseRunStats, UringError> execute_read(const ReadContext& ctx);
 };
 
-class BufferRegistrar : private ResourceProber {
-    friend class ResourceProber;
-    friend class UringEngine;
+/** @brief Outcome of a buffer registration attempt. */
+struct BufferRegistrationResult {
+    std::size_t read_buffers_registered = 0;
+    IoPath write_path                   = IoPath::Plain;
+    IoPath read_path                    = IoPath::Plain;
+    std::error_code error {};
+};
 
+class BufferRegistrar {
     enum class MemlockBudgetState {
         Limited,
         Unlimited,
@@ -578,15 +580,12 @@ class BufferRegistrar : private ResourceProber {
 
     struct MemlockBudget {
         std::uint64_t bytes {};
-        MemlockBudgetState state;
+        MemlockBudgetState state {};
     };
 
-    UringEngine& engine_;
-    using IoPath = UringEngine::IoPath;
+    io_uring* ring_ = nullptr;
+    std::span<iovec> iovecs_ {};
 
-    explicit BufferRegistrar(UringEngine& engine) noexcept
-        : engine_(engine) {}
-    [[nodiscard]] std::expected<MemlockBudget, std::error_code> check_root_memlock_budget() const noexcept;
     [[nodiscard]] static MemlockBudget map_rlimit_to_budget(const rlimit& limit) noexcept;
     [[nodiscard]] static constexpr std::size_t compile_time_iovec_limit() noexcept {
         std::size_t limit = std::numeric_limits<std::size_t>::max();
@@ -606,8 +605,6 @@ class BufferRegistrar : private ResourceProber {
         std::span<std::byte> write_buf, std::span<AlignedBuffer> read_bufs) const noexcept;
     void populate_registered_iovecs(
         std::span<std::byte> write_buf, std::span<AlignedBuffer> read_bufs, std::size_t read_count) noexcept;
-    void set_buffer_registration_state(std::size_t read_count) noexcept;
-    void fail_buffer_registration(std::error_code error_code) noexcept;
     [[nodiscard]] std::expected<std::size_t, std::error_code> probe_adaptive_read_registration(
         std::size_t target_read_count) noexcept;
     [[nodiscard]] std::expected<void, std::error_code> probe_register_buffers(
@@ -615,7 +612,11 @@ class BufferRegistrar : private ResourceProber {
     [[nodiscard]] MemlockBudget pinned_memory_budget() const noexcept;
 
 public:
-    [[nodiscard]] std::expected<void, std::error_code> register_buffers(
+    explicit BufferRegistrar(io_uring* ring, std::span<iovec> iovecs) noexcept
+        : ring_(ring)
+        , iovecs_(iovecs) {}
+
+    [[nodiscard]] BufferRegistrationResult register_buffers(
         std::span<std::byte> write_buf, std::span<AlignedBuffer> read_bufs) noexcept;
 };
 
