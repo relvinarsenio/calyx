@@ -78,12 +78,12 @@ template <string_utils::FixedString... Prefixes>
 struct CacheEntry {
     std::uint32_t level {};
     bool is_data {};
-    std::string size;
+    std::string size {};
 };
 
 struct UnitMultiplier {
-    char unit;
-    std::uint64_t multiplier;
+    char unit {};
+    std::uint64_t multiplier {};
 };
 
 static constexpr auto kUnits = std::to_array<UnitMultiplier>(
@@ -143,14 +143,14 @@ static constexpr auto kUnits = std::to_array<UnitMultiplier>(
 [[nodiscard]] std::optional<CacheEntry> scan_cpu_cache_dir() {
     namespace fs = std::filesystem;
     static constexpr std::string_view kCacheDir { "/sys/devices/system/cpu/cpu0/cache" };
-    std::error_code ec;
+    std::error_code ec {};
     if (!fs::exists(kCacheDir, ec)) { return std::nullopt; }
 
     auto directory_range = fs::directory_iterator(kCacheDir, ec);
     if (ec) { return std::nullopt; }
 
     auto valid_entries = directory_range | std::views::filter([](const auto& entry) {
-        std::error_code entry_ec;
+        std::error_code entry_ec {};
         return entry.is_directory(entry_ec);
     }) | std::views::filter([](const auto& entry) { return entry.path().filename().string().starts_with("index"); })
         | std::views::transform(parse_cache_entry)
@@ -212,7 +212,7 @@ static constexpr auto kUnits = std::to_array<UnitMultiplier>(
 
 [[nodiscard]] std::optional<FreqInfo> read_core_freq(const std::filesystem::directory_entry& cpu_entry) {
     namespace fs = std::filesystem;
-    std::error_code dir_ec;
+    std::error_code dir_ec {};
     if (!cpu_entry.is_directory(dir_ec) || dir_ec) { return std::nullopt; }
     const auto fname = cpu_entry.path().filename().string();
     if (!fname.starts_with("cpu")) { return std::nullopt; }
@@ -241,7 +241,7 @@ static constexpr auto kUnits = std::to_array<UnitMultiplier>(
 
 [[nodiscard]] std::optional<FreqInfo> probe_max_freq_sysfs() {
     namespace fs = std::filesystem;
-    std::error_code ec;
+    std::error_code ec {};
     if (!fs::exists("/sys/devices/system/cpu", ec)) { return std::nullopt; }
     auto cores = fs::directory_iterator("/sys/devices/system/cpu", ec) | std::views::transform(read_core_freq)
         | std::views::filter([](const auto& freq_opt) { return freq_opt.has_value(); })
@@ -321,7 +321,7 @@ static constexpr auto kUnits = std::to_array<UnitMultiplier>(
 
 [[nodiscard]] std::optional<std::string> detect_container_type() noexcept {
     namespace fs = std::filesystem;
-    std::error_code ec;
+    std::error_code ec {};
     if (fs::exists("/.dockerenv", ec)) { return "Docker"; }
     if (fs::exists("/run/.containerenv", ec)) { return "Podman"; }
     if (fs::exists("/proc/user_beancounters", ec)) { return "OpenVZ"; }
@@ -369,7 +369,7 @@ static constexpr auto kUnits = std::to_array<UnitMultiplier>(
 
 [[nodiscard]] std::optional<std::string> check_wsl_devices() noexcept {
     namespace fs = std::filesystem;
-    std::error_code ec;
+    std::error_code ec {};
     if (fs::exists("/dev/dxg", ec) || fs::exists("/dev/lxss", ec) || fs::exists("/usr/lib/wsl", ec)) { return "WSL"; }
     return std::nullopt;
 }
@@ -405,8 +405,8 @@ static constexpr auto kUnits = std::to_array<UnitMultiplier>(
         const std::string_view sig { sig_chars.data() };
 
         struct HvRule {
-            std::string_view signature;
-            std::string_view result;
+            std::string_view signature {};
+            std::string_view result {};
         };
         static constexpr auto kHvRules = std::to_array<HvRule>({ { "KVMKVMKVM", "KVM" }, { "Microsoft Hv", "Hyper-V" },
             { "VMwareVMware", "VMware" }, { "XenVMMXenVMM", "Xen" }, { "VBoxVBoxVBox", "VirtualBox" },
@@ -441,8 +441,8 @@ static constexpr auto kUnits = std::to_array<UnitMultiplier>(
 }
 
 struct DmiRule {
-    std::string_view result;
-    std::add_pointer_t<bool(std::string_view, std::string_view)> match;
+    std::string_view result {};
+    std::add_pointer_t<bool(std::string_view, std::string_view)> match {};
 };
 
 static constexpr auto kDmiRules = std::to_array<DmiRule>({ { "Hyper-V",

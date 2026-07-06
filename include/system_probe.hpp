@@ -30,8 +30,8 @@ struct FreqInfo {
  * @brief Represents system architecture details.
  */
 struct ArchInfo {
-    std::string raw;
-    std::string formatted;
+    std::string raw {};
+    std::string formatted {};
 };
 
 struct CpuFeatures {

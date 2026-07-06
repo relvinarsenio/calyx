@@ -355,7 +355,7 @@ public:
          * @note posix_fallocate returns the error code directly (pthreads style), not -1/errno.
          * @note Linux fallocate(2) can return EINTR even though POSIX does not mandate it.
          */
-        std::int32_t ec;
+        std::int32_t ec = 0;
         do {
             ec = ::posix_fallocate(fd_.native_handle(), offset, len);
         } while (ec == EINTR);
@@ -409,7 +409,7 @@ namespace sys_helpers {
 [[nodiscard]] inline auto read_stream_file(file& f) -> std::expected<std::string, std::error_code> {
     static constexpr std::size_t kStreamReadMaxBytes  = 64uz * 1024uz * 1024uz;
     static constexpr std::size_t kStreamReadChunkSize = 16uz * 1024uz;
-    std::string content;
+    std::string content {};
     std::size_t total_bytes = 0uz;
 
     while (true) {
@@ -557,8 +557,8 @@ namespace sys_helpers {
  * @return Resolved path + opened executable fd, or ENOENT if not found.
  */
 struct resolved_executable {
-    std::string path;
-    posix::file_descriptor fd;
+    std::string path {};
+    posix::file_descriptor fd {};
 };
 
 namespace sys_helpers {
@@ -671,7 +671,7 @@ namespace sys_helpers {
         return resolved_executable { std::string(cmd), std::move(*opened) };
     }
 
-    std::string fallback_path;
+    std::string fallback_path {};
     auto path_env = sys_helpers::read_path_environment(fallback_path);
     if (!path_env) { return std::unexpected(path_env.error()); }
 

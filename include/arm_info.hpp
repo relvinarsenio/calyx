@@ -49,8 +49,8 @@ namespace arm {
  * @brief Represents a specific ARM CPU part ID and its human-readable name.
  */
 struct ArmPartEntry {
-    std::int32_t part_id;
-    std::string_view name;
+    std::int32_t part_id {};
+    std::string_view name {};
 };
 
 /**
@@ -58,9 +58,9 @@ struct ArmPartEntry {
  * @brief Represents an ARM CPU implementer (vendor) and their associated part numbers.
  */
 struct ArmImplEntry {
-    std::int32_t impl_id;
-    std::string_view vendor;
-    std::span<const ArmPartEntry> parts;
+    std::int32_t impl_id {};
+    std::string_view vendor {};
+    std::span<const ArmPartEntry> parts {};
 };
 
 static constexpr ArmPartEntry kArmParts[] = {

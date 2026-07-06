@@ -229,7 +229,7 @@ void handle_wait_error(std::error_code ec, ShellPipeResult& result) {
 
     scope_exit guard { [&attr]() noexcept { posix_spawnattr_destroy(&attr); } };
 
-    sigset_t empty, all;
+    sigset_t empty {}, all {};
     sigemptyset(&empty);
     sigfillset(&all);
 
@@ -257,11 +257,11 @@ void handle_wait_error(std::error_code ec, ShellPipeResult& result) {
  */
 [[nodiscard]] auto spawn_child(const std::filesystem::path& path, const std::vector<char*>& argv,
     posix::file_descriptor::native_handle_type write_fd) noexcept -> std::expected<pid_t, std::error_code> {
-    posix_spawn_file_actions_t actions;
+    posix_spawn_file_actions_t actions {};
     if (const auto res = configure_spawn_file_actions(actions, write_fd); !res) { return std::unexpected(res.error()); }
     scope_exit destroy_actions { [&actions]() noexcept { posix_spawn_file_actions_destroy(&actions); } };
 
-    posix_spawnattr_t attr;
+    posix_spawnattr_t attr {};
     if (const auto res = configure_spawn_attr(attr); !res) { return std::unexpected(res.error()); }
     scope_exit destroy_attr { [&attr]() noexcept { posix_spawnattr_destroy(&attr); } };
 
@@ -340,7 +340,7 @@ auto ShellPipe::create(std::vector<std::string> args) -> std::expected<ShellPipe
     auto pipe_result = posix::pipe::create();
     if (!pipe_result) { return std::unexpected(pipe_result.error()); }
 
-    ShellPipe self;
+    ShellPipe self {};
     self.read_fd_ = pipe_result->release_read();
     auto write_fd = pipe_result->release_write();
 
@@ -360,7 +360,7 @@ auto ShellPipe::create(std::vector<std::string> args) -> std::expected<ShellPipe
 
 [[nodiscard]] ShellPipeResult ShellPipe::read_all(chrono::milliseconds timeout, std::stop_token stop,
     std::move_only_function<bool() const noexcept> interrupt_cb, bool raise_on_error) {
-    ShellPipeResult result;
+    ShellPipeResult result {};
     const auto is_stopped
         = [&stop, &interrupt_cb]() noexcept { return stop.stop_requested() || (interrupt_cb && interrupt_cb()); };
 

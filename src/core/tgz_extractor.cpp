@@ -167,14 +167,14 @@ using UniqueGzFile = std::unique_ptr<std::remove_pointer_t<gzFile>, GzFileDelete
 struct ExtractState {
     UniqueGzFile& gz; /**< Managed Gzip file handle */
     const std::filesystem::path& dest_dir; /**< Target extraction directory */
-    std::flat_set<std::filesystem::path> validated_dirs; /**< Cache of verified sub-directories */
+    std::flat_set<std::filesystem::path> validated_dirs {}; /**< Cache of verified sub-directories */
     std::uint64_t total_extracted_size { 0 }; /**< Cumulative size of extracted files */
     std::uint32_t file_count { 0 }; /**< Total number of files processed */
-    std::optional<std::string> pending_long_path; /**< Stored path from GNU LongLink header ('L') */
-    std::optional<std::string> pending_pax_path; /**< Stored path from PAX extended header ('x') */
-    std::optional<std::uint64_t> pending_pax_size; /**< Stored size from PAX extended header ('x') */
-    std::optional<std::string> global_pax_path; /**< Persistent path from global PAX header ('g') */
-    std::optional<std::uint64_t> global_pax_size; /**< Persistent size from global PAX header ('g') */
+    std::optional<std::string> pending_long_path {}; /**< Stored path from GNU LongLink header ('L') */
+    std::optional<std::string> pending_pax_path {}; /**< Stored path from PAX extended header ('x') */
+    std::optional<std::uint64_t> pending_pax_size {}; /**< Stored size from PAX extended header ('x') */
+    std::optional<std::string> global_pax_path {}; /**< Persistent path from global PAX header ('g') */
+    std::optional<std::uint64_t> global_pax_size {}; /**< Persistent size from global PAX header ('g') */
 };
 
 inline constexpr std::size_t kTarMagicOffset     = 257z;
@@ -307,7 +307,7 @@ public:
     SecureFileHandle& operator=(SecureFileHandle&& other) noexcept {
         if (this != &other) {
             if (!committed_ && !temp_path_.empty()) {
-                std::error_code ec;
+                std::error_code ec {};
                 std::filesystem::remove(temp_path_, ec);
             }
             fd_         = std::move(other.fd_);
@@ -358,7 +358,7 @@ public:
 
         fd_.reset();
 
-        std::error_code ec;
+        std::error_code ec {};
         std::filesystem::rename(temp_path_, final_path_, ec);
         if (ec) { return std::unexpected(ec); }
 
@@ -368,7 +368,7 @@ public:
 
     ~SecureFileHandle() {
         if (!committed_ && !temp_path_.empty()) {
-            std::error_code ec;
+            std::error_code ec {};
             std::filesystem::remove(temp_path_, ec);
         }
     }
@@ -469,7 +469,7 @@ static constexpr auto kTypeClassification = [] {
 }
 
 [[nodiscard]] std::expected<void, ExtractError> discard_bytes(gzFile gz, std::uint64_t total_bytes) {
-    std::array<std::byte, config::kFileReadChunkSize> discard;
+    std::array<std::byte, config::kFileReadChunkSize> discard {};
     for (std::uint64_t remaining = total_bytes; remaining > 0;) {
         const auto to_read = toSize(std::min<std::uint64_t>(remaining, discard.size()));
         const auto read    = gzread_checked(gz, std::span { discard }.first(to_read));
@@ -500,9 +500,9 @@ static constexpr auto kTypeClassification = [] {
 }
 
 struct PaxRecordView {
-    std::string_view key;
-    std::string_view value;
-    std::size_t total_len;
+    std::string_view key {};
+    std::string_view value {};
+    std::size_t total_len = 0;
 };
 
 [[nodiscard]] std::expected<std::size_t, ExtractError> parse_record_length(std::string_view text) {
@@ -550,12 +550,12 @@ struct PaxRecordView {
 }
 
 struct PaxMetadata {
-    std::optional<std::string> path; /**< Extended path attribute */
-    std::optional<std::uint64_t> size; /**< Extended size attribute */
+    std::optional<std::string> path {}; /**< Extended path attribute */
+    std::optional<std::uint64_t> size {}; /**< Extended size attribute */
 };
 
 [[nodiscard]] std::expected<PaxMetadata, ExtractError> parse_pax_metadata(std::string_view payload) {
-    PaxMetadata metadata;
+    PaxMetadata metadata {};
 
     for (std::size_t pos = 0; pos < payload.size();) {
         auto record = parse_pax_record(payload, pos);
@@ -636,9 +636,9 @@ struct PaxMetadata {
 }
 
 struct ParsedEntryHeader {
-    std::uint64_t file_size;
-    std::uint32_t file_mode;
-    char type_flag;
+    std::uint64_t file_size = 0;
+    std::uint32_t file_mode = 0;
+    char type_flag {};
 };
 
 [[nodiscard]] std::expected<ParsedEntryHeader, ExtractError> parse_entry_header(
@@ -679,7 +679,7 @@ struct ParsedEntryHeader {
 
 [[nodiscard]] std::expected<void, ExtractError> copy_file_contents(
     ExtractState& state, SecureFileHandle& file, std::uint64_t size) {
-    std::array<std::byte, config::kTgzDecompressionBufferSize> buf;
+    std::array<std::byte, config::kTgzDecompressionBufferSize> buf {};
     for (std::uint64_t remaining = size; remaining > 0;) {
         const auto to_read = toSize(std::min<std::uint64_t>(remaining, buf.size()));
         auto read          = gzread_checked(state.gz.get(), std::span { buf }.first(to_read));
@@ -732,15 +732,15 @@ struct ParsedEntryHeader {
 }
 
 struct EntryResolution {
-    std::filesystem::path safe_path;
-    std::uint64_t final_size;
+    std::filesystem::path safe_path {};
+    std::uint64_t final_size = 0;
 };
 
 struct EntryActionContext {
-    std::filesystem::path safe_path;
-    EntryAction action;
-    std::uint64_t final_size;
-    std::uint32_t file_mode;
+    std::filesystem::path safe_path {};
+    EntryAction action {};
+    std::uint64_t final_size = 0;
+    std::uint32_t file_mode  = 0;
 };
 
 [[nodiscard]] std::expected<void, ExtractError> validate_entry_limits(

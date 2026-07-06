@@ -52,7 +52,7 @@ namespace {
  * Returns `std::string` — not `std::string_view` — to give callers stable ownership.
  */
 [[nodiscard]] std::string build_progress_bar(std::size_t percent) {
-    static thread_local std::string bar_buffer;
+    static thread_local std::string bar_buffer {};
 
     const std::size_t required_capacity = safe_mul(toSize(config::kProgressBarWidth), 3uz).value_or(0uz);
     if (bar_buffer.capacity() < required_capacity) { bar_buffer.reserve(required_capacity); }
@@ -89,13 +89,13 @@ void clear_spinner_line() {
 struct ProgressSnapshot {
     std::size_t current { 0uz };
     std::size_t total { 0uz };
-    std::string label;
+    std::string label {};
 };
 
 /** @brief Shared mutable state between the progress UI thread and its update callback. */
 struct ProgressState {
-    ProgressSnapshot snap;
-    mutable std::mutex mtx;
+    ProgressSnapshot snap {};
+    mutable std::mutex mtx {};
 };
 
 [[nodiscard]] ProgressSnapshot read_snapshot(const ProgressState& state) {
@@ -197,7 +197,7 @@ void print_success_row(const SpeedEntryResult& entry) {
 
 [[nodiscard]] metrics::LatencyHistogram aggregate_histograms(
     std::span<const DiskIORunResult> disk_runs, auto phase_proj) {
-    metrics::LatencyHistogram global_hist;
+    metrics::LatencyHistogram global_hist {};
     for (const auto& run : disk_runs) {
         global_hist.merge(std::invoke(phase_proj, run).histogram);
     }
@@ -266,12 +266,12 @@ void render_speed_results(const SpeedTestResult& result) {
  * isolating threading dependencies from the public API header.
  */
 struct ScopedSpinner::Impl {
-    std::string text_;
-    std::chrono::steady_clock::time_point start_;
-    mutable std::mutex mtx_;
-    std::condition_variable_any stop_cv_;
+    std::string text_ {};
+    std::chrono::steady_clock::time_point start_ {};
+    mutable std::mutex mtx_ {};
+    std::condition_variable_any stop_cv_ {};
     std::span<const std::string_view> frames_ {};
-    std::jthread worker_;
+    std::jthread worker_ {};
 
     /** @brief Atomically reads the current display text and start time under the mutex. */
     [[nodiscard]] std::pair<std::string, std::chrono::steady_clock::time_point> snapshot() const {

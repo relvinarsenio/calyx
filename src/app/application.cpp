@@ -42,10 +42,10 @@ using namespace std::chrono;
 
 struct NetworkMetadataRaw {
     std::uint32_t asn { 0 };
-    std::string asOrganization;
-    std::string city;
-    std::string country;
-    std::string region;
+    std::string asOrganization {};
+    std::string city {};
+    std::string country {};
+    std::string region {};
 };
 
 namespace {
@@ -54,10 +54,10 @@ constexpr std::uint8_t kCliHelp    = 1u << 0;
 constexpr std::uint8_t kCliVersion = 1u << 1;
 
 struct CliOptionSpec {
-    std::string_view short_name;
-    std::string_view long_name;
-    std::uint8_t mask;
-    std::string_view description;
+    std::string_view short_name {};
+    std::string_view long_name {};
+    std::uint8_t mask = 0;
+    std::string_view description {};
 };
 
 constexpr auto kCliOptionSpecs = std::to_array<CliOptionSpec>({
@@ -116,17 +116,17 @@ constexpr auto kCliOptionSpecs = std::to_array<CliOptionSpec>({
 }
 
 struct NetworkCheckResult {
-    std::jthread probe_thread;
-    std::future<bool> v4_future;
-    std::future<bool> v6_future;
-    std::future<std::expected<std::string, std::string>> ip_future;
+    std::jthread probe_thread {};
+    std::future<bool> v4_future {};
+    std::future<bool> v6_future {};
+    std::future<std::expected<std::string, std::string>> ip_future {};
 };
 
 struct NetworkMetadata {
-    std::string isp;
-    std::string city;
-    std::string country;
-    std::string region;
+    std::string isp {};
+    std::string city {};
+    std::string country {};
+    std::string region {};
 };
 
 [[nodiscard]] NetworkCheckResult start_network_checks() {
@@ -181,7 +181,7 @@ struct NetworkMetadata {
 }
 
 [[nodiscard]] std::expected<NetworkMetadata, std::string> parse_network_metadata(std::string&& response) {
-    NetworkMetadataRaw raw;
+    NetworkMetadataRaw raw {};
     auto err = glz::read<glz::opts { .error_on_unknown_keys = false }>(raw, response);
     if (err) { return std::unexpected("Parse Error"); }
 
@@ -340,7 +340,7 @@ void print_swap_entry(const SwapEntry& swap, std::uint64_t total_mem) {
 
 void display_storage_memory() {
     const std::string current_dir = []() {
-        std::error_code ec;
+        std::error_code ec {};
         auto current_path = fs::current_path(ec);
         return ec ? "." : current_path.string();
     }();

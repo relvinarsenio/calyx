@@ -20,11 +20,11 @@
 #include <variant>
 
 struct HttpError {
-    std::string message;
+    std::string message {};
 };
 
 struct SpeedTestLogicError {
-    std::string message;
+    std::string message {};
 };
 
 using SpeedTestError = std::variant<posix::SysCallError, archive::ExtractError, HttpError, SpeedTestLogicError>;

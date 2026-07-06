@@ -15,8 +15,8 @@
 
 int main(int argc, char* argv[]) {
     std::setlocale(LC_ALL, "");
-    ui::TerminalGuard terminal_guard;
-    Application app;
+    ui::TerminalGuard terminal_guard {};
+    Application app {};
     return app.run(argc, argv)
         .transform([]() { return 0; })
         .or_else([](const std::string& err) -> std::expected<int, std::string> {

@@ -62,8 +62,8 @@ namespace posix {
  * both the raw error code and the context in which it occurred.
  */
 struct SysCallError {
-    std::error_code ec;
-    const char* context;
+    std::error_code ec {};
+    const char* context {};
 };
 
 /**

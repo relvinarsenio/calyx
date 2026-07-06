@@ -79,10 +79,10 @@ namespace {
 }
 
 struct MountMatch {
-    std::string_view exact_src;
-    std::string_view exact_fs;
-    std::string_view best_src;
-    std::string_view best_fs;
+    std::string_view exact_src {};
+    std::string_view exact_fs {};
+    std::string_view best_src {};
+    std::string_view best_fs {};
     std::size_t best_len = 0;
 };
 

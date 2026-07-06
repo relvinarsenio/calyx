@@ -311,8 +311,8 @@ namespace format_impl {
  *          in formatting helper signatures.
  */
 struct format_state {
-    double scaled_value;
-    std::size_t suffix_index;
+    double scaled_value {};
+    std::size_t suffix_index {};
 };
 
 inline constexpr auto adjust_overflow

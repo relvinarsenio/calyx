@@ -127,7 +127,7 @@ void fill_pattern_fast(std::span<std::byte> buffer) noexcept {
  */
 [[nodiscard]] std::expected<std::filesystem::path, BenchmarkError> perform_space_check(
     std::uint64_t total_bytes, const std::filesystem::path& dir_path) {
-    std::error_code ec;
+    std::error_code ec {};
     const auto target_path = dir_path.empty() ? std::filesystem::current_path(ec) : dir_path;
     if (ec) {
         return std::unexpected(
@@ -142,8 +142,8 @@ void fill_pattern_fast(std::span<std::byte> buffer) noexcept {
 }
 
 struct Buffers {
-    AlignedBuffer write;
-    std::vector<AlignedBuffer> read;
+    AlignedBuffer write {};
+    std::vector<AlignedBuffer> read {};
 };
 
 /**
@@ -154,20 +154,20 @@ struct Buffers {
  * make_ctx lambda that branches on is_write, keeping each phase self-contained.
  */
 struct IoParams {
-    std::span<std::byte> write_buffer;
-    std::span<AlignedBuffer> read_buffers;
-    std::stop_token stop;
+    std::span<std::byte> write_buffer {};
+    std::span<AlignedBuffer> read_buffers {};
+    std::stop_token stop {};
     std::reference_wrapper<const std::move_only_function<void(std::size_t, std::size_t, std::string_view) const>>
         progress_cb;
     std::reference_wrapper<const std::move_only_function<bool() const noexcept>> interrupt_cb;
-    std::uint64_t total_bytes;
-    std::uint64_t write_block_size;
-    std::uint64_t read_block_size;
-    std::uint64_t write_mem_stride;
-    std::uint64_t read_mem_stride;
-    std::string_view label;
-    std::uint16_t write_queue_depth;
-    std::uint16_t read_queue_depth;
+    std::uint64_t total_bytes       = 0;
+    std::uint64_t write_block_size  = 0;
+    std::uint64_t read_block_size   = 0;
+    std::uint64_t write_mem_stride  = 0;
+    std::uint64_t read_mem_stride   = 0;
+    std::string_view label          = "";
+    std::uint16_t write_queue_depth = 0;
+    std::uint16_t read_queue_depth  = 0;
 };
 
 /** @brief Helper for rounding up values to a given alignment with overflow protection. */
@@ -373,14 +373,14 @@ struct IoParams {
  */
 [[nodiscard]] std::expected<PhaseRunStats, BenchmarkError> execute_write_phase(
     const std::string& filename, UringEngine& engine, const IoParams& params) {
-    std::error_code pre_ec;
+    std::error_code pre_ec {};
     std::filesystem::remove(filename, pre_ec);
 
     bool write_completed = false;
     scope_exit remove_partial_file { [&filename, &write_completed]() noexcept {
         if (write_completed) { return; }
 
-        std::error_code remove_ec;
+        std::error_code remove_ec {};
         std::filesystem::remove(filename, remove_ec);
     } };
 
@@ -562,7 +562,7 @@ std::string DiskBenchmark::format_error(const BenchmarkError& err) {
     const std::uint64_t total_bytes = *total_bytes_opt;
 
     scope_exit file_cleaner { [&filename]() noexcept {
-        std::error_code ec;
+        std::error_code ec {};
         std::filesystem::remove(filename, ec);
     } };
 
@@ -574,7 +574,7 @@ std::string DiskBenchmark::format_error(const BenchmarkError& err) {
     auto&& [write_buf, read_buffers] = std::move(*buffers_res);
 
     const std::uint16_t max_queue_depth = std::max(config.write_queue_depth, config.read_queue_depth);
-    std::optional<UringEngine> engine;
+    std::optional<UringEngine> engine {};
 
     /** @brief Enforce strict single-core isolation with explicit SQPOLL and io-wq pinning. */
     if (const auto res = setup_engine_affinity(engine, max_queue_depth); !res) { return std::unexpected(res.error()); }

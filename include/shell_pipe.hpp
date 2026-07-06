@@ -46,9 +46,9 @@ struct ShellPipeResult {
     /** @brief The execution status. */
     ShellPipeStatus status = ShellPipeStatus::success;
     /** @brief The standard output and standard error of the command. */
-    std::string output;
+    std::string output {};
     /** @brief The error message, if any occurred. */
-    std::string error;
+    std::string error {};
     /** @brief The process exit code (typically 0 on success). */
     std::int32_t exit_code = 0;
     /** @brief The signal that terminated the process, if any. */
