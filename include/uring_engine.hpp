@@ -520,6 +520,14 @@ public:
     template <IsIoContext Context> [[nodiscard]] std::expected<PhaseRunStats, UringError> execute(const Context& ctx);
 };
 
+/** @brief Outcome of a buffer registration attempt. */
+struct BufferRegistrationResult {
+    std::size_t read_buffers_registered = 0;
+    IoPath write_path                   = IoPath::Plain;
+    IoPath read_path                    = IoPath::Plain;
+    std::error_code error {};
+};
+
 class UringEngine {
     UringRing ring_;
     UringFileRegistrar file_registrar_;
@@ -561,14 +569,6 @@ public:
 
     [[nodiscard]] std::expected<PhaseRunStats, UringError> execute_write(const WriteContext& ctx);
     [[nodiscard]] std::expected<PhaseRunStats, UringError> execute_read(const ReadContext& ctx);
-};
-
-/** @brief Outcome of a buffer registration attempt. */
-struct BufferRegistrationResult {
-    std::size_t read_buffers_registered = 0;
-    IoPath write_path                   = IoPath::Plain;
-    IoPath read_path                    = IoPath::Plain;
-    std::error_code error {};
 };
 
 class BufferRegistrar {
