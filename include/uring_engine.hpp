@@ -387,9 +387,43 @@ class UringTimeoutController {
     __kernel_timespec timeout_ts_ {};
     bool timer_armed_ = false;
 
+    /**
+     * @note Initialized to zero. The first call to get_cached_timeout() (when completed == 0)
+     * will immediately populate this with calculate_smart_timeout_ns().
+     */
+    std::chrono::nanoseconds cached_timeout_ { std::chrono::nanoseconds::zero() };
+    std::uint64_t last_recalc_completed_ = 0;
+
 public:
     static constexpr std::uint64_t kTimerTag  = UINT64_MAX; ///< user_data sentinel for the timeout SQE.
     static constexpr std::uint64_t kCancelTag = UINT64_MAX - 1; ///< user_data sentinel for the cancel SQE.
+
+    [[nodiscard]] std::chrono::nanoseconds get_cached_timeout(
+        const metrics::LatencyHistogram& hist, std::uint64_t completed) noexcept {
+        /**
+         * @brief Minimum completions required for p99.9 to have statistical significance.
+         * @details Based on binomial tail expectation (n >= 1/(1-p)), establishing a mathematical floor.
+         */
+        constexpr std::uint64_t kMinTailDefinedSamples = 1000;
+
+        /**
+         * @brief Recalculate at ~25% relative sample growth for consistent standard error.
+         * @details Based on asymptotic quantile variance (Mosteller 1946): Var(x̂_p) ≈ p(1-p)/(n·f(x_p)²).
+         *          A relative growth ratio (Δ) cancels the unknown density f(x_p): SE(n(1+Δ))/SE(n) = 1/√(1+Δ).
+         *          For a 10% SE reduction target, Δ ≈ 25% (divisor 4).
+         */
+        constexpr std::uint64_t kGrowthDivisor = 4;
+
+        const std::uint64_t dynamic_interval
+            = std::max(kMinTailDefinedSamples / kGrowthDivisor, last_recalc_completed_ / kGrowthDivisor);
+
+        if (completed < last_recalc_completed_ || completed - last_recalc_completed_ >= dynamic_interval
+            || completed == 0) {
+            cached_timeout_        = calculate_smart_timeout_ns(hist);
+            last_recalc_completed_ = completed;
+        }
+        return cached_timeout_;
+    }
 
     [[nodiscard]] static std::chrono::nanoseconds calculate_smart_timeout_ns(
         const metrics::LatencyHistogram& hist) noexcept;

@@ -417,7 +417,8 @@ template <IsIoContext Context>
 std::expected<void, UringError> CompletionQueue::wait_for_submission(const Context& ctx, std::uint32_t wait_nr) {
     io_uring_cqe* cqe_ptr = nullptr;
 
-    const auto timeout_ns     = UringTimeoutController::calculate_smart_timeout_ns(tracker_.histogram());
+    const auto timeout_ns
+        = shared_state_.timeout_controller.get_cached_timeout(tracker_.histogram(), tracker_.state().completed);
     __kernel_timespec wait_ts = UringTimeoutController::to_kernel_timespec(timeout_ns);
 
     const auto res = posix::expect_success<posix::error_style::linux_internal>(
@@ -598,7 +599,8 @@ template <IsIoContext Context> std::expected<PhaseRunStats, UringError> UringEve
      */
     scope_exit drain_timer { [this]() noexcept {
         if (shared_state_.timeout_controller.is_timer_armed()) {
-            const auto timeout_ns = UringTimeoutController::calculate_smart_timeout_ns(tracker_.histogram());
+            const auto timeout_ns
+                = shared_state_.timeout_controller.get_cached_timeout(tracker_.histogram(), tracker_.state().completed);
             shared_state_.timeout_controller.drain_pending_timer(shared_state_.ring.get_ring(), timeout_ns);
         }
     } };

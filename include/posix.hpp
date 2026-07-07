@@ -9,6 +9,7 @@
 
 #include "file_descriptor.hpp"
 #include "numeric_cast.hpp"
+#include "scope.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -360,6 +361,24 @@ public:
             ec = ::posix_fallocate(fd_.native_handle(), offset, len);
         } while (ec == EINTR);
         return expect_success<error_style::pthreads>(ec);
+    }
+
+    /**
+     * @brief Disable Copy-On-Write (CoW) on supported filesystems (e.g., BTRFS).
+     *
+     * Injects FS_NOCOW_FL via ioctl. Silently ignores errors if the underlying
+     * filesystem does not support this flag. Must be called on an empty file
+     * before any data or extents are allocated.
+     */
+    void disable_cow() const noexcept {
+        const auto saved_errno { errno };
+        scope_exit errno_guard { [saved_errno]() noexcept { errno = saved_errno; } };
+
+        std::int32_t attr { 0 };
+        if (::ioctl(fd_.native_handle(), toInt(FS_IOC_GETFLAGS), &attr) != 0) { return; }
+
+        attr |= FS_NOCOW_FL;
+        ::ioctl(fd_.native_handle(), toInt(FS_IOC_SETFLAGS), &attr);
     }
 
     /** @brief Access the underlying raw file descriptor. */
