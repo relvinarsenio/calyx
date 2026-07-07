@@ -385,7 +385,7 @@ struct IoParams {
         std::filesystem::remove(filename, remove_ec);
     } };
 
-    const auto phase_result = IoFile::create(filename, O_WRONLY | O_CREAT | O_EXCL | O_DIRECT, S_IRUSR | S_IWUSR)
+    const auto phase_result = IoFile::create(filename, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR)
                                   .transform_error([](std::error_code ec) {
                                       return BenchmarkError { BenchmarkError::Phase::WritePhase,
                                           posix::SysCallError { ec, "File Creation" } };
@@ -435,7 +435,7 @@ struct IoParams {
  */
 [[nodiscard]] std::expected<PhaseRunStats, BenchmarkError> execute_read_phase(
     const std::string& filename, UringEngine& engine, const IoParams& params) {
-    return IoFile::create(filename, O_RDONLY | O_DIRECT, 0)
+    return IoFile::create(filename, O_RDONLY, 0)
         .transform_error([](std::error_code ec) {
             return BenchmarkError { BenchmarkError::Phase::ReadPhase, posix::SysCallError { ec, "File Open Read" } };
         })

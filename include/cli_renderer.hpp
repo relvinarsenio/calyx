@@ -50,8 +50,9 @@ inline constexpr std::string_view show = "\x1b[?25h";
  * @brief Escape sequences for terminal state management.
  */
 namespace term {
-inline constexpr std::string_view sync_start = "\x1b[?2026h";
-inline constexpr std::string_view sync_end   = "\x1b[?2026l";
+inline constexpr std::string_view sync_start   = "\x1b[?2026h";
+inline constexpr std::string_view sync_end     = "\x1b[?2026l";
+inline constexpr std::string_view clear_screen = "\x1b[H\x1b[2J\x1b[3J";
 } // namespace term
 
 /**

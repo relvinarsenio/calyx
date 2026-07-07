@@ -506,7 +506,7 @@ std::expected<void, std::string> Application::run(int argc, char* argv[]) {
     if (!http) { return std::unexpected(std::format("\n[!] HttpClient create failed: {}", http.error())); }
     auto start_time = high_resolution_clock::now();
 
-    std::println("\x1b[H\x1b[2J\x1b[3J");
+    std::print("{}", ui::term::clear_screen);
     print_centered_header(std::format("Calyx - Linux System Benchmarking Utility (v{})", config::kAppVersion));
     std::println(" {:<{}} : {} ({})", "Author", config::kAppAuthorLabelWidth, "Alfie Ardinata", config::kUrlMaintainer);
     std::println(" {:<{}} : {}", "GitHub", config::kAppAuthorLabelWidth, config::kUrlGithub);
