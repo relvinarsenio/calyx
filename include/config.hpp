@@ -10,6 +10,7 @@
 #include "numeric_cast.hpp"
 
 #include <bit>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
@@ -86,34 +87,34 @@ inline constexpr std::size_t kPipeMaxOutputBytes    = 10z * 1024z * 1024z;
 inline constexpr std::string_view kSpeedtestCliPath = "speedtest-cli/speedtest";
 inline constexpr std::string_view kSpeedtestTgz     = "speedtest.tgz";
 
-inline constexpr std::int64_t kHttpTimeoutSec        = 10;
-inline constexpr std::int64_t kHttpConnectTimeoutSec = 10;
-inline constexpr std::int64_t kSpeedtestDlTimeoutSec = 60;
+inline constexpr auto kHttpTimeout { std::chrono::seconds { 10 } };
+inline constexpr auto kHttpConnectTimeout { std::chrono::seconds { 10 } };
+inline constexpr auto kSpeedtestDlTimeout { std::chrono::seconds { 60 } };
 
-inline constexpr std::int64_t kDiskBenchmarkMaxSeconds = 360;
+inline constexpr auto kDiskBenchmarkMaxDuration { std::chrono::seconds { 360 } };
 
 /** @brief Connection check overall timeout. */
-inline constexpr std::int64_t kCheckConnTimeoutSec = 5;
+inline constexpr auto kCheckConnTimeout { std::chrono::seconds { 5 } };
 /** @brief Connection check handshaking timeout. */
-inline constexpr std::int64_t kCheckConnConnectTimeoutSec = 3;
+inline constexpr auto kCheckConnConnectTimeout { std::chrono::seconds { 3 } };
 
-inline constexpr std::uint16_t kUiSpinnerDelayMs   = 150;
-inline constexpr std::uint16_t kUiUpdateIntervalMs = 33;
-inline constexpr bool kUiForceAscii                = false;
+inline constexpr auto kUiSpinnerDelay { std::chrono::milliseconds { 150 } };
+inline constexpr auto kUiUpdateInterval { std::chrono::milliseconds { 33 } };
+inline constexpr bool kUiForceAscii = false;
 
 /**
  * @brief Speed display formatting thresholds.
  */
 inline constexpr double kMbpsToGbpsThreshold = 1000.0;
 
-inline constexpr std::uint8_t kTcpTtl                     = 128;
-inline constexpr std::uint16_t kShellPipeTermWaitMs       = 256;
-inline constexpr std::uint16_t kShellPipePollIntervalMs   = 16;
-inline constexpr std::uint8_t kShellPipeKillWaitSec       = 2;
-inline constexpr std::uint32_t kShellPipeDefaultTimeoutMs = 60000;
-inline constexpr std::size_t kFileReadChunkSize           = 4096z;
-inline constexpr std::size_t kPipeBufferSize              = 4096z;
-inline constexpr std::int64_t kUringWaitTimeoutNs         = 200'000'000LL;
+inline constexpr std::uint8_t kTcpTtl = 128;
+inline constexpr auto kShellPipeTermWait { std::chrono::milliseconds { 256 } };
+inline constexpr auto kShellPipePollInterval { std::chrono::milliseconds { 16 } };
+inline constexpr auto kShellPipeKillWait { std::chrono::seconds { 2 } };
+inline constexpr auto kShellPipeDefaultTimeout { std::chrono::milliseconds { 60000 } };
+inline constexpr std::size_t kFileReadChunkSize = 4096z;
+inline constexpr std::size_t kPipeBufferSize    = 4096z;
+inline constexpr auto kUringWaitTimeout { std::chrono::milliseconds { 200 } };
 
 inline constexpr std::uint64_t kMinBufferBytes           = 1048576;
 inline constexpr std::uint64_t kTgzMaxFileSize           = 100ULL * 1024ULL * 1024ULL;

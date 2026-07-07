@@ -146,8 +146,7 @@ public:
      * @param raise_on_error  Whether non-zero exit codes should be treated as errors.
      * @return                The execution result.
      */
-    [[nodiscard]] ShellPipeResult read_all(
-        std::chrono::milliseconds timeout = std::chrono::milliseconds(config::kShellPipeDefaultTimeoutMs),
+    [[nodiscard]] ShellPipeResult read_all(std::chrono::milliseconds timeout = config::kShellPipeDefaultTimeout,
         std::stop_token stop = {}, std::move_only_function<bool() const noexcept> interrupt_cb = {},
         bool raise_on_error = false);
 };

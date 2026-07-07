@@ -121,7 +121,7 @@ namespace sp_impl {
 
         if (posix::sys_helpers::poll_deadline_reached(false, deadline)) { return std::nullopt; }
 
-        std::this_thread::sleep_for(chrono::milliseconds(config::kShellPipePollIntervalMs));
+        std::this_thread::sleep_for(config::kShellPipePollInterval);
     }
 }
 
@@ -316,9 +316,9 @@ void sp_impl::child_process::terminate() noexcept {
      * @brief Progressively terminate the process, attempting SIGTERM and falling back to SIGKILL.
      * @details If either signaling attempt successfully reaps the child, reset the PID to -1.
      */
-    sp_impl::try_terminate(pid_, posix::signal::Term, chrono::milliseconds(config::kShellPipeTermWaitMs))
+    sp_impl::try_terminate(pid_, posix::signal::Term, config::kShellPipeTermWait)
         .or_else([this](std::error_code) noexcept {
-            return sp_impl::try_terminate(pid_, posix::signal::Kill, chrono::seconds(config::kShellPipeKillWaitSec));
+            return sp_impl::try_terminate(pid_, posix::signal::Kill, config::kShellPipeKillWait);
         })
         .transform([this]() noexcept { pid_ = -1; });
 }
@@ -370,7 +370,7 @@ auto ShellPipe::create(std::vector<std::string> args) -> std::expected<ShellPipe
     const auto read_deadline = chrono::steady_clock::now() + timeout;
     if (!sp_impl::read_pipe_output(read_fd_, read_deadline, is_stopped, result)) { return result; }
 
-    const auto reap_deadline = chrono::steady_clock::now() + chrono::milliseconds(config::kShellPipeTermWaitMs);
+    const auto reap_deadline = chrono::steady_clock::now() + config::kShellPipeTermWait;
     sp_impl::reap_child_process(pid_, reap_deadline, is_stopped, raise_on_error, result);
 
     return result;

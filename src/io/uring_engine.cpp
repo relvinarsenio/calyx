@@ -157,7 +157,7 @@ std::chrono::nanoseconds UringTimeoutController::calculate_smart_timeout_ns(
 }
 
 std::expected<void, UringError> UringTimeoutController::arm_timeout_timer(io_uring* ring) {
-    timeout_ts_ = { .tv_sec = ::config::kDiskBenchmarkMaxSeconds, .tv_nsec = 0 };
+    timeout_ts_ = to_kernel_timespec(::config::kDiskBenchmarkMaxDuration);
 
     return posix::expect_result<posix::error_style::pointer>(io_uring_get_sqe(ring))
         .transform_error([](auto) { return UringError { LogicError::FailedToGetSqeForTimer }; })
@@ -554,8 +554,8 @@ template <IsIoContext Context> void CompletionQueue::drain_all_completions(const
 }
 
 std::expected<void, std::error_code> CompletionQueue::wait_one_cqe() noexcept {
-    io_uring_cqe* cqe = nullptr;
-    __kernel_timespec ts { .tv_sec = 0, .tv_nsec = config::kUringWaitTimeoutNs };
+    io_uring_cqe* cqe    = nullptr;
+    __kernel_timespec ts = UringTimeoutController::to_kernel_timespec(config::kUringWaitTimeout);
     return posix::expect_success<posix::error_style::linux_internal>(
         ::io_uring_wait_cqe_timeout(shared_state_.ring.get_ring(), &cqe, &ts));
 }

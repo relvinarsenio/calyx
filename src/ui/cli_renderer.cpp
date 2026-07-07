@@ -129,14 +129,14 @@ void progress_ui_thread_body(std::stop_token st, std::shared_ptr<ProgressState> 
         const auto [curr, tot, label] = read_snapshot(*state);
 
         if (curr == last_current || tot == 0uz) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(config::kUiUpdateIntervalMs));
+            std::this_thread::sleep_for(config::kUiUpdateInterval);
             continue;
         }
 
         const std::size_t percent = safe_mul(curr, 100uz).value_or(0uz) / tot;
         render_progress_line(label, percent, label_width);
         last_current = curr;
-        std::this_thread::sleep_for(std::chrono::milliseconds(config::kUiUpdateIntervalMs));
+        std::this_thread::sleep_for(config::kUiUpdateInterval);
     }
 }
 
@@ -246,7 +246,7 @@ TerminalGuard::~TerminalGuard() {
     if (uncompressed_bytes == 0uz) { return "Idle"; }
     if (compressed_bytes == 0uz) { return "Max"; }
     const double ratio = toDouble(uncompressed_bytes) / toDouble(compressed_bytes);
-    return std::format("{:.2f}×", ratio);
+    return std::format("{:.2f}\u00d7", ratio);
 }
 
 void render_speed_results(const SpeedTestResult& result) {
@@ -295,7 +295,7 @@ struct ScopedSpinner::Impl {
         std::ranges::for_each(ticks, [this, &st](std::size_t idx) {
             tick(idx);
             std::unique_lock lk(mtx_);
-            stop_cv_.wait_for(lk, st, std::chrono::milliseconds(config::kUiSpinnerDelayMs), check_interrupted);
+            stop_cv_.wait_for(lk, st, config::kUiSpinnerDelay, check_interrupted);
         });
     }
 

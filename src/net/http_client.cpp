@@ -413,9 +413,11 @@ std::expected<void, std::string> HttpClient::download(std::string_view url, cons
                             .and_then([this, &headers] { return set_option(CURLOPT_HTTPHEADER, headers.get()); })
                             .and_then([this] { return set_option(CURLOPT_WRITEFUNCTION, write_file_callback); })
                             .and_then([this, &write_ctx] { return set_option(CURLOPT_WRITEDATA, &write_ctx); })
-                            .and_then([this] { return set_option(CURLOPT_TIMEOUT, config::kSpeedtestDlTimeoutSec); })
                             .and_then(
-                                [this] { return set_option(CURLOPT_CONNECTTIMEOUT, config::kHttpConnectTimeoutSec); })
+                                [this] { return set_option(CURLOPT_TIMEOUT, config::kSpeedtestDlTimeout.count()); })
+                            .and_then([this] {
+                                return set_option(CURLOPT_CONNECTTIMEOUT, config::kHttpConnectTimeout.count());
+                            })
                             .and_then([this] { return perform_request(); });
                     })
                     .transform_error([&write_ctx, &filepath](std::string err) {
@@ -447,8 +449,8 @@ std::expected<void, std::string> HttpClient::check_connectivity(std::string_view
         .and_then([this] { return set_option(CURLOPT_NOPROGRESS, 0L); })
         .and_then([this, &url] { return set_option(CURLOPT_URL, url.c_str()); })
         .and_then([this] { return set_option(CURLOPT_CONNECT_ONLY, 1L); })
-        .and_then([this] { return set_option(CURLOPT_TIMEOUT, config::kCheckConnTimeoutSec); })
-        .and_then([this] { return set_option(CURLOPT_CONNECTTIMEOUT, config::kCheckConnConnectTimeoutSec); })
+        .and_then([this] { return set_option(CURLOPT_TIMEOUT, config::kCheckConnTimeout.count()); })
+        .and_then([this] { return set_option(CURLOPT_CONNECTTIMEOUT, config::kCheckConnConnectTimeout.count()); })
         .and_then([this] { return set_option(CURLOPT_FORBID_REUSE, 1L); })
         .and_then([this] { return perform_request(); })
         .transform_error([](std::string err) { return std::format("Connectivity check failed: {}", err); });
@@ -468,8 +470,9 @@ std::expected<void, std::string> HttpClient::prepare_get(std::string_view url) {
                         .and_then([this] { return set_option(CURLOPT_WRITEFUNCTION, write_string_callback); })
                         .and_then([this, state] { return set_option(CURLOPT_WRITEDATA, &state->write_ctx); })
                         .and_then([this, state] { return set_option(CURLOPT_HTTPHEADER, state->headers.get()); })
-                        .and_then([this] { return set_option(CURLOPT_TIMEOUT, config::kHttpTimeoutSec); })
-                        .and_then([this] { return set_option(CURLOPT_CONNECTTIMEOUT, config::kHttpConnectTimeoutSec); })
+                        .and_then([this] { return set_option(CURLOPT_TIMEOUT, config::kHttpTimeout.count()); })
+                        .and_then(
+                            [this] { return set_option(CURLOPT_CONNECTTIMEOUT, config::kHttpConnectTimeout.count()); })
                         .and_then([this, state] { return set_option(CURLOPT_PRIVATE, state.get()); })
                         .transform([this, state = std::move(state)]() mutable { current_state_ = std::move(state); });
                 });
@@ -488,8 +491,9 @@ std::expected<void, std::string> HttpClient::prepare_connectivity_check(std::str
 
             return set_option(CURLOPT_URL, url.c_str())
                 .and_then([this] { return set_option(CURLOPT_CONNECT_ONLY, 1L); })
-                .and_then([this] { return set_option(CURLOPT_TIMEOUT, config::kCheckConnTimeoutSec); })
-                .and_then([this] { return set_option(CURLOPT_CONNECTTIMEOUT, config::kCheckConnConnectTimeoutSec); })
+                .and_then([this] { return set_option(CURLOPT_TIMEOUT, config::kCheckConnTimeout.count()); })
+                .and_then(
+                    [this] { return set_option(CURLOPT_CONNECTTIMEOUT, config::kCheckConnConnectTimeout.count()); })
                 .and_then([this] { return set_option(CURLOPT_FORBID_REUSE, 1L); })
                 .and_then([this, state] { return set_option(CURLOPT_PRIVATE, state.get()); })
                 .transform([this, state = std::move(state)] { current_state_ = std::move(state); });
