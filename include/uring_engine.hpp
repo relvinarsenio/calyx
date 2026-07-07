@@ -237,7 +237,7 @@ struct ReadContext final : IoContextBase<std::span<memory::AlignedBuffer>> {
 };
 
 template <typename Context>
-concept IsIoContext = std::same_as<std::remove_cvref_t<Context>, WriteContext>
+concept IoContext = std::same_as<std::remove_cvref_t<Context>, WriteContext>
     || std::same_as<std::remove_cvref_t<Context>, ReadContext>;
 
 /**
@@ -259,8 +259,7 @@ struct ProbeBounds {
 /**
  * @brief Performs an exponential backoff search to find a successful probe point.
  */
-template <typename ProbeFn>
-    requires std::invocable<ProbeFn, std::size_t, bool>
+template <std::invocable<std::size_t, bool> ProbeFn>
 [[nodiscard]] std::expected<std::size_t, std::error_code> find_successful_probe_floor(
     ProbeFn&& probe_fn, std::size_t high_fail) noexcept {
     if (high_fail == 0) [[unlikely]] { return std::unexpected(posix::make_error(EINVAL)); }
@@ -296,8 +295,7 @@ template <typename ProbeFn>
  *          to avoid redundant system calls when the boundaries converge, and applies
  *          upward midpoint rounding to guarantee loop termination when retaining successful candidates.
  */
-template <typename ProbeFn>
-    requires std::invocable<ProbeFn, std::size_t, bool>
+template <std::invocable<std::size_t, bool> ProbeFn>
 [[nodiscard]] std::expected<ProbeBounds, std::error_code> bisection_step(
     ProbeFn&& probe_fn, std::expected<ProbeBounds, std::error_code> state) noexcept {
     if (!state) { return state; }
@@ -324,8 +322,7 @@ template <typename ProbeFn>
  *          Once the optimal count is identified, it persistently registers the buffer table
  *          to transition the engine to high-performance registered-buffer I/O.
  */
-template <typename ProbeFn>
-    requires std::invocable<ProbeFn, std::size_t, bool>
+template <std::invocable<std::size_t, bool> ProbeFn>
 [[nodiscard]] std::expected<std::size_t, std::error_code> probe_max_count(
     ProbeFn&& probe_fn, std::size_t low_success, std::size_t high_fail) noexcept {
     if (high_fail == 0) [[unlikely]] {
@@ -502,14 +499,14 @@ class SubmissionQueue {
     UringSharedState shared_state_;
     IoTracker& tracker_;
 
-    template <IsIoContext Context>
+    template <IoContext Context>
     void prepare_io_sqe(io_uring_sqe* sqe, const Context& ctx, IoRequest& req, std::uint16_t idx) noexcept;
-    template <IsIoContext Context> [[nodiscard]] IoPath determine_io_path(std::uint16_t idx) const noexcept;
+    template <IoContext Context> [[nodiscard]] IoPath determine_io_path(std::uint16_t idx) const noexcept;
 
 public:
     SubmissionQueue(UringSharedState shared_state, IoTracker& tracker) noexcept;
 
-    template <IsIoContext Context> [[nodiscard]] std::expected<void, UringError> submit_batch(const Context& ctx);
+    template <IoContext Context> [[nodiscard]] std::expected<void, UringError> submit_batch(const Context& ctx);
 };
 
 class CompletionQueue {
@@ -519,23 +516,22 @@ class CompletionQueue {
 
     [[nodiscard]] static bool is_retryable_wait_error(std::int32_t rc) noexcept;
 
-    template <IsIoContext Context>
+    template <IoContext Context>
     [[nodiscard]] std::expected<void, UringError> handle_completion(const io_uring_cqe* cqe);
 
-    template <IsIoContext Context>
+    template <IoContext Context>
     [[nodiscard]] std::expected<void, UringError> finalize_cqe(const io_uring_cqe* cqe, std::uint16_t idx);
     [[nodiscard]] std::expected<void, std::error_code> wait_one_cqe() noexcept;
 
 public:
     CompletionQueue(UringSharedState shared_state, IoTracker& tracker, std::uint16_t queue_depth);
 
-    template <IsIoContext Context>
+    template <IoContext Context>
     [[nodiscard]] std::expected<void, UringError> wait_for_submission(const Context& ctx, std::uint32_t wait_nr);
 
-    template <IsIoContext Context>
-    [[nodiscard]] std::expected<void, UringError> process_completions(const Context& ctx);
+    template <IoContext Context> [[nodiscard]] std::expected<void, UringError> process_completions(const Context& ctx);
 
-    template <IsIoContext Context> void drain_all_completions(const Context& ctx) noexcept;
+    template <IoContext Context> void drain_all_completions(const Context& ctx) noexcept;
 };
 
 class UringEventLoop {
@@ -547,7 +543,7 @@ class UringEventLoop {
 public:
     UringEventLoop(UringSharedState shared_state, std::uint16_t queue_depth);
 
-    template <IsIoContext Context> [[nodiscard]] std::expected<PhaseRunStats, UringError> execute(const Context& ctx);
+    template <IoContext Context> [[nodiscard]] std::expected<PhaseRunStats, UringError> execute(const Context& ctx);
 };
 
 /** @brief Outcome of a buffer registration attempt. */

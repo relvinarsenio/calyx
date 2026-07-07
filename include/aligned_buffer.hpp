@@ -34,15 +34,25 @@ namespace aligned_buffer_impl {
  * Ensures memory allocated via over-aligned new is correctly deallocated.
  */
 template <typename T>
-    requires std::is_unbounded_array_v<T>
-struct AlignedDeleter;
+concept unbounded_array = std::is_unbounded_array_v<T>;
+
+template <typename T>
+concept trivial = std::is_trivial_v<T>;
+
+template <typename T>
+concept trivially_destructible = std::is_trivially_destructible_v<T>;
+
+/**
+ * @brief Custom deleter for over-aligned pointers.
+ *
+ * Ensures memory allocated via over-aligned new is correctly deallocated.
+ */
+template <unbounded_array T> struct AlignedDeleter;
 
 /**
  * @brief Specialization of AlignedDeleter for unbounded arrays (T[]), used by unique_ptr<T[]>.
  */
-template <typename T>
-    requires std::is_trivially_destructible_v<T>
-struct AlignedDeleter<T[]> {
+template <trivially_destructible T> struct AlignedDeleter<T[]> {
     std::size_t alignment {};
     void operator()(T* ptr) const noexcept {
         if (ptr != nullptr) [[likely]] { ::operator delete(static_cast<void*>(ptr), std::align_val_t { alignment }); }
@@ -60,8 +70,8 @@ struct AlignedDeleter<T[]> {
  * @param alignment Required memory alignment boundary (must be a power of two).
  * @return unique_ptr managing the aligned memory, or nullptr on allocation failure.
  */
-template <typename T>
-    requires std::is_unbounded_array_v<T> && std::is_trivial_v<std::remove_extent_t<T>>
+template <unbounded_array T>
+    requires trivial<std::remove_extent_t<T>>
 [[nodiscard]] std::unique_ptr<T, AlignedDeleter<T>> make_unique_aligned_nothrow(
     std::size_t size, std::size_t alignment) noexcept {
 
@@ -82,9 +92,7 @@ template <typename T>
 
 } // namespace aligned_buffer_impl
 
-template <typename T>
-    requires std::is_trivial_v<T>
-class BasicAlignedBuffer {
+template <aligned_buffer_impl::trivial T> class BasicAlignedBuffer {
 public:
     using value_type             = T;
     using size_type              = std::size_t;
@@ -191,8 +199,7 @@ public:
     [[nodiscard]] constexpr bool empty() const noexcept { return size_ == 0; }
 };
 
-template <typename T>
-    requires std::is_trivial_v<T>
+template <aligned_buffer_impl::trivial T>
 constexpr void swap(BasicAlignedBuffer<T>& lhs, BasicAlignedBuffer<T>& rhs) noexcept {
     lhs.swap(rhs);
 }

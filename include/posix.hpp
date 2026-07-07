@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <concepts>
 #include <csignal>
 #include <cstddef>
 #include <cstdlib>
@@ -49,10 +50,12 @@ namespace posix {
 /**
  * @brief Checks if a value matches any of the specified options.
  */
-template <typename T, typename... Args>
-    requires(requires(const T& t, const Args& a) { t == a; } && ...)
-[[nodiscard]] constexpr bool is_any_of(const T& value, const Args&... args) noexcept(
-    (noexcept(std::declval<const T&>() == std::declval<const Args&>()) && ...)) {
+[[nodiscard]] constexpr bool is_any_of(const auto& value, const auto&... args) noexcept(
+    (noexcept(value == args) && ...))
+    requires(requires {
+        { value == args } -> std::convertible_to<bool>;
+    } && ...)
+{
     return ((value == args) || ...);
 }
 

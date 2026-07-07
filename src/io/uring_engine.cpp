@@ -286,7 +286,7 @@ SubmissionQueue::SubmissionQueue(UringSharedState shared_state, IoTracker& track
     : shared_state_(shared_state)
     , tracker_(tracker) {}
 
-template <IsIoContext Context> std::expected<void, UringError> SubmissionQueue::submit_batch(const Context& ctx) {
+template <IoContext Context> std::expected<void, UringError> SubmissionQueue::submit_batch(const Context& ctx) {
     /**
      * @brief Core Submission Loop
      *
@@ -346,14 +346,14 @@ template <IsIoContext Context> std::expected<void, UringError> SubmissionQueue::
     return {};
 }
 
-template <IsIoContext Context> IoPath SubmissionQueue::determine_io_path(std::uint16_t idx) const noexcept {
+template <IoContext Context> IoPath SubmissionQueue::determine_io_path(std::uint16_t idx) const noexcept {
     constexpr bool is_write = std::remove_cvref_t<Context>::is_write_op;
     if constexpr (is_write) { return shared_state_.path_state.write; }
     if (shared_state_.path_state.read != IoPath::Fixed) { return shared_state_.path_state.read; }
     return (toSize(idx) < shared_state_.path_state.read_buffers_registered) ? IoPath::Fixed : IoPath::Plain;
 }
 
-template <IsIoContext Context>
+template <IoContext Context>
 void SubmissionQueue::prepare_io_sqe(
     io_uring_sqe* sqe, const Context& ctx, IoRequest& req, std::uint16_t idx) noexcept {
     constexpr bool is_write = std::remove_cvref_t<Context>::is_write_op;
@@ -413,7 +413,7 @@ bool CompletionQueue::is_retryable_wait_error(std::int32_t rc) noexcept {
     return is_one_of<ETIME, EINTR, EAGAIN, EBUSY>(rc);
 }
 
-template <IsIoContext Context>
+template <IoContext Context>
 std::expected<void, UringError> CompletionQueue::wait_for_submission(const Context& ctx, std::uint32_t wait_nr) {
     io_uring_cqe* cqe_ptr = nullptr;
 
@@ -435,8 +435,7 @@ std::expected<void, UringError> CompletionQueue::wait_for_submission(const Conte
     return {};
 }
 
-template <IsIoContext Context>
-std::expected<void, UringError> CompletionQueue::process_completions(const Context& ctx) {
+template <IoContext Context> std::expected<void, UringError> CompletionQueue::process_completions(const Context& ctx) {
     const auto cqe_count
         = io_uring_peek_batch_cqe(shared_state_.ring.get_ring(), cqe_buffer_.data(), toUInt(cqe_buffer_.size()));
     if (cqe_count == 0) { return {}; }
@@ -461,7 +460,7 @@ std::expected<void, UringError> CompletionQueue::process_completions(const Conte
     return {};
 }
 
-template <IsIoContext Context>
+template <IoContext Context>
 std::expected<void, UringError> CompletionQueue::handle_completion(const io_uring_cqe* cqe) {
     constexpr bool is_write = std::remove_cvref_t<Context>::is_write_op;
     const auto tag          = io_uring_cqe_get_data64(cqe);
@@ -492,7 +491,7 @@ std::expected<void, UringError> CompletionQueue::handle_completion(const io_urin
     return finalize_cqe<Context>(cqe, idx);
 }
 
-template <IsIoContext Context>
+template <IoContext Context>
 std::expected<void, UringError> CompletionQueue::finalize_cqe(const io_uring_cqe* cqe, std::uint16_t idx) {
     constexpr bool is_write = std::remove_cvref_t<Context>::is_write_op;
     const auto res_opt      = posix::expect_result<posix::error_style::linux_internal>(cqe->res);
@@ -524,7 +523,7 @@ std::expected<void, UringError> CompletionQueue::finalize_cqe(const io_uring_cqe
     return {};
 }
 
-template <IsIoContext Context> void CompletionQueue::drain_all_completions(const Context& ctx) noexcept {
+template <IoContext Context> void CompletionQueue::drain_all_completions(const Context& ctx) noexcept {
     constexpr std::uint32_t kMaxDrainRetries = 3;
 
     auto& state           = tracker_.state();
@@ -566,7 +565,7 @@ UringEventLoop::UringEventLoop(UringSharedState shared_state, std::uint16_t queu
     , sq_(shared_state_, tracker_)
     , cq_(shared_state_, tracker_, queue_depth) {}
 
-template <IsIoContext Context> std::expected<PhaseRunStats, UringError> UringEventLoop::execute(const Context& ctx) {
+template <IoContext Context> std::expected<PhaseRunStats, UringError> UringEventLoop::execute(const Context& ctx) {
 
     /**
      * @brief Register the file for I/O operations to eliminate FD instantiation overhead during submit.

@@ -118,7 +118,9 @@ template <auto... Vals, class T>
  * Inherits from multiple lambdas to create a unified visitation object.
  * @note Explicit deduction guides are omitted in favor of C++20 aggregate CTAD.
  */
-template <class... Ts> struct overloaded : Ts... {
+template <class... Ts>
+    requires(std::is_class_v<Ts> && ...)
+struct overloaded : Ts... {
     using Ts::operator()...;
 };
 
