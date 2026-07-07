@@ -84,7 +84,7 @@ template <unbounded_array T>
     const std::size_t total_bytes = size * sizeof(ElementType);
 
     if (void* const raw = ::operator new(total_bytes, std::align_val_t { alignment }, std::nothrow)) {
-        std::memset(raw, 0, total_bytes);
+        std::uninitialized_value_construct_n(static_cast<ElementType*>(raw), size);
         return { static_cast<ElementType*>(raw), AlignedDeleter<T> { alignment } };
     }
     return { nullptr, AlignedDeleter<T> { alignment } };
