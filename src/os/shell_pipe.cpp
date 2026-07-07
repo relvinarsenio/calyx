@@ -37,11 +37,12 @@ namespace sp_impl {
  */
 [[nodiscard]] auto poll_ready(const posix::file_descriptor& fd, chrono::steady_clock::time_point deadline) noexcept
     -> std::expected<bool, std::error_code> {
-    const auto timeout_ms = posix::sys_helpers::compute_poll_timeout_ms(false, deadline);
-    if (timeout_ms <= 0) { return false; }
+    const auto now = chrono::steady_clock::now();
+    if (now >= deadline) { return false; }
 
+    const auto timeout = chrono::duration_cast<chrono::milliseconds>(deadline - now);
     std::array<pollfd, 1uz> pfds { pollfd { .fd = fd.native_handle(), .events = POLLIN, .revents = 0 } };
-    const auto poll_res = posix::poll(pfds, chrono::milliseconds(timeout_ms));
+    const auto poll_res = posix::poll(pfds, timeout);
     if (!poll_res) { return std::unexpected(poll_res.error()); }
     return *poll_res > 0;
 }
