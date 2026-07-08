@@ -9,10 +9,12 @@
 
 #include "file_descriptor.hpp"
 #include "numeric_cast.hpp"
+#include "scope.hpp"
 
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <concepts>
 #include <csignal>
 #include <cstddef>
 #include <cstdlib>
@@ -35,6 +37,8 @@
 #include <sys/stat.h>
 #include <sys/statfs.h>
 #include <sys/statvfs.h>
+#include <sys/sysinfo.h>
+#include <sys/sysmacros.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
 #include <system_error>
@@ -42,6 +46,18 @@
 #include <utility>
 
 namespace posix {
+
+/**
+ * @brief Checks if a value matches any of the specified options.
+ */
+[[nodiscard]] constexpr bool is_any_of(const auto& value, const auto&... args) noexcept(
+    (noexcept(value == args) && ...))
+    requires(requires {
+        { value == args } -> std::convertible_to<bool>;
+    } && ...)
+{
+    return ((value == args) || ...);
+}
 
 /**
  * @brief Represents the alignment requirements for O_DIRECT I/O.
@@ -71,13 +87,9 @@ struct BlockSize {
 [[nodiscard]] inline auto statx(const std::filesystem::path& path, std::uint32_t mask,
     std::int32_t flags = AT_STATX_SYNC_AS_STAT) noexcept -> std::expected<struct ::statx, std::error_code> {
     struct ::statx stx {};
-    std::int32_t res;
-    do {
-        res = ::statx(AT_FDCWD, path.c_str(), flags, mask, &stx);
-    } while (res == -1 && errno == EINTR);
-
-    if (res != 0) { return std::unexpected(posix::last_error()); }
-    return stx;
+    return eintr_loop<error_style::posix>([&path, flags, mask, &stx]() noexcept {
+        return ::statx(AT_FDCWD, path.c_str(), flags, mask, &stx);
+    }).transform([&stx](auto) noexcept { return stx; });
 }
 
 namespace sys_helpers {
@@ -238,21 +250,15 @@ public:
      */
     [[nodiscard]] static auto open_direct(const std::filesystem::path& path, std::int32_t flags, mode_t mode = 0)
         -> std::expected<file, std::error_code> {
-        file_descriptor::native_handle_type raw_fd;
-        do {
-            raw_fd = ::open(path.c_str(), flags | O_DIRECT | O_CLOEXEC, mode);
-        } while (raw_fd == -1 && errno == EINTR);
+        auto result = eintr_loop<error_style::posix>(
+            [&path, flags, mode]() noexcept { return ::open(path.c_str(), flags | O_DIRECT | O_CLOEXEC, mode); });
 
-        bool fell_back = raw_fd < 0 && (errno == EINVAL || errno == EOPNOTSUPP || errno == ENOTSUP);
-
-        if (fell_back) {
-            do {
-                raw_fd = ::open(path.c_str(), flags | O_CLOEXEC, mode);
-            } while (raw_fd == -1 && errno == EINTR);
+        if (!result && is_any_of(result.error().value(), EINVAL, EOPNOTSUPP, ENOTSUP)) {
+            result = eintr_loop<error_style::posix>(
+                [&path, flags, mode]() noexcept { return ::open(path.c_str(), flags | O_CLOEXEC, mode); });
         }
 
-        return posix::file_descriptor::from_raw(raw_fd).transform(
-            [](posix::file_descriptor&& descriptor) { return file(std::move(descriptor)); });
+        return result.transform([](std::int32_t raw_fd) { return file(posix::file_descriptor { raw_fd }); });
     }
 
     /**
@@ -281,7 +287,7 @@ public:
     [[nodiscard]] static auto write_to(const std::filesystem::path& path, std::string_view content)
         -> std::expected<void, std::error_code> {
         return open(path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH)
-            .and_then([&](file f) { return f.write(content); });
+            .and_then([content](file f) { return f.write(content); });
     }
 
     /** @brief Single read(2) with EINTR retry.  Zero return signals EOF. */
@@ -334,10 +340,8 @@ public:
      * no retry loop needed.
      */
     [[nodiscard]] auto advise(off_t offset, off_t len, FAdvise advice) const -> std::expected<void, std::error_code> {
-        if (auto ec = ::posix_fadvise(fd_.native_handle(), offset, len, std::to_underlying(advice)); ec != 0) {
-            return std::unexpected(std::error_code(ec, std::system_category()));
-        }
-        return {};
+        return expect_success<error_style::pthreads>(
+            ::posix_fadvise(fd_.native_handle(), offset, len, std::to_underlying(advice)));
     }
 
     /**
@@ -351,12 +355,33 @@ public:
      *       retry internally.  We add a retry loop for correctness.
      */
     [[nodiscard]] auto allocate(off_t offset, off_t len) const -> std::expected<void, std::error_code> {
-        std::int32_t ec;
+        /**
+         * @note posix_fallocate returns the error code directly (pthreads style), not -1/errno.
+         * @note Linux fallocate(2) can return EINTR even though POSIX does not mandate it.
+         */
+        std::int32_t ec = 0;
         do {
             ec = ::posix_fallocate(fd_.native_handle(), offset, len);
         } while (ec == EINTR);
-        if (ec != 0) { return std::unexpected(std::error_code(ec, std::system_category())); }
-        return {};
+        return expect_success<error_style::pthreads>(ec);
+    }
+
+    /**
+     * @brief Disable Copy-On-Write (CoW) on supported filesystems (e.g., BTRFS).
+     *
+     * Injects FS_NOCOW_FL via ioctl. Silently ignores errors if the underlying
+     * filesystem does not support this flag. Must be called on an empty file
+     * before any data or extents are allocated.
+     */
+    void disable_cow() const noexcept {
+        const auto saved_errno { errno };
+        scope_exit errno_guard { [saved_errno]() noexcept { errno = saved_errno; } };
+
+        std::int32_t attr { 0 };
+        if (::ioctl(fd_.native_handle(), toInt(FS_IOC_GETFLAGS), &attr) != 0) { return; }
+
+        attr |= FS_NOCOW_FL;
+        ::ioctl(fd_.native_handle(), toInt(FS_IOC_SETFLAGS), &attr);
     }
 
     /** @brief Access the underlying raw file descriptor. */
@@ -406,7 +431,7 @@ namespace sys_helpers {
 [[nodiscard]] inline auto read_stream_file(file& f) -> std::expected<std::string, std::error_code> {
     static constexpr std::size_t kStreamReadMaxBytes  = 64uz * 1024uz * 1024uz;
     static constexpr std::size_t kStreamReadChunkSize = 16uz * 1024uz;
-    std::string content;
+    std::string content {};
     std::size_t total_bytes = 0uz;
 
     while (true) {
@@ -443,13 +468,9 @@ namespace sys_helpers {
  */
 [[nodiscard]] inline auto mkdir(const std::filesystem::path& path,
     mode_t mode = S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH) noexcept -> std::expected<void, std::error_code> {
-    std::int32_t res;
-    do {
-        res = ::mkdir(path.c_str(), mode);
-    } while (res == -1 && errno == EINTR);
-
-    if (res == -1) { return std::unexpected(posix::last_error()); }
-    return {};
+    return eintr_loop<error_style::posix>([&path, mode]() noexcept {
+        return ::mkdir(path.c_str(), mode);
+    }).transform([](auto) noexcept {});
 }
 
 /**
@@ -461,13 +482,7 @@ namespace sys_helpers {
 [[nodiscard]] inline auto stat(const std::filesystem::path& path) noexcept
     -> std::expected<struct ::stat, std::error_code> {
     struct ::stat st {};
-    std::int32_t res;
-    do {
-        res = ::stat(path.c_str(), &st);
-    } while (res == -1 && errno == EINTR);
-
-    if (res == -1) { return std::unexpected(posix::last_error()); }
-    return st;
+    return expect_result<error_style::posix>(::stat(path.c_str(), &st)).transform([&st](auto) noexcept { return st; });
 }
 
 /**
@@ -479,13 +494,9 @@ namespace sys_helpers {
 [[nodiscard]] inline auto statvfs(const std::filesystem::path& path) noexcept
     -> std::expected<struct ::statvfs, std::error_code> {
     struct ::statvfs svfs {};
-    std::int32_t res;
-    do {
-        res = ::statvfs(path.c_str(), &svfs);
-    } while (res == -1 && errno == EINTR);
-
-    if (res == -1) { return std::unexpected(posix::last_error()); }
-    return svfs;
+    return expect_result<error_style::posix>(::statvfs(path.c_str(), &svfs)).transform([&svfs](auto) noexcept {
+        return svfs;
+    });
 }
 
 /**
@@ -497,19 +508,18 @@ namespace sys_helpers {
  */
 [[nodiscard]] inline auto readlink(const std::filesystem::path& path, std::span<char> buf) noexcept
     -> std::expected<std::size_t, std::error_code> {
-    ssize_t len;
-    do {
-        len = ::readlink(path.c_str(), buf.data(), buf.size());
-    } while (len == -1 && errno == EINTR);
-
-    if (len == -1) { return std::unexpected(posix::last_error()); }
     /**
      * @note Per readlink(2), if the return value equals bufsiz,
      * truncation may have occurred. We conservatively treat this
      * as an error to avoid propagating ambiguous/truncated paths.
      */
-    if (toSize(len) >= buf.size()) { return std::unexpected(std::make_error_code(std::errc::filename_too_long)); }
-    return toSize(len);
+    return expect_result<error_style::posix>(::readlink(path.c_str(), buf.data(), buf.size()))
+        .and_then([&buf](ssize_t nbytes) -> std::expected<std::size_t, std::error_code> {
+            if (toSize(nbytes) >= buf.size()) {
+                return std::unexpected(std::make_error_code(std::errc::filename_too_long));
+            }
+            return toSize(nbytes);
+        });
 }
 
 /**
@@ -524,13 +534,7 @@ namespace sys_helpers {
 [[nodiscard]] inline auto lstat(const std::filesystem::path& path) noexcept
     -> std::expected<struct ::stat, std::error_code> {
     struct ::stat st {};
-    std::int32_t res;
-    do {
-        res = ::lstat(path.c_str(), &st);
-    } while (res == -1 && errno == EINTR);
-
-    if (res == -1) { return std::unexpected(posix::last_error()); }
-    return st;
+    return expect_result<error_style::posix>(::lstat(path.c_str(), &st)).transform([&st](auto) noexcept { return st; });
 }
 
 /**
@@ -549,8 +553,7 @@ namespace sys_helpers {
  */
 [[nodiscard]] inline auto uname() noexcept -> std::expected<struct ::utsname, std::error_code> {
     struct ::utsname uts {};
-    if (::uname(&uts) != 0) { return std::unexpected(posix::last_error()); }
-    return uts;
+    return expect_success<error_style::posix>(::uname(&uts)).transform([&uts]() { return uts; });
 }
 
 /**
@@ -562,8 +565,7 @@ namespace sys_helpers {
 [[nodiscard]] inline auto get_rlimit(std::int32_t resource) noexcept
     -> std::expected<struct ::rlimit, std::error_code> {
     struct ::rlimit limit {};
-    if (::getrlimit(resource, &limit) != 0) { return std::unexpected(posix::last_error()); }
-    return limit;
+    return expect_success<error_style::posix>(::getrlimit(resource, &limit)).transform([&limit]() { return limit; });
 }
 
 /**
@@ -577,8 +579,8 @@ namespace sys_helpers {
  * @return Resolved path + opened executable fd, or ENOENT if not found.
  */
 struct resolved_executable {
-    std::string path;
-    posix::file_descriptor fd;
+    std::string path {};
+    posix::file_descriptor fd {};
 };
 
 namespace sys_helpers {
@@ -586,31 +588,26 @@ namespace sys_helpers {
 [[nodiscard]] inline auto verify_execute_access(const posix::file_descriptor& opened_fd,
     const std::filesystem::path& path) noexcept -> std::expected<void, std::error_code> {
 #if defined(AT_EMPTY_PATH)
-    if (::faccessat(opened_fd.native_handle(), "", X_OK, AT_EMPTY_PATH | AT_EACCESS) != 0) {
-        const std::int32_t saved_errno = errno;
-        if (saved_errno != EINVAL && saved_errno != ENOSYS) { return std::unexpected(posix::make_error(saved_errno)); }
+    if (auto first = expect_success<error_style::posix>(
+            ::faccessat(opened_fd.native_handle(), "", X_OK, AT_EMPTY_PATH | AT_EACCESS));
+        !first) {
+        const std::int32_t saved_errno = first.error().value();
+        if (saved_errno != EINVAL && saved_errno != ENOSYS) { return std::unexpected(first.error()); }
         /**
          * @brief Fallback for kernels/libcs without full AT_EMPTY_PATH support.
          *
          * @details Keep AT_EACCESS semantics (effective IDs), matching the
          * main path above and avoiding behavior drift to real-ID checks.
          */
-        std::int32_t res;
-        do {
-            res = ::faccessat(AT_FDCWD, path.c_str(), X_OK, AT_EACCESS);
-        } while (res == -1 && errno == EINTR);
-
-        if (res != 0) { return std::unexpected(posix::last_error()); }
+        return eintr_loop<error_style::posix>([&path]() noexcept {
+            return ::faccessat(AT_FDCWD, path.c_str(), X_OK, AT_EACCESS);
+        }).transform([](auto) noexcept {});
     }
 #else
-    std::int32_t res;
-    do {
-        res = ::access(path.c_str(), X_OK);
-    } while (res == -1 && errno == EINTR);
-
-    if (res != 0) { return std::unexpected(posix::last_error()); }
+    return eintr_loop<error_style::posix>([&path]() noexcept {
+        return ::access(path.c_str(), X_OK);
+    }).transform([](auto) noexcept {});
 #endif
-
     return {};
 }
 
@@ -624,26 +621,21 @@ namespace sys_helpers {
      * `1` or `2`, redirection could replace the executable handle and break
      * `fexecve`.
      */
-    std::int32_t fd_flags;
-    do {
-        fd_flags = ::fcntl(opened_fd.native_handle(), F_GETFD);
-    } while (fd_flags < 0 && errno == EINTR);
+    const auto fd_flags = eintr_loop<error_style::posix>(
+        [&opened_fd]() noexcept { return ::fcntl(opened_fd.native_handle(), F_GETFD); });
+    if (!fd_flags) { return std::unexpected(fd_flags.error()); }
 
-    if (fd_flags < 0) { return std::unexpected(posix::last_error()); }
-
-    if (opened_fd.native_handle() > posix::file_descriptor::stderr_fd && (fd_flags & FD_CLOEXEC) != 0) {
+    if (opened_fd.native_handle() > posix::file_descriptor::stderr_fd && (*fd_flags & FD_CLOEXEC) != 0) {
         return std::move(opened_fd);
     }
 
-    file_descriptor::native_handle_type safe_fd;
-    do {
-        safe_fd = ::fcntl(opened_fd.native_handle(), F_DUPFD_CLOEXEC, posix::file_descriptor::stderr_fd + 1);
-    } while (safe_fd < 0 && errno == EINTR);
-
-    if (safe_fd < 0) { return std::unexpected(posix::last_error()); }
+    auto safe_fd = eintr_loop<error_style::posix>([&opened_fd]() noexcept {
+        return ::fcntl(opened_fd.native_handle(), F_DUPFD_CLOEXEC, posix::file_descriptor::stderr_fd + 1);
+    });
+    if (!safe_fd) { return std::unexpected(safe_fd.error()); }
 
     opened_fd.reset();
-    return posix::file_descriptor { safe_fd };
+    return posix::file_descriptor { *safe_fd };
 }
 
 [[nodiscard]] inline auto open_executable_file(const std::filesystem::path& path) noexcept
@@ -701,7 +693,7 @@ namespace sys_helpers {
         return resolved_executable { std::string(cmd), std::move(*opened) };
     }
 
-    std::string fallback_path;
+    std::string fallback_path {};
     auto path_env = sys_helpers::read_path_environment(fallback_path);
     if (!path_env) { return std::unexpected(path_env.error()); }
 
@@ -748,13 +740,9 @@ public:
      */
     [[nodiscard]] static auto create() noexcept -> std::expected<pipe, std::error_code> {
         std::array<file_descriptor::native_handle_type, 2> fds {};
-        std::int32_t res;
-        do {
-            res = ::pipe2(fds.data(), O_CLOEXEC);
-        } while (res == -1 && errno == EINTR);
-
-        if (res == -1) { return std::unexpected(posix::last_error()); }
-        return pipe(file_descriptor(fds[0]), file_descriptor(fds[1]));
+        return eintr_loop<error_style::posix>([&fds]() noexcept {
+            return ::pipe2(fds.data(), O_CLOEXEC);
+        }).transform([&fds](auto) noexcept { return pipe(file_descriptor(fds[0]), file_descriptor(fds[1])); });
     }
 
     /** @brief Access the read end of the pipe (pipefd[0]). */
@@ -850,9 +838,7 @@ public:
  * @return 0 in the child process, the child PID in the parent, or @c errno.
  */
 [[nodiscard]] inline auto fork() noexcept -> std::expected<pid_t, std::error_code> {
-    pid_t pid = ::fork();
-    if (pid == -1) { return std::unexpected(posix::last_error()); }
-    return pid;
+    return expect_result<error_style::posix>(::fork());
 }
 
 /**
@@ -905,14 +891,12 @@ inline void exec_fd(file_descriptor::native_handle_type fd, const char* path, ch
 [[nodiscard]] inline auto waitpid(pid_t pid, std::int32_t options = 0) noexcept
     -> std::expected<std::optional<wait_status>, std::error_code> {
     std::int32_t status = 0;
-    pid_t res;
-    do {
-        res = ::waitpid(pid, &status, options);
-    } while (res == -1 && errno == EINTR);
-
-    if (res == -1) { return std::unexpected(posix::last_error()); }
-    if (res == 0) { return std::nullopt; }
-    return wait_status(status, res);
+    return eintr_loop<error_style::posix>([pid, options, &status]() noexcept {
+        return ::waitpid(pid, &status, options);
+    }).and_then([&status](pid_t child_pid) -> std::expected<std::optional<wait_status>, std::error_code> {
+        if (child_pid == 0) { return std::nullopt; }
+        return wait_status(status, child_pid);
+    });
 }
 
 /**
@@ -946,8 +930,7 @@ enum class signal : std::int32_t {
  * @return       Success or the captured @c errno.
  */
 [[nodiscard]] inline auto kill(pid_t pid, signal sig) noexcept -> std::expected<void, std::error_code> {
-    if (::kill(pid, std::to_underlying(sig)) == 0) { return {}; }
-    return std::unexpected(posix::last_error());
+    return expect_success<error_style::posix>(::kill(pid, std::to_underlying(sig)));
 }
 
 /// ─── I/O Multiplexing ───────────────────────────────────────────────────────
@@ -977,13 +960,25 @@ enum class signal : std::int32_t {
 
         const std::int32_t res = ::poll(fds.data(), toUInt(fds.size()), timeout_ms);
 
-        if (res >= 0) { return res; }
-        if (errno != EINTR) { return std::unexpected(posix::last_error()); }
+        if (auto result = expect_result<error_style::posix>(res); result || result.error() != std::errc::interrupted) {
+            return result;
+        }
         /// EINTR received — check if deadline has passed before retrying
         if (sys_helpers::poll_deadline_reached(infinite, deadline)) {
             return 0; ///< Treat as timeout
         }
     }
+}
+
+/**
+ * @brief Create a unique temporary directory via mkdtemp(3).
+ *
+ * @param tmpl  Path template ending in "XXXXXX" (modified in-place on success).
+ * @return      The created directory path, or @c errno on failure.
+ */
+[[nodiscard]] inline auto make_temp_dir(std::string tmpl) noexcept -> std::expected<std::string, std::error_code> {
+    if (::mkdtemp(tmpl.data())) { return tmpl; }
+    return std::unexpected(last_error());
 }
 
 } // namespace posix

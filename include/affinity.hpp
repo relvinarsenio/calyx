@@ -11,7 +11,6 @@
 #include "posix_error.hpp"
 #include "utils.hpp"
 
-#include <cerrno>
 #include <expected>
 #include <functional>
 #include <memory>

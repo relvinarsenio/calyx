@@ -82,8 +82,8 @@ set(ENABLE_NC OFF CACHE INTERNAL "Disable netcat utility")
 
 FetchContent_Declare(
     libressl
-    URL https://cloudflare.cdn.openbsd.org/pub/OpenBSD/LibreSSL/libressl-4.3.1.tar.gz
-    URL_HASH SHA256=c2db42ace14e7d5419826fab35a742ec6e4d12725a051a51d0cea3c10ba0fa50
+    URL https://cloudflare.cdn.openbsd.org/pub/OpenBSD/LibreSSL/libressl-4.3.2.tar.gz
+    URL_HASH SHA256=edf01aee24c65d69e6a9efcb9d44bcda682ff9d4f3bbbd95e794e1dfa90847b5
 )
 
 FetchContent_MakeAvailable(libressl)
@@ -127,12 +127,12 @@ set(OPENSSL_INCLUDE_DIR "${libressl_SOURCE_DIR}/include" CACHE PATH "" FORCE)
 set(OPENSSL_CRYPTO_LIBRARY "${OPENSSL_CRYPTO_LIBRARY}" CACHE FILEPATH "" FORCE)
 set(OPENSSL_SSL_LIBRARY "${OPENSSL_SSL_LIBRARY}" CACHE FILEPATH "" FORCE)
 set(OPENSSL_ROOT_DIR "${libressl_SOURCE_DIR}" CACHE PATH "" FORCE)
-set(OPENSSL_VERSION "4.3.1" CACHE STRING "" FORCE)
+set(OPENSSL_VERSION "4.3.2" CACHE STRING "" FORCE)
 
 # Make headers available
 include_directories(SYSTEM "${libressl_SOURCE_DIR}/include")
 
-message(STATUS "🔒 LibreSSL: Building from source with Full LTO (v4.3.1)")
+message(STATUS "🔒 LibreSSL: Building from source with Full LTO (v4.3.2)")
 
 # =============================================================================
 # 3. Threads (this MUST come from OS - it's part of libc)
@@ -217,8 +217,8 @@ set(CURL_CA_PATH "auto" CACHE STRING "" FORCE)
 
 FetchContent_Declare(
     CURL
-    URL https://github.com/curl/curl/releases/download/curl-8_20_0/curl-8.20.0.tar.xz
-    URL_HASH SHA256=63fe2dc148ba0ceae89922ef838f7e5c946272c2e78b7c59fab4b79d3ce2b896
+    URL https://github.com/curl/curl/releases/download/curl-8_21_0/curl-8.21.0.tar.xz
+    URL_HASH SHA256=aa1b66a70eace83dc624508745646c08ae561de512ab403adffb93ac87fc72e6
 )
 FetchContent_MakeAvailable(CURL)
 
@@ -231,7 +231,7 @@ message(STATUS "📦 Fetching glaze...")
 
 FetchContent_Declare(
     glaze
-    URL https://github.com/stephenberry/glaze/archive/refs/tags/v7.4.0.tar.gz
-    URL_HASH SHA256=e7592590187dd56f16558a08b36e90bf349e885330f3a3961048df302cc9dfa1
+    URL https://github.com/stephenberry/glaze/archive/refs/tags/v7.8.4.tar.gz
+    URL_HASH SHA256=65331a8f8ffa56a3c5990eb31119db8afc1cec0b48de57b4ebbc9c1286ea74a3
 )
 FetchContent_MakeAvailable(glaze)

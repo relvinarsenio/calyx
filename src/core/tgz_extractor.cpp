@@ -15,21 +15,19 @@
 
 #include <algorithm>
 #include <array>
-#include <cerrno>
 #include <charconv>
 #include <cstdint>
-#include <fcntl.h>
+#include <expected>
+#include <filesystem>
 #include <flat_set>
 #include <format>
 #include <limits>
-#include <memory>
 #include <optional>
 #include <ranges>
 #include <span>
-#include <sys/stat.h>
-#include <unistd.h>
+#include <string>
+#include <string_view>
 #include <utility>
-#include <vector>
 #include <zlib.h>
 
 namespace archive {
@@ -144,8 +142,8 @@ std::optional<std::uint64_t> parse_numeric(std::span<const std::byte> data) {
                 auto [index, byte_val] = enum_pair;
                 const auto byte_value  = (toSize(index) >= config::kTarChecksumOffset
                                             && toSize(index) < config::kTarChecksumOffset + config::kTarChecksumLength)
-                    ? std::byte { ' ' }
-                    : byte_val;
+                     ? std::byte { ' ' }
+                     : byte_val;
                 return { checksum_pair.first + std::to_integer<std::uint64_t>(byte_value),
                     checksum_pair.second + toLong(std::to_integer<std::int8_t>(byte_value)) };
             });
@@ -169,14 +167,14 @@ using UniqueGzFile = std::unique_ptr<std::remove_pointer_t<gzFile>, GzFileDelete
 struct ExtractState {
     UniqueGzFile& gz; /**< Managed Gzip file handle */
     const std::filesystem::path& dest_dir; /**< Target extraction directory */
-    std::flat_set<std::filesystem::path> validated_dirs; /**< Cache of verified sub-directories */
+    std::flat_set<std::filesystem::path> validated_dirs {}; /**< Cache of verified sub-directories */
     std::uint64_t total_extracted_size { 0 }; /**< Cumulative size of extracted files */
     std::uint32_t file_count { 0 }; /**< Total number of files processed */
-    std::optional<std::string> pending_long_path; /**< Stored path from GNU LongLink header ('L') */
-    std::optional<std::string> pending_pax_path; /**< Stored path from PAX extended header ('x') */
-    std::optional<std::uint64_t> pending_pax_size; /**< Stored size from PAX extended header ('x') */
-    std::optional<std::string> global_pax_path; /**< Persistent path from global PAX header ('g') */
-    std::optional<std::uint64_t> global_pax_size; /**< Persistent size from global PAX header ('g') */
+    std::optional<std::string> pending_long_path {}; /**< Stored path from GNU LongLink header ('L') */
+    std::optional<std::string> pending_pax_path {}; /**< Stored path from PAX extended header ('x') */
+    std::optional<std::uint64_t> pending_pax_size {}; /**< Stored size from PAX extended header ('x') */
+    std::optional<std::string> global_pax_path {}; /**< Persistent path from global PAX header ('g') */
+    std::optional<std::uint64_t> global_pax_size {}; /**< Persistent size from global PAX header ('g') */
 };
 
 inline constexpr std::size_t kTarMagicOffset     = 257z;
@@ -248,6 +246,8 @@ inline constexpr std::size_t kTarMaxMetadataSize = 64z * 1024z;
     auto normalized = dir_path.lexically_normal();
     if (normalized.empty()) { return {}; }
 
+    if (state.validated_dirs.contains(normalized)) { return {}; }
+
     /**
      * @brief Validate/create directory path and cache only after success.
      *
@@ -256,10 +256,9 @@ inline constexpr std::size_t kTarMaxMetadataSize = 64z * 1024z;
      * then records validated ancestor paths only after successful completion.
      */
     return create_secure_directory(normalized).transform([&state, &normalized] {
-        for (auto current_path = normalized; !current_path.empty() && current_path != current_path.parent_path();
-            current_path       = current_path.parent_path()) {
-            state.validated_dirs.insert(current_path);
-        }
+        std::filesystem::path current_path = normalized.root_path();
+        std::ranges::for_each(normalized.relative_path(),
+            [&state, &current_path](const auto& part) { state.validated_dirs.insert(current_path /= part); });
     });
 }
 
@@ -308,7 +307,7 @@ public:
     SecureFileHandle& operator=(SecureFileHandle&& other) noexcept {
         if (this != &other) {
             if (!committed_ && !temp_path_.empty()) {
-                std::error_code ec;
+                std::error_code ec {};
                 std::filesystem::remove(temp_path_, ec);
             }
             fd_         = std::move(other.fd_);
@@ -359,7 +358,7 @@ public:
 
         fd_.reset();
 
-        std::error_code ec;
+        std::error_code ec {};
         std::filesystem::rename(temp_path_, final_path_, ec);
         if (ec) { return std::unexpected(ec); }
 
@@ -369,7 +368,7 @@ public:
 
     ~SecureFileHandle() {
         if (!committed_ && !temp_path_.empty()) {
-            std::error_code ec;
+            std::error_code ec {};
             std::filesystem::remove(temp_path_, ec);
         }
     }
@@ -470,7 +469,7 @@ static constexpr auto kTypeClassification = [] {
 }
 
 [[nodiscard]] std::expected<void, ExtractError> discard_bytes(gzFile gz, std::uint64_t total_bytes) {
-    std::array<std::byte, config::kFileReadChunkSize> discard;
+    std::array<std::byte, config::kFileReadChunkSize> discard {};
     for (std::uint64_t remaining = total_bytes; remaining > 0;) {
         const auto to_read = toSize(std::min<std::uint64_t>(remaining, discard.size()));
         const auto read    = gzread_checked(gz, std::span { discard }.first(to_read));
@@ -501,9 +500,9 @@ static constexpr auto kTypeClassification = [] {
 }
 
 struct PaxRecordView {
-    std::string_view key;
-    std::string_view value;
-    std::size_t total_len;
+    std::string_view key {};
+    std::string_view value {};
+    std::size_t total_len = 0;
 };
 
 [[nodiscard]] std::expected<std::size_t, ExtractError> parse_record_length(std::string_view text) {
@@ -551,12 +550,12 @@ struct PaxRecordView {
 }
 
 struct PaxMetadata {
-    std::optional<std::string> path; /**< Extended path attribute */
-    std::optional<std::uint64_t> size; /**< Extended size attribute */
+    std::optional<std::string> path {}; /**< Extended path attribute */
+    std::optional<std::uint64_t> size {}; /**< Extended size attribute */
 };
 
 [[nodiscard]] std::expected<PaxMetadata, ExtractError> parse_pax_metadata(std::string_view payload) {
-    PaxMetadata metadata;
+    PaxMetadata metadata {};
 
     for (std::size_t pos = 0; pos < payload.size();) {
         auto record = parse_pax_record(payload, pos);
@@ -595,9 +594,9 @@ struct PaxMetadata {
 [[nodiscard]] std::expected<void, ExtractError> skip_tar_data(ExtractState& state, std::uint64_t size) {
     if (size == 0) { return {}; }
 
-    const auto padding = (config::kTarBlockSize - (size % config::kTarBlockSize)) % config::kTarBlockSize;
-    return (size > std::numeric_limits<std::uint64_t>::max() - padding) ? std::unexpected(ExtractError::FileTooLarge)
-                                                                        : discard_bytes(state.gz.get(), size + padding);
+    const auto padding     = (config::kTarBlockSize - (size % config::kTarBlockSize)) % config::kTarBlockSize;
+    const auto total_bytes = safe_add(size, padding);
+    return !total_bytes ? std::unexpected(ExtractError::FileTooLarge) : discard_bytes(state.gz.get(), *total_bytes);
 }
 
 [[nodiscard]] std::expected<void, ExtractError> process_longlink_entry(ExtractState& state, std::uint64_t file_size) {
@@ -637,9 +636,9 @@ struct PaxMetadata {
 }
 
 struct ParsedEntryHeader {
-    std::uint64_t file_size;
-    std::uint32_t file_mode;
-    char type_flag;
+    std::uint64_t file_size = 0;
+    std::uint32_t file_mode = 0;
+    char type_flag {};
 };
 
 [[nodiscard]] std::expected<ParsedEntryHeader, ExtractError> parse_entry_header(
@@ -658,16 +657,16 @@ struct ParsedEntryHeader {
 }
 
 [[nodiscard]] static ExtractError classify_file_creation_error(const std::error_code& ec) noexcept {
-    if (ec == std::errc::file_exists || ec == std::errc::too_many_symbolic_link_levels
-        || ec == std::errc::operation_not_supported || ec == std::errc::is_a_directory) {
+    if (posix::is_any_of(ec, std::errc::file_exists, std::errc::too_many_symbolic_link_levels,
+            std::errc::operation_not_supported, std::errc::is_a_directory)) {
         return ExtractError::SymlinkDetected;
     }
     return ExtractError::WriteFileFailed;
 }
 
 [[nodiscard]] static ExtractError classify_commit_error(const std::error_code& ec) noexcept {
-    if (ec == std::errc::operation_not_supported || ec == std::errc::is_a_directory
-        || ec == std::errc::too_many_symbolic_link_levels) {
+    if (posix::is_any_of(ec, std::errc::operation_not_supported, std::errc::is_a_directory,
+            std::errc::too_many_symbolic_link_levels)) {
         return ExtractError::SymlinkDetected;
     }
     return ExtractError::WriteFileFailed;
@@ -680,7 +679,7 @@ struct ParsedEntryHeader {
 
 [[nodiscard]] std::expected<void, ExtractError> copy_file_contents(
     ExtractState& state, SecureFileHandle& file, std::uint64_t size) {
-    std::array<std::byte, config::kTgzDecompressionBufferSize> buf;
+    std::array<std::byte, config::kTgzDecompressionBufferSize> buf {};
     for (std::uint64_t remaining = size; remaining > 0;) {
         const auto to_read = toSize(std::min<std::uint64_t>(remaining, buf.size()));
         auto read          = gzread_checked(state.gz.get(), std::span { buf }.first(to_read));
@@ -733,24 +732,23 @@ struct ParsedEntryHeader {
 }
 
 struct EntryResolution {
-    std::filesystem::path safe_path;
-    std::uint64_t final_size;
+    std::filesystem::path safe_path {};
+    std::uint64_t final_size = 0;
 };
 
 struct EntryActionContext {
-    std::filesystem::path safe_path;
-    EntryAction action;
-    std::uint64_t final_size;
-    std::uint32_t file_mode;
+    std::filesystem::path safe_path {};
+    EntryAction action {};
+    std::uint64_t final_size = 0;
+    std::uint32_t file_mode  = 0;
 };
 
 [[nodiscard]] std::expected<void, ExtractError> validate_entry_limits(
     EntryAction action, std::uint64_t final_size, std::uint64_t total_extracted_size) {
     if (action == EntryAction::Forbidden) { return std::unexpected(ExtractError::SymlinkDetected); }
     if (final_size > config::kTgzMaxFileSize) { return std::unexpected(ExtractError::FileTooLarge); }
-    if (final_size > config::kTgzMaxTotalSize - total_extracted_size) {
-        return std::unexpected(ExtractError::ArchiveTooLarge);
-    }
+    const auto remaining_budget = safe_sub(config::kTgzMaxTotalSize, total_extracted_size);
+    if (!remaining_budget || final_size > *remaining_budget) { return std::unexpected(ExtractError::ArchiveTooLarge); }
     return {};
 }
 
@@ -778,23 +776,28 @@ struct EntryActionContext {
 
 [[nodiscard]] std::expected<void, ExtractError> process_entry_action(
     ExtractState& state, const EntryActionContext& context) {
-    const auto update_state = [&state, &context] { state.total_extracted_size += context.final_size; };
+    const auto update_state = [&state, &context]() -> std::expected<void, ExtractError> {
+        const auto sum = safe_add(state.total_extracted_size, context.final_size);
+        if (!sum) { return std::unexpected(ExtractError::ArchiveTooLarge); }
+        state.total_extracted_size = *sum;
+        return {};
+    };
 
     switch (context.action) {
         case EntryAction::Directory:
             return create_secure_directory(context.safe_path, state)
                 .and_then([&state, &context] { return skip_tar_data(state, context.final_size); })
-                .transform(update_state);
+                .and_then(update_state);
 
         case EntryAction::Regular:
             if (auto res = check_disk_space(state.dest_dir, context.final_size); !res) {
                 return std::unexpected(ExtractError::DiskFull);
             }
             return extract_regular_file(state, context.safe_path, context.final_size, context.file_mode)
-                .transform(update_state);
+                .and_then(update_state);
 
         case EntryAction::Skip:
-            return skip_tar_data(state, context.final_size).transform(update_state);
+            return skip_tar_data(state, context.final_size).and_then(update_state);
 
         case EntryAction::Forbidden:
             return std::unexpected(ExtractError::SymlinkDetected);

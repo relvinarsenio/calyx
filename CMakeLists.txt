@@ -7,7 +7,7 @@ set(CMAKE_POLICY_DEFAULT_CMP0069 NEW)
 # =============================================================================
 # Calyx - Rapid Linux Server Profiler
 # =============================================================================
-project(calyx VERSION 1.0.2 LANGUAGES CXX C)
+project(calyx VERSION 1.1.0 LANGUAGES CXX C)
 
 # Ensure all libraries and targets are built with -fPIC (Required for static-pie)
 # C++23 Required
@@ -124,8 +124,6 @@ endif()
 # =============================================================================
 include(StaticDeps)
 
-option(USE_IO_URING "Enable io_uring for disk benchmark" ON)
-
 # libcurl_static implicitly inherits Full LTO from global CMake settings
 # =============================================================================
 # 3. Compiler Configuration (Linking)
@@ -166,12 +164,12 @@ endif()
 # =============================================================================
 # 5. Embedded Certificate Generation
 # =============================================================================
-set(CACERT_HASH "SHA256=f1407d974c5ed87d544bd931a278232e13925177e239fca370619aba63c757b4")
+set(CACERT_HASH "SHA256=86a1f3366afac7c6f8ae9f3c779ac221129328c43f0ab2b8817eb2f362a5025c")
 
 message(STATUS "📥 Downloading CA Certificate bundle...")
 
 file(DOWNLOAD 
-    "https://curl.se/ca/cacert-2025-12-02.pem" 
+    "https://curl.se/ca/cacert-2026-05-14.pem" 
     "${CMAKE_BINARY_DIR}/cacert.pem"
     EXPECTED_HASH ${CACERT_HASH}
     TLS_VERIFY ON
@@ -187,24 +185,33 @@ endif()
 
 message(STATUS "✅ CA Certificate downloaded and verified.")
 
-# Setup Generated Paths
-set(GEN_INC_DIR "${CMAKE_BINARY_DIR}/generated")
-set(EMBEDDED_CERT_PATH "${GEN_INC_DIR}/include/embedded_cert.hpp")
+set(EMBEDDED_CERT_OBJ "${CMAKE_BINARY_DIR}/cacert.o")
 
-# Ensure directory exists at Configure time
-file(MAKE_DIRECTORY "${GEN_INC_DIR}/include")
+# Detect Architecture for objcopy
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+    set(OBJCOPY_O_FLAG "elf64-x86-64")
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(i.86|x86)$")
+    set(OBJCOPY_O_FLAG "elf32-i386")
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
+    set(OBJCOPY_O_FLAG "elf64-littleaarch64")
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm.*|armv7.*)$")
+    set(OBJCOPY_O_FLAG "elf32-littlearm")
+else()
+    message(FATAL_ERROR "Unsupported architecture for embedded cert: ${CMAKE_SYSTEM_PROCESSOR}")
+endif()
+
+find_program(OBJCOPY_TOOL NAMES llvm-objcopy objcopy REQUIRED)
 
 add_custom_command(
-    OUTPUT "${EMBEDDED_CERT_PATH}"
-    # Force creation at Build time (Fix for parallel build race condition)
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${GEN_INC_DIR}/include"
-    COMMAND "${XXD_EXE}" -i cacert.pem "${EMBEDDED_CERT_PATH}"
+    OUTPUT "${EMBEDDED_CERT_OBJ}"
+    COMMAND ${OBJCOPY_TOOL} -I binary -O ${OBJCOPY_O_FLAG} cacert.pem cacert.o
+    COMMAND ${OBJCOPY_TOOL} --rename-section .data=.rodata,contents,alloc,load,readonly,data --set-section-alignment .rodata=8 cacert.o
     WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
     DEPENDS "${CMAKE_BINARY_DIR}/cacert.pem"
-    COMMENT "Embedding CA Cert into header..."
+    COMMENT "Embedding CA Cert via llvm-objcopy for ${CMAKE_SYSTEM_PROCESSOR}..."
 )
 
-add_custom_target(generate_cert DEPENDS "${EMBEDDED_CERT_PATH}")
+add_custom_target(generate_cert DEPENDS "${EMBEDDED_CERT_OBJ}")
 
 # =============================================================================
 # 6. Build Target
@@ -217,11 +224,13 @@ add_executable(calyx
     src/system/cpu_info.cpp
     src/system/os_info.cpp
     src/system/storage_info.cpp
+    src/system/system_probe.cpp
     src/net/http_client.cpp
+    src/io/uring_engine.cpp
     src/io/disk_benchmark.cpp
     src/net/speed_test.cpp
     src/ui/cli_renderer.cpp
-    "${EMBEDDED_CERT_PATH}"
+    "${EMBEDDED_CERT_OBJ}"
 )
 
 # === OPTIMIZATION: ICF (Identical Code Folding) ===
@@ -256,20 +265,17 @@ target_link_libraries(calyx
     Threads::Threads
 )
 
-if(USE_IO_URING)
-    find_path(LIBURING_INCLUDE_DIR liburing.h)
-    set(_OLD_SUFFIXES ${CMAKE_FIND_LIBRARY_SUFFIXES})
-    set(CMAKE_FIND_LIBRARY_SUFFIXES ".a" ".so")
-    find_library(LIBURING_LIBRARY uring)
-    set(CMAKE_FIND_LIBRARY_SUFFIXES ${_OLD_SUFFIXES})
-    if(LIBURING_INCLUDE_DIR AND LIBURING_LIBRARY)
-        message(STATUS "🌀 io_uring enabled")
-        target_compile_definitions(calyx PRIVATE USE_IO_URING=1)
-        target_include_directories(calyx PRIVATE ${LIBURING_INCLUDE_DIR})
-        target_link_libraries(calyx PRIVATE ${LIBURING_LIBRARY})
-    else()
-        message(FATAL_ERROR "❌ liburing not found! Calyx requires io_uring for high-performance disk benchmarking. Please install liburing or use the provided build-static.sh toolchain.")
-    endif()
+find_path(LIBURING_INCLUDE_DIR liburing.h)
+set(_OLD_SUFFIXES ${CMAKE_FIND_LIBRARY_SUFFIXES})
+set(CMAKE_FIND_LIBRARY_SUFFIXES ".a" ".so")
+find_library(LIBURING_LIBRARY uring)
+set(CMAKE_FIND_LIBRARY_SUFFIXES ${_OLD_SUFFIXES})
+if(LIBURING_INCLUDE_DIR AND LIBURING_LIBRARY)
+    message(STATUS "🌀 liburing found")
+    target_include_directories(calyx PRIVATE ${LIBURING_INCLUDE_DIR})
+    target_link_libraries(calyx PRIVATE ${LIBURING_LIBRARY})
+else()
+    message(FATAL_ERROR "❌ liburing not found! Calyx requires io_uring for high-performance disk benchmarking. Please install liburing-dev or use the provided build-static.sh toolchain.")
 endif()
 
 if(USE_LIBCXX AND STL_STATIC_LIBS)

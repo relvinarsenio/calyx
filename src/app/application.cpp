@@ -19,10 +19,13 @@
 #include "system_info.hpp"
 #include "utils.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <expected>
 #include <filesystem>
 #include <format>
+#include <functional>
 #include <future>
 #include <glaze/glaze.hpp>
 #include <optional>
@@ -39,10 +42,10 @@ using namespace std::chrono;
 
 struct NetworkMetadataRaw {
     std::uint32_t asn { 0 };
-    std::string asOrganization;
-    std::string city;
-    std::string country;
-    std::string region;
+    std::string asOrganization {};
+    std::string city {};
+    std::string country {};
+    std::string region {};
 };
 
 namespace {
@@ -51,10 +54,10 @@ constexpr std::uint8_t kCliHelp    = 1u << 0;
 constexpr std::uint8_t kCliVersion = 1u << 1;
 
 struct CliOptionSpec {
-    std::string_view short_name;
-    std::string_view long_name;
-    std::uint8_t mask;
-    std::string_view description;
+    std::string_view short_name {};
+    std::string_view long_name {};
+    std::uint8_t mask = 0;
+    std::string_view description {};
 };
 
 constexpr auto kCliOptionSpecs = std::to_array<CliOptionSpec>({
@@ -113,17 +116,17 @@ constexpr auto kCliOptionSpecs = std::to_array<CliOptionSpec>({
 }
 
 struct NetworkCheckResult {
-    std::jthread probe_thread;
-    std::future<bool> v4_future;
-    std::future<bool> v6_future;
-    std::future<std::expected<std::string, std::string>> ip_future;
+    std::jthread probe_thread {};
+    std::future<bool> v4_future {};
+    std::future<bool> v6_future {};
+    std::future<std::expected<std::string, std::string>> ip_future {};
 };
 
 struct NetworkMetadata {
-    std::string isp;
-    std::string city;
-    std::string country;
-    std::string region;
+    std::string isp {};
+    std::string city {};
+    std::string country {};
+    std::string region {};
 };
 
 [[nodiscard]] NetworkCheckResult start_network_checks() {
@@ -144,18 +147,18 @@ struct NetworkMetadata {
 
         auto execution_status
             = std::expected<void, std::string> {}
-                  .and_then([&] {
+                  .and_then([&multi_client, &ipv4_client, &ipv6_client, &metadata_client] {
                       return (multi_client && ipv4_client && ipv6_client && metadata_client)
                           ? std::expected<void, std::string> {}
                           : std::unexpected("Network client initialization failed");
                   })
-                  .and_then([&] { return ipv4_client->prepare_connectivity_check(config::kPingTargetIPv4); })
-                  .and_then([&] { return ipv6_client->prepare_connectivity_check(config::kPingTargetIPv6); })
-                  .and_then([&] { return metadata_client->prepare_get(config::kUrlCloudflareMeta); })
-                  .and_then([&] { return multi_client->add_handle(*ipv4_client); })
-                  .and_then([&] { return multi_client->add_handle(*ipv6_client); })
-                  .and_then([&] { return multi_client->add_handle(*metadata_client); })
-                  .and_then([&] {
+                  .and_then([&ipv4_client] { return ipv4_client->prepare_connectivity_check(config::kPingTargetIPv4); })
+                  .and_then([&ipv6_client] { return ipv6_client->prepare_connectivity_check(config::kPingTargetIPv6); })
+                  .and_then([&metadata_client] { return metadata_client->prepare_get(config::kUrlCloudflareMeta); })
+                  .and_then([&multi_client, &ipv4_client] { return multi_client->add_handle(*ipv4_client); })
+                  .and_then([&multi_client, &ipv6_client] { return multi_client->add_handle(*ipv6_client); })
+                  .and_then([&multi_client, &metadata_client] { return multi_client->add_handle(*metadata_client); })
+                  .and_then([&multi_client, st] {
                       if (st.stop_requested()) { return std::expected<void, std::string> {}; }
                       return multi_client->perform();
                   });
@@ -178,7 +181,7 @@ struct NetworkMetadata {
 }
 
 [[nodiscard]] std::expected<NetworkMetadata, std::string> parse_network_metadata(std::string&& response) {
-    NetworkMetadataRaw raw;
+    NetworkMetadataRaw raw {};
     auto err = glz::read<glz::opts { .error_on_unknown_keys = false }>(raw, response);
     if (err) { return std::unexpected("Parse Error"); }
 
@@ -239,7 +242,7 @@ void print_labeled_info(std::string_view label, std::string_view value, std::str
 
 void print_feature_status(std::string_view label, bool enabled) {
     std::println(" {:<{}} : {}", label, config::kAppInfoLabelWidth,
-        enabled ? color::colorize("✓ Enabled", color::kGreen) : color::colorize("✗ Disabled", color::kRed));
+        enabled ? color::colorize("\u2713 Enabled", color::kGreen) : color::colorize("\u2717 Disabled", color::kRed));
 }
 
 void print_size_usage(std::string_view label, std::uint64_t total, std::uint64_t used) {
@@ -268,7 +271,7 @@ void display_system_section() {
 }
 
 std::string build_zswap_metadata(const ZSwapStats& stats, std::uint64_t total_mem) {
-    const std::uint64_t max_pool_bytes = (total_mem * stats.max_pool_percent) / 100;
+    const std::uint64_t max_pool_bytes = safe_mul(total_mem, stats.max_pool_percent).value_or(0uz) / 100uz;
     if (stats.zpool.empty()) {
         return std::format(
             "{}, limit: {} ({}%)", stats.compressor, format_bytes(max_pool_bytes), stats.max_pool_percent);
@@ -298,12 +301,13 @@ std::string build_zswap_secondary_info(const ZSwapStats& stats) {
         { { "Spilled", stats.written_back, color::kCyan }, { "Rejected", stats.reject_reclaim_fail, color::kRed },
               { "Capped", stats.pool_limit_hit, color::kRed } });
 
-    return metrics | std::views::filter([](const auto& item) { return std::get<1>(item) > 0; })
-        | std::views::transform([&](const auto& item) {
-              return std::format(" {}: {}", std::get<0>(item),
-                  color::colorize(format_bytes(std::get<1>(item) * page_size), std::get<2>(item)));
-          })
-        | std::views::join_with(std::string_view(" ")) | std::ranges::to<std::string>();
+    return metrics | std::views::filter([](const auto& item) {
+        return std::get<1>(item) > 0;
+    }) | std::views::transform([page_size](const auto& item) {
+        return std::format(" {}: {}", std::get<0>(item),
+            color::colorize(format_bytes(safe_mul(std::get<1>(item), page_size).value_or(0uz)), std::get<2>(item)));
+    }) | std::views::join_with(std::string_view(" "))
+        | std::ranges::to<std::string>();
 }
 
 void print_regular_swap(std::string_view label, const SwapEntry& swap) {
@@ -336,7 +340,7 @@ void print_swap_entry(const SwapEntry& swap, std::uint64_t total_mem) {
 
 void display_storage_memory() {
     const std::string current_dir = []() {
-        std::error_code ec;
+        std::error_code ec {};
         auto current_path = fs::current_path(ec);
         return ec ? "." : current_path.string();
     }();
@@ -358,7 +362,8 @@ void display_storage_memory() {
     const auto [total_swap, used_swap] = std::ranges::fold_left(
         swaps, std::pair { std::uint64_t { 0 }, std::uint64_t { 0 } }, [](auto acc, const auto& swap) {
             if (swap.is_zswap) { return acc; }
-            return std::pair { acc.first + swap.size, acc.second + swap.used };
+            return std::pair { safe_add(acc.first, swap.size).value_or(0uz),
+                safe_add(acc.second, swap.used).value_or(0uz) };
         });
 
     print_size_usage("Total Swap", total_swap, used_swap);
@@ -368,37 +373,14 @@ void display_storage_memory() {
     }
 }
 
-/**
- * @brief Computes stability-weighted average throughput across benchmark runs.
- *
- * Uses the Coefficient of Variation (σ/μ) from each run's latency histogram as a quality
- * signal. Runs with lower CV (tighter latency distribution) receive proportionally higher
- * weight, reducing the influence of runs contaminated by system interference.
- *
- * Weight is capped at kMaxWeight to prevent a single low-CV run from dominating the
- * average — a Winsorization strategy standard in meta-analysis (Cochran, 1954).
- *
- * @param runs   Collected benchmark run results.
- * @param phase  Pointer-to-member selecting write or read metrics from each run.
- * @return Weighted average throughput in bytes/second.
- */
-[[nodiscard]] double weighted_avg_throughput(
-    std::span<const DiskIORunResult> runs, const DiskIOMetrics DiskIORunResult::* phase) {
-    const auto [weighted_bw, total_weight] = std::ranges::fold_left(
-        runs, std::pair { 0.0, 0.0 }, [phase](auto acc, const DiskIORunResult& run) {
-            static constexpr double kCvFloor    = 0.01;
-            static constexpr double kMaxWeight  = 10.0;
-            static constexpr double kUnitWeight = 1.0;
-            const auto& metrics                 = run.*phase;
-            const double stability_weight       = std::min(kUnitWeight / std::max(metrics.cv, kCvFloor), kMaxWeight);
-            return std::pair { acc.first + metrics.bw_bytes_per_sec * stability_weight, acc.second + stability_weight };
-        });
-
-    return (total_weight > 0.0) ? weighted_bw / total_weight : 0.0;
-}
-
 [[nodiscard]] std::expected<DiskIORunResult, std::string> run_single_disk_benchmark(std::uint32_t run_number) {
-    const auto label       = std::format(" I/O Speed (Run #{})", run_number);
+    const auto label = std::format("   I/O Speed (Run #{})", run_number);
+
+    scope_exit clear_line { [] {
+        std::print("\r{}", ui::style::clear_line);
+        std::fflush(stdout);
+    } };
+
     const auto progress_cb = ui::make_progress_callback(config::kIoLabelWidth);
 
     DiskBenchmark::BenchmarkConfig io_config {
@@ -411,15 +393,10 @@ void display_storage_memory() {
         .label             = label,
     };
 
-    scope_exit clear_line { [] {
-        std::print("\r\x1b[2K");
-        std::fflush(stdout);
-    } };
-
     const auto result
         = DiskBenchmark::run_io_test(io_config, progress_cb, {}, []() noexcept { return check_interrupted(); });
 
-    if (!result) { return std::unexpected(result.error()); }
+    if (!result) { return std::unexpected(DiskBenchmark::format_error(result.error())); }
 
     return *result;
 }
@@ -428,40 +405,43 @@ std::expected<void, std::string> run_disk_benchmarks() {
     std::vector<DiskIORunResult> disk_runs;
     disk_runs.reserve(config::kDiskIoRuns);
 
-    const auto to_mbps = [](const DiskIOMetrics& metrics) { return metrics.bw_bytes_per_sec / (1024.0 * 1024.0); };
+    const std::uint64_t total_bytes = safe_mul(toULong(config::kDiskTestSizeMb), 1024ULL * 1024ULL).value_or(0ULL);
+    const auto bs_str               = format_bytes(config::kIoWriteBlockSize)
+        | std::views::filter([](char c) { return c != ' ' && c != 'B'; }) | std::ranges::to<std::string>();
 
-    std::println("Running I/O Test ({} File)...", format_bytes(toSize(config::kDiskTestSizeMb) * 1024ULL * 1024ULL));
+    std::println(
+        "Running I/O Test ({} File, Seq {} Q{}T1)...", format_bytes(total_bytes), bs_str, config::kIoWriteQueueDepth);
+    std::println(" [ Throughput ]");
+
+    scope_exit flush_results { [&disk_runs] {
+        for (const auto& result : disk_runs) {
+            ui::print_disk_run_result(result);
+        }
+        if (!disk_runs.empty()) {
+            ui::render_disk_results_summary(disk_runs, DiskBenchmark::get_timer_calibration_ns());
+        }
+    } };
 
     for (std::uint32_t run_number : std::views::iota(1u, toUInt(config::kDiskIoRuns) + 1u)) {
         const auto result = run_single_disk_benchmark(run_number);
         if (!result) { return std::unexpected(result.error()); }
 
-        std::println(" {:<{}}:  {}   {}", result->label, config::kIoLabelWidth,
-            color::colorize(std::format("Write {:>8.1f} MB/s", to_mbps(result->write)), color::kYellow),
-            color::colorize(std::format("Read {:>8.1f} MB/s", to_mbps(result->read)), color::kCyan));
-
         disk_runs.push_back(*result);
     }
-
-    const double avg_write_bps = weighted_avg_throughput(disk_runs, &DiskIORunResult::write);
-    const double avg_read_bps  = weighted_avg_throughput(disk_runs, &DiskIORunResult::read);
-
-    constexpr double kBytesToMiB = 1.0 / (1024.0 * 1024.0);
-    std::println(" {:<{}}:  {}   {}", " I/O Speed (Average)", config::kIoLabelWidth,
-        color::colorize(std::format("Write {:>8.1f} MB/s", avg_write_bps * kBytesToMiB), color::kYellow),
-        color::colorize(std::format("Read {:>8.1f} MB/s", avg_read_bps * kBytesToMiB), color::kCyan));
 
     return {};
 }
 
 std::expected<void, std::string> run_speed_test(HttpClient& http) {
     return SpeedTest::create(http)
-        .and_then([&](SpeedTest st) -> std::expected<SpeedTest, std::string> {
-            return st.install().transform([owned_st = std::move(st)]() mutable { return std::move(owned_st); });
+        .transform_error([](const SpeedTestError& err) { return get_error_string(err); })
+        .and_then([](SpeedTest st) -> std::expected<SpeedTest, std::string> {
+            return st.install()
+                .transform_error([](const SpeedTestError& err) { return get_error_string(err); })
+                .transform([owned_st = std::move(st)]() mutable { return std::move(owned_st); });
         })
         .transform([](SpeedTest st) {
-            auto spinner_cb   = ui::make_spinner_callback();
-            auto speed_result = st.run(spinner_cb);
+            auto speed_result = st.run();
             ui::render_speed_results(speed_result);
         })
         .or_else([](const std::string& err) -> std::expected<void, std::string> { return std::unexpected(err); });
@@ -526,7 +506,7 @@ std::expected<void, std::string> Application::run(int argc, char* argv[]) {
     if (!http) { return std::unexpected(std::format("\n[!] HttpClient create failed: {}", http.error())); }
     auto start_time = high_resolution_clock::now();
 
-    std::print("\033c");
+    std::print("{}", ui::term::clear_screen);
     print_centered_header(std::format("Calyx - Linux System Benchmarking Utility (v{})", config::kAppVersion));
     std::println(" {:<{}} : {} ({})", "Author", config::kAppAuthorLabelWidth, "Alfie Ardinata", config::kUrlMaintainer);
     std::println(" {:<{}} : {}", "GitHub", config::kAppAuthorLabelWidth, config::kUrlGithub);

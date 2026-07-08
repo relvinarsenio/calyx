@@ -27,7 +27,7 @@
 // --- Compatibility layer for LLVM libc++ specific macros ---
 #ifndef _LIBCPP_BEGIN_NAMESPACE_STD
 #define _LIBCPP_BEGIN_NAMESPACE_STD \
-    namespace stx { \
+    namespace __stx_mdspan_shim { \
     using namespace std;
 #define _STX_SHIM_BEGIN_NAMESPACE_STD
 #endif
@@ -79,7 +79,7 @@
 
 // Define C++26 draft concept and helper templates used by libc++ mdspan deduction guides,
 // as well as custom emulation of libc++ internal integer concepts required by mdspan.
-namespace stx {
+namespace __stx_mdspan_shim {
 using namespace std;
 
 template <class _Tp> inline constexpr bool __is_character_v = false;
@@ -103,7 +103,7 @@ concept __integral_constant_like = is_integral_v<remove_cvref_t<decltype(_Tp::va
 template <class _Tp> inline constexpr size_t __maybe_static_ext = dynamic_extent;
 
 template <__integral_constant_like _Tp> inline constexpr size_t __maybe_static_ext<_Tp> = { _Tp::value };
-} // namespace stx
+} // namespace __stx_mdspan_shim
 
 // =============================================================================
 // FILE: include/__fwd/mdspan.h
@@ -1900,6 +1900,15 @@ _LIBCPP_POP_MACROS
 #undef _LIBCPP_NO_UNIQUE_ADDRESS
 #undef _STX_SHIM_NO_UNIQUE_ADDRESS
 #endif
+namespace stx {
+using __stx_mdspan_shim::default_accessor;
+using __stx_mdspan_shim::dextents;
+using __stx_mdspan_shim::extents;
+using __stx_mdspan_shim::layout_left;
+using __stx_mdspan_shim::layout_right;
+using __stx_mdspan_shim::layout_stride;
+using __stx_mdspan_shim::mdspan;
+} // namespace stx
 #ifdef _STX_SHIM_NODEBUG
 #undef _LIBCPP_NODEBUG
 #undef _STX_SHIM_NODEBUG

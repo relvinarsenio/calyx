@@ -7,16 +7,19 @@
  */
 #pragma once
 
+#include <concepts>
+#include <cstddef>
 #include <curl/curl.h>
 #include <expected>
 #include <filesystem>
 #include <format>
-#include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -24,7 +27,19 @@ namespace posix {
 class file_descriptor;
 }
 
+extern "C" {
+extern const std::byte _binary_cacert_pem_start[];
+extern const std::byte _binary_cacert_pem_end[];
+}
+
 namespace curl {
+/**
+ * @brief Retrieves the embedded CA certificate data linked via llvm-objcopy.
+ * @return A span of bytes representing the CA certificate in PEM format.
+ */
+[[nodiscard]] inline std::span<const std::byte> get_embedded_cert() noexcept {
+    return { _binary_cacert_pem_start, _binary_cacert_pem_end };
+}
 using shared_handle       = std::shared_ptr<CURL>;
 using unique_multi_handle = std::unique_ptr<CURLM, decltype([](CURLM* p) {
     if (p) { curl_multi_cleanup(p); }
@@ -38,6 +53,10 @@ using unique_char_ptr     = std::unique_ptr<char, decltype([](char* p) {
 using unique_slist_ptr    = std::unique_ptr<struct curl_slist, decltype([](auto* p) {
     if (p) { curl_slist_free_all(p); }
 })>;
+
+template <typename T>
+concept scalar = std::is_scalar_v<T>;
+
 } // namespace curl
 
 class CurlHeaders {
@@ -104,7 +123,7 @@ public:
 private:
     explicit HttpClient(std::shared_ptr<void> token, curl::shared_handle handle) noexcept;
 
-    template <typename T>
+    template <curl::scalar T>
     [[nodiscard]] std::expected<void, std::string> set_option(CURLoption option, T value) noexcept {
         const auto res = curl_easy_setopt(handle_.get(), option, value);
         return res == CURLE_OK ? std::expected<void, std::string> {}

@@ -24,37 +24,6 @@
 
 namespace arm {
 
-inline constexpr auto is_starts_with_ic = [](std::string_view str, std::string_view prefix) -> bool {
-    if (str.size() < prefix.size()) { return false; }
-
-    return std::ranges::equal(str.substr(0, prefix.size()), prefix,
-        [](char lhs, char rhs) { return std::tolower(toUChar(lhs)) == std::tolower(toUChar(rhs)); });
-};
-
-#if !defined(__i386__) && !defined(__x86_64__)
-inline constexpr auto cpu_has_flag = [](std::string_view flag) -> bool {
-    const auto& cpuinfo = probe::kCpuInfoProbe;
-    if (cpuinfo.empty()) { return false; }
-
-    constexpr std::array<std::string_view, 2> kKeys = { "flags", "Features" };
-
-    auto flag_words = std::views::split(cpuinfo, '\n')
-        | std::views::transform([](auto raw) { return std::string_view(raw); }) | std::views::filter([&](auto line) {
-              return std::ranges::any_of(kKeys, [&](auto key) { return is_starts_with_ic(line, key); });
-          })
-        | std::views::take(1) | std::views::transform([](auto line) {
-              auto colon = line.find(':');
-              return (colon == std::string_view::npos) ? std::string_view {} : trim_sv(line.substr(colon + 1));
-          })
-        | std::views::transform([](auto flags_str) {
-              return std::views::split(flags_str, ' ')
-                  | std::views::transform([](auto raw) { return std::string_view(raw); });
-          })
-        | std::views::join;
-
-    return std::ranges::any_of(flag_words, [&](auto word) { return !word.empty() && word == flag; });
-};
-
 /**
  * @brief ARM CPU identification logic via MIDR_EL1 fields.
  *
@@ -80,8 +49,8 @@ inline constexpr auto cpu_has_flag = [](std::string_view flag) -> bool {
  * @brief Represents a specific ARM CPU part ID and its human-readable name.
  */
 struct ArmPartEntry {
-    std::int32_t part_id;
-    std::string_view name;
+    std::int32_t part_id {};
+    std::string_view name {};
 };
 
 /**
@@ -89,9 +58,9 @@ struct ArmPartEntry {
  * @brief Represents an ARM CPU implementer (vendor) and their associated part numbers.
  */
 struct ArmImplEntry {
-    std::int32_t impl_id;
-    std::string_view vendor;
-    std::span<const ArmPartEntry> parts;
+    std::int32_t impl_id {};
+    std::string_view vendor {};
+    std::span<const ArmPartEntry> parts {};
 };
 
 static constexpr ArmPartEntry kArmParts[] = {
@@ -449,18 +418,15 @@ inline constexpr auto lookup_arm_name = [](std::int32_t impl, std::int32_t part)
  */
 inline constexpr auto parse_cpuinfo_hex
     = [](const std::string& cpuinfo, std::string_view key) -> std::optional<std::int32_t> {
-    for (auto line :
-        std::views::split(cpuinfo, '\n') | std::views::transform([](auto raw) { return std::string_view(raw); })) {
-        if (!is_starts_with_ic(line, key)) { continue; }
-        auto colon = line.find(':');
-        if (colon == std::string_view::npos) { continue; }
-        auto val_str = trim_sv(line.substr(colon + 1));
-        if (val_str.starts_with("0x") || val_str.starts_with("0X")) { val_str.remove_prefix(2); }
-        std::int32_t val = 0;
-        auto [ptr, ec]   = std::from_chars(val_str.data(), val_str.data() + val_str.size(), val, 16);
-        if (ec == std::errc {}) { return val; }
-    }
-    return std::nullopt;
+    const std::array<std::string_view, 1> keys = { key };
+    const auto val_opt                         = lookup_info_field(cpuinfo, keys);
+    if (!val_opt) { return std::nullopt; }
+
+    auto val_str = *val_opt;
+    if (string_utils::starts_with_ic<"0x">(val_str)) { val_str.remove_prefix(2); }
+    std::int32_t val = 0;
+    auto [ptr, ec]   = std::from_chars(val_str.data(), val_str.data() + val_str.size(), val, 16);
+    return (ec == std::errc {}) ? std::optional { val } : std::nullopt;
 };
 
 /**
@@ -471,18 +437,18 @@ inline constexpr auto parse_cpuinfo_hex
  * @return std::optional<std::string> The resolved name if successful.
  */
 inline constexpr auto parse_midr_sysfs = []() -> std::optional<std::string> {
-    const std::string_view content = probe::kMidrProbe;
+    const std::string_view content = probe::get_midr_probe();
     if (content.empty()) { return std::nullopt; }
 
     auto val_str = trim_sv(content);
-    if (val_str.starts_with("0x") || val_str.starts_with("0X")) { val_str.remove_prefix(2); }
+    if (string_utils::starts_with_ic<"0x">(val_str)) { val_str.remove_prefix(2); }
 
     std::uint64_t midr = 0;
     auto [ptr, ec]     = std::from_chars(val_str.data(), val_str.data() + val_str.size(), midr, 16);
     if (ec != std::errc {}) { return std::nullopt; }
 
-    std::int32_t impl = toInt((midr >> 24) & 0xFF);
-    std::int32_t part = toInt((midr >> 4) & 0xFFF);
+    const std::int32_t impl = toInt((midr >> 24) & 0xFF);
+    const std::int32_t part = toInt((midr >> 4) & 0xFFF);
 
     return lookup_arm_name(impl, part);
 };
@@ -496,16 +462,15 @@ inline constexpr auto parse_midr_sysfs = []() -> std::optional<std::string> {
  */
 inline constexpr auto resolve_arm_model_name = []() -> std::optional<std::string> {
     ///< @brief Strategy 1: parse "CPU implementer" + "CPU part" from /proc/cpuinfo
-    const auto& cpuinfo = probe::kCpuInfoProbe;
+    const auto& cpuinfo = probe::get_cpu_info_probe();
     if (!cpuinfo.empty()) {
-        auto impl_opt = parse_cpuinfo_hex(cpuinfo, "CPU implementer");
-        auto part_opt = parse_cpuinfo_hex(cpuinfo, "CPU part");
+        const auto impl_opt = parse_cpuinfo_hex(cpuinfo, "CPU implementer");
+        const auto part_opt = parse_cpuinfo_hex(cpuinfo, "CPU part");
         if (impl_opt && part_opt) { return lookup_arm_name(*impl_opt, *part_opt); }
     }
 
     ///< @brief Strategy 2: read MIDR_EL1 register from sysfs (kernel ≥ 4.11)
     return parse_midr_sysfs();
 };
-#endif
 
 } // namespace arm

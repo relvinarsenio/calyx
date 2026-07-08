@@ -53,6 +53,19 @@ using native_ioctl_req_t = int;
     return std::min(requested, kSsizeMax);
 }
 
+template <typename T>
+concept non_const = !std::is_const_v<T>;
+
+template <typename T>
+concept trivially_copyable = std::is_trivially_copyable_v<T>;
+
+template <typename T>
+concept standard_layout = std::is_standard_layout_v<T>;
+
+template <typename F>
+concept cancel_callback = std::is_nothrow_invocable_v<std::remove_reference_t<F>>
+    && std::convertible_to<std::invoke_result_t<std::remove_reference_t<F>>, bool>;
+
 /**
  * @brief RAII wrapper for a POSIX file descriptor.
  *
@@ -110,25 +123,16 @@ private:
 
     [[nodiscard]] auto update_fcntl_flag(std::int32_t get_cmd, std::int32_t set_cmd, std::int32_t flag,
         bool enable) const noexcept -> std::expected<void, std::error_code> {
-        if (auto valid = ensure_valid_fd(); !valid) { return std::unexpected(valid.error()); }
-
-        std::int32_t current_flags;
-        do {
-            current_flags = ::fcntl(fd_, get_cmd, 0);
-        } while (current_flags == -1 && errno == EINTR);
-
-        if (current_flags == -1) { return std::unexpected(posix::last_error()); }
-
-        std::int32_t updated_flags = enable ? (current_flags | flag) : (current_flags & ~flag);
-        if (updated_flags == current_flags) { return {}; }
-
-        std::int32_t set_res;
-        do {
-            set_res = ::fcntl(fd_, set_cmd, updated_flags);
-        } while (set_res == -1 && errno == EINTR);
-
-        if (set_res == -1) { return std::unexpected(posix::last_error()); }
-        return {};
+        return ensure_valid_fd()
+            .and_then(
+                [fd = fd_, get_cmd]() noexcept { return expect_result<error_style::posix>(::fcntl(fd, get_cmd, 0)); })
+            .and_then([fd = fd_, set_cmd, flag, enable](
+                          std::int32_t current_flags) noexcept -> std::expected<void, std::error_code> {
+                const std::int32_t updated_flags = enable ? (current_flags | flag) : (current_flags & ~flag);
+                if (updated_flags == current_flags) { return {}; }
+                return expect_result<error_style::posix>(::fcntl(fd, set_cmd, updated_flags))
+                    .transform([](auto) noexcept {});
+            });
     }
 
 public:
@@ -161,11 +165,9 @@ public:
      */
     [[nodiscard]] static auto open(const std::filesystem::path& path, std::int32_t flags, mode_t mode = 0) noexcept
         -> std::expected<file_descriptor, std::error_code> {
-        std::int32_t fd;
-        do {
-            fd = ::open(path.c_str(), flags | O_CLOEXEC, mode);
-        } while (fd == -1 && errno == EINTR);
-        return from_raw(fd);
+        return eintr_loop<error_style::posix>([&path, flags, mode]() noexcept {
+            return ::open(path.c_str(), flags | O_CLOEXEC, mode);
+        }).transform([](auto fd) noexcept { return file_descriptor(fd); });
     }
 
     /**
@@ -173,11 +175,9 @@ public:
      */
     [[nodiscard]] static auto open_at(native_handle_type dir_fd, const std::filesystem::path& path, std::int32_t flags,
         mode_t mode = 0) noexcept -> std::expected<file_descriptor, std::error_code> {
-        native_handle_type fd;
-        do {
-            fd = ::openat(dir_fd, path.c_str(), flags | O_CLOEXEC, mode);
-        } while (fd == -1 && errno == EINTR);
-        return from_raw(fd);
+        return eintr_loop<error_style::posix>([dir_fd, &path, flags, mode]() noexcept {
+            return ::openat(dir_fd, path.c_str(), flags | O_CLOEXEC, mode);
+        }).transform([](auto fd) noexcept { return file_descriptor(fd); });
     }
 
     /**
@@ -217,15 +217,13 @@ public:
      */
     [[nodiscard]] auto duplicate(bool close_on_exec = true) const noexcept
         -> std::expected<file_descriptor, std::error_code> {
-        if (auto valid = ensure_valid_fd(); !valid) { return std::unexpected(valid.error()); }
-
-        std::int32_t copied_fd;
-        do {
-            copied_fd = close_on_exec ? ::fcntl(fd_, F_DUPFD_CLOEXEC, 0) : ::dup(fd_);
-        } while (copied_fd == -1 && errno == EINTR);
-
-        if (copied_fd < 0) { return std::unexpected(posix::last_error()); }
-        return file_descriptor(copied_fd);
+        return ensure_valid_fd()
+            .and_then([fd = fd_, close_on_exec]() noexcept {
+                return eintr_loop<error_style::posix>([fd, close_on_exec]() noexcept {
+                    return close_on_exec ? ::fcntl(fd, F_DUPFD_CLOEXEC, 0) : ::dup(fd);
+                });
+            })
+            .transform([](auto fd) noexcept { return file_descriptor(fd); });
     }
 
     /**
@@ -240,17 +238,11 @@ public:
     [[nodiscard]] auto redirect_to(native_handle_type target_fd, bool close_on_exec = true) const noexcept
         -> std::expected<void, std::error_code> {
         if (auto valid = ensure_valid_fd(); !valid) { return std::unexpected(valid.error()); }
-
         if (fd_ == target_fd) { return set_cloexec(close_on_exec); }
-
         /** @note @c dup3 is atomic and allows setting @c O_CLOEXEC. */
-        std::int32_t res;
-        do {
-            res = ::dup3(fd_, target_fd, close_on_exec ? O_CLOEXEC : 0);
-        } while (res == -1 && errno == EINTR);
-
-        if (res == -1) { return std::unexpected(posix::last_error()); }
-        return {};
+        return eintr_loop<error_style::posix>([fd = fd_, target_fd, close_on_exec]() noexcept {
+            return ::dup3(fd, target_fd, close_on_exec ? O_CLOEXEC : 0);
+        }).transform([](auto) noexcept {});
     }
 
     /**
@@ -269,8 +261,11 @@ public:
         return update_fcntl_flag(F_GETFD, F_SETFD, FD_CLOEXEC, enable);
     }
 
+    /** @brief Check if a raw file descriptor is associated with a terminal (TTY). */
+    [[nodiscard]] static auto is_tty(native_handle_type fd) noexcept -> bool { return fd >= 0 && ::isatty(fd) == 1; }
+
     /** @brief Check if this descriptor is associated with a terminal (TTY). */
-    [[nodiscard]] auto is_tty() const noexcept -> bool { return fd_ >= 0 && ::isatty(fd_) == 1; }
+    [[nodiscard]] auto is_tty() const noexcept -> bool { return is_tty(fd_); }
 
     /** @brief Retrieve the size of the file in bytes via fstat(2). */
     [[nodiscard]] auto get_size() const noexcept -> std::expected<off_t, std::error_code> {
@@ -279,15 +274,10 @@ public:
 
     /** @brief File metadata via fstat(2). */
     [[nodiscard]] auto stat() const noexcept -> std::expected<struct ::stat, std::error_code> {
-        if (auto valid = ensure_valid_fd(); !valid) { return std::unexpected(valid.error()); }
         struct ::stat st {};
-        std::int32_t res;
-        do {
-            res = ::fstat(fd_, &st);
-        } while (res == -1 && errno == EINTR);
-
-        if (res == -1) { return std::unexpected(posix::last_error()); }
-        return st;
+        return ensure_valid_fd()
+            .and_then([fd = fd_, &st]() noexcept { return expect_result<error_style::posix>(::fstat(fd, &st)); })
+            .transform([&st](auto) noexcept { return st; });
     }
 
     /**
@@ -295,26 +285,16 @@ public:
      * @param mode New permission bits (e.g. @c S_IRWXU | @c S_IRGRP).
      */
     [[nodiscard]] auto chmod(mode_t mode) const noexcept -> std::expected<void, std::error_code> {
-        if (auto valid = ensure_valid_fd(); !valid) { return std::unexpected(valid.error()); }
-        std::int32_t res;
-        do {
-            res = ::fchmod(fd_, mode);
-        } while (res == -1 && errno == EINTR);
-
-        if (res == -1) { return std::unexpected(posix::last_error()); }
-        return {};
+        return ensure_valid_fd()
+            .and_then([fd = fd_, mode]() noexcept { return expect_result<error_style::posix>(::fchmod(fd, mode)); })
+            .transform([](auto) noexcept {});
     }
 
     /** @brief Reposition the file offset via lseek(2). */
     [[nodiscard]] auto seek(off_t offset, std::int32_t whence) const noexcept -> std::expected<off_t, std::error_code> {
-        if (auto valid = ensure_valid_fd(); !valid) { return std::unexpected(valid.error()); }
-        off_t res;
-        do {
-            res = ::lseek(fd_, offset, whence);
-        } while (res == -1 && errno == EINTR);
-
-        if (res == -1) { return std::unexpected(posix::last_error()); }
-        return res;
+        return ensure_valid_fd().and_then([fd = fd_, offset, whence]() noexcept {
+            return expect_result<error_style::posix>(::lseek(fd, offset, whence));
+        });
     }
 
     /** @brief Retrieve the current file offset via lseek(2). */
@@ -335,17 +315,15 @@ public:
      *
      * Invokes @p should_cancel between retries.
      */
-    template <typename CancelCallable>
-        requires std::is_nothrow_invocable_v<std::remove_reference_t<CancelCallable>>
-        && std::convertible_to<std::invoke_result_t<std::remove_reference_t<CancelCallable>>, bool>
+    template <cancel_callback CancelCallable>
     [[nodiscard]] auto read(std::span<std::byte> buffer, CancelCallable&& should_cancel) const noexcept
         -> std::expected<std::size_t, std::error_code> {
         return read_raw(fd_, buffer, std::forward<CancelCallable>(should_cancel));
     }
 
     /** @overload Automatically wraps arbitrary spans into byte spans. */
-    template <typename T>
-        requires(!std::is_const_v<T>)
+    template <trivially_copyable T>
+        requires non_const<T>
     [[nodiscard]] auto read(std::span<T> buffer) const noexcept {
         return read(std::as_writable_bytes(buffer));
     }
@@ -361,17 +339,15 @@ public:
     /**
      * @brief Read exact with cancellation.
      */
-    template <typename CancelCallable>
-        requires std::is_nothrow_invocable_v<std::remove_reference_t<CancelCallable>>
-        && std::convertible_to<std::invoke_result_t<std::remove_reference_t<CancelCallable>>, bool>
+    template <cancel_callback CancelCallable>
     [[nodiscard]] auto read_exact(std::span<std::byte> buffer, CancelCallable&& should_cancel) const noexcept
         -> std::expected<std::size_t, std::error_code> {
         return read_exact_raw(fd_, buffer, std::forward<CancelCallable>(should_cancel));
     }
 
     /** @overload Automatically wraps arbitrary spans into byte spans. */
-    template <typename T>
-        requires(!std::is_const_v<T>)
+    template <trivially_copyable T>
+        requires non_const<T>
     [[nodiscard]] auto read_exact(std::span<T> buffer) const noexcept {
         return read_exact(std::as_writable_bytes(buffer));
     }
@@ -394,7 +370,7 @@ public:
     }
 
     /** @overload Automatically wraps arbitrary data into byte spans. */
-    template <typename T> [[nodiscard]] auto write(std::span<const T> data) const noexcept {
+    template <trivially_copyable T> [[nodiscard]] auto write(std::span<const T> data) const noexcept {
         return write(std::as_bytes(data));
     }
 
@@ -413,8 +389,7 @@ public:
      * @param value     The value to set.
      * @return          Success or the captured @c errno.
      */
-    template <typename T>
-        requires std::is_standard_layout_v<T>
+    template <standard_layout T>
     [[nodiscard]] auto setsockopt(std::int32_t level, std::int32_t optname, const T& value) const noexcept
         -> std::expected<void, std::error_code> {
         return setsockopt_raw(fd_, level, optname, value);
@@ -436,30 +411,21 @@ public:
     [[nodiscard]] static auto ioctl_raw(native_handle_type fd, std::integral auto req) noexcept
         -> std::expected<void, std::error_code> {
         if (fd < 0) { return std::unexpected(bad_fd_error()); }
-        std::int32_t res;
-        do {
-            res = ::ioctl(fd, static_cast<native_ioctl_req_t>(req));
-        } while (res == -1 && errno == EINTR);
-
-        if (res == -1) { return std::unexpected(posix::last_error()); }
-        return {};
+        return eintr_loop<error_style::posix>([fd, req]() noexcept {
+            return ::ioctl(fd, static_cast<native_ioctl_req_t>(req));
+        }).transform([](auto) noexcept {});
     }
 
     /**
      * @brief Type-safe raw @c ioctl(2) on an unowned file descriptor.
      */
-    template <typename T>
-        requires std::is_trivially_copyable_v<T>
+    template <trivially_copyable T>
     [[nodiscard]] static auto ioctl_raw(native_handle_type fd, std::integral auto req, T& arg) noexcept
         -> std::expected<void, std::error_code> {
         if (fd < 0) { return std::unexpected(bad_fd_error()); }
-        std::int32_t res;
-        do {
-            res = ::ioctl(fd, static_cast<native_ioctl_req_t>(req), &arg);
-        } while (res == -1 && errno == EINTR);
-
-        if (res == -1) { return std::unexpected(posix::last_error()); }
-        return {};
+        return eintr_loop<error_style::posix>([fd, req, &arg]() noexcept {
+            return ::ioctl(fd, static_cast<native_ioctl_req_t>(req), &arg);
+        }).transform([](auto) noexcept {});
     }
 
     /**
@@ -484,8 +450,7 @@ public:
      * @param arg   In/out argument that the kernel reads or writes.
      * @return      Success or an error code on failure.
      */
-    template <typename T>
-        requires std::is_trivially_copyable_v<T>
+    template <trivially_copyable T>
     [[nodiscard]] auto ioctl(std::integral auto req, T& arg) const noexcept -> std::expected<void, std::error_code> {
         return ioctl_raw(fd_, req, arg);
     }
@@ -519,9 +484,7 @@ public:
      * @return              Number of bytes read, a system error, or @c errc::operation_canceled.
      * @note                Automatically handles EINTR retries.
      */
-    template <typename CancelCallable>
-        requires std::is_nothrow_invocable_v<std::remove_reference_t<CancelCallable>>
-        && std::convertible_to<std::invoke_result_t<std::remove_reference_t<CancelCallable>>, bool>
+    template <cancel_callback CancelCallable>
     [[nodiscard]] static auto read_raw(native_handle_type fd, std::span<std::byte> buffer,
         CancelCallable&& should_cancel) noexcept -> std::expected<std::size_t, std::error_code> {
         if (fd < 0) { return std::unexpected(bad_fd_error()); }
@@ -554,9 +517,7 @@ public:
      * @param should_cancel Callback invoked between retries to check for cancellation.
      * @return              Number of bytes successfully read, or a system error.
      */
-    template <typename CancelCallable>
-        requires std::is_nothrow_invocable_v<std::remove_reference_t<CancelCallable>>
-        && std::convertible_to<std::invoke_result_t<std::remove_reference_t<CancelCallable>>, bool>
+    template <cancel_callback CancelCallable>
     [[nodiscard]] static auto read_exact_raw(native_handle_type fd, std::span<std::byte> buffer,
         CancelCallable&& should_cancel) noexcept -> std::expected<std::size_t, std::error_code> {
         std::size_t total_bytes = 0;
@@ -640,31 +601,22 @@ public:
      * @param value     The value to set.
      * @return          Success or the captured @c errno.
      */
-    template <typename T>
-        requires std::is_standard_layout_v<T>
+    template <standard_layout T>
     [[nodiscard]] static auto setsockopt_raw(native_handle_type fd, std::int32_t level, std::int32_t optname,
         const T& value) noexcept -> std::expected<void, std::error_code> {
         if (fd < 0) { return std::unexpected(bad_fd_error()); }
-        std::int32_t res;
-        do {
-            res = ::setsockopt(fd, level, optname, std::addressof(value), sizeof(T));
-        } while (res == -1 && errno == EINTR);
-
-        if (res != 0) { return std::unexpected(posix::last_error()); }
-        return {};
+        return eintr_loop<error_style::posix>([fd, level, optname, &value]() noexcept {
+            return ::setsockopt(fd, level, optname, std::addressof(value), sizeof(T));
+        }).transform([](auto) noexcept {});
     }
 
     /** @overload Support for raw pointer/size for special cases or buffers. */
     [[nodiscard]] static auto setsockopt_raw(native_handle_type fd, std::int32_t level, std::int32_t optname,
         const void* optval, socklen_t optlen) noexcept -> std::expected<void, std::error_code> {
         if (fd < 0) { return std::unexpected(bad_fd_error()); }
-        std::int32_t res;
-        do {
-            res = ::setsockopt(fd, level, optname, optval, optlen);
-        } while (res == -1 && errno == EINTR);
-
-        if (res != 0) { return std::unexpected(posix::last_error()); }
-        return {};
+        return eintr_loop<error_style::posix>([fd, level, optname, optval, optlen]() noexcept {
+            return ::setsockopt(fd, level, optname, optval, optlen);
+        }).transform([](auto) noexcept {});
     }
 
     /**
@@ -676,10 +628,7 @@ public:
      */
     [[nodiscard]] static auto sync_raw(native_handle_type fd) noexcept -> std::expected<void, std::error_code> {
         if (fd < 0) { return std::unexpected(bad_fd_error()); }
-        while (true) {
-            if (::fsync(fd) == 0) { return {}; }
-            if (errno != EINTR) { return std::unexpected(posix::last_error()); }
-        }
+        return eintr_loop<error_style::posix>([fd]() noexcept { return ::fsync(fd); }).transform([](auto) noexcept {});
     }
 
     /**
@@ -691,10 +640,8 @@ public:
      */
     [[nodiscard]] static auto datasync_raw(native_handle_type fd) noexcept -> std::expected<void, std::error_code> {
         if (fd < 0) { return std::unexpected(bad_fd_error()); }
-        while (true) {
-            if (::fdatasync(fd) == 0) { return {}; }
-            if (errno != EINTR) { return std::unexpected(posix::last_error()); }
-        }
+        return eintr_loop<error_style::posix>([fd]() noexcept { return ::fdatasync(fd); }).transform([](auto) noexcept {
+        });
     }
 };
 
@@ -702,7 +649,7 @@ public:
 
 /** @brief Enable std::format and std::print for posix::file_descriptor. */
 template <> struct std::formatter<posix::file_descriptor> : std::formatter<std::int32_t> {
-    auto format(const posix::file_descriptor& fd, auto& ctx) const {
+    auto format(const posix::file_descriptor& fd, std::format_context& ctx) const {
         return std::formatter<std::int32_t>::format(fd.native_handle(), ctx);
     }
 };

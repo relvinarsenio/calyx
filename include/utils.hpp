@@ -14,6 +14,7 @@
 #include "posix.hpp"
 #include "posix_error.hpp"
 #include "scope.hpp"
+#include "tsc.hpp"
 
 #include <algorithm>
 #include <array>
@@ -21,10 +22,11 @@
 #include <cctype>
 #include <charconv>
 #include <chrono>
+#include <cmath>
+#include <concepts>
 #include <cstdint>
 #include <cstdio>
 #include <expected>
-#include <fcntl.h>
 #include <filesystem>
 #include <format>
 #include <optional>
@@ -33,153 +35,93 @@
 #include <span>
 #include <string>
 #include <string_view>
-#include <sys/ioctl.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <thread>
 #include <type_traits>
-#include <unistd.h>
 #include <utility>
 
-namespace tsc {
-
-/**
- * @brief Providing hardware-level hint for spin-waiting.
- */
-inline void cpu_pause() noexcept {
-#if defined(__x86_64__)
-    __builtin_ia32_pause();
-#elif defined(__aarch64__)
-    __asm__ __volatile__("yield" ::: "memory");
-#else
-    std::this_thread::yield();
-#endif
-}
-
-/**
- * @brief Read the hardware cycle counter (non-serializing).
- * @return 64-bit cycle count.
- */
-[[nodiscard]] inline std::uint64_t rdtsc() noexcept {
-#if defined(__x86_64__)
-    std::uint32_t lo {}, hi {};
-    __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi)::"memory");
-    return (toULong(hi) << 32) | toULong(lo);
-#elif defined(__aarch64__)
-    std::uint64_t val {};
-    __asm__ __volatile__("isb; mrs %0, cntvct_el0" : "=r"(val)::"memory");
-    return val;
-#else
-    return toULong(std::chrono::steady_clock::now().time_since_epoch().count());
-#endif
-}
-
-/**
- * @brief Serialized start-of-interval cycle read.
- * @details Per Intel SDM Vol. 2 (RDTSC guidance): LFENCE before RDTSC
- * ensures all prior instructions and loads complete before the timestamp.
- * This is the recommended pattern for the start of a timed interval.
- */
-[[nodiscard]] inline std::uint64_t rdtsc_ordered() noexcept {
-#if defined(__x86_64__)
-    std::uint32_t lo {}, hi {};
-    __asm__ __volatile__("lfence\n\trdtsc" : "=a"(lo), "=d"(hi)::"memory");
-    return (toULong(hi) << 32) | toULong(lo);
-#elif defined(__aarch64__)
-    std::uint64_t val {};
-    __asm__ __volatile__("isb; mrs %0, cntvct_el0" : "=r"(val)::"memory");
-    return val;
-#else
-    return toULong(std::chrono::steady_clock::now().time_since_epoch().count());
-#endif
-}
-
-/**
- * @brief Read the hardware cycle counter with partial serialization.
- * @details Per Intel SDM Vol. 2: RDTSCP waits for all prior instructions to
- * complete, but does NOT prevent subsequent instructions from starting before
- * the timestamp is read. Use rdtscp_ordered() when a full end-of-interval
- * barrier is required.
- * @return 64-bit cycle count.
- */
-[[nodiscard]] inline std::uint64_t rdtscp() noexcept {
-#if defined(__x86_64__)
-    std::uint32_t lo {}, hi {};
-    __asm__ __volatile__("rdtscp" : "=a"(lo), "=d"(hi)::"rcx", "memory");
-    return (toULong(hi) << 32) | toULong(lo);
-#elif defined(__aarch64__)
-    std::uint64_t val {};
-    __asm__ __volatile__("isb; mrs %0, cntvct_el0; isb" : "=r"(val)::"memory");
-    return val;
-#else
-    return rdtsc();
-#endif
-}
-
-/**
- * @brief Serialized end-of-interval cycle read.
- * @details Per Intel SDM Vol. 2: RDTSCP waits for all prior instructions,
- * then LFENCE prevents subsequent instructions from executing speculatively
- * before the timestamp is captured. This is the recommended pattern for
- * the end of a timed interval.
- */
-[[nodiscard]] inline std::uint64_t rdtscp_ordered() noexcept {
-#if defined(__x86_64__)
-    std::uint32_t lo {}, hi {};
-    __asm__ __volatile__("rdtscp\n\tlfence" : "=a"(lo), "=d"(hi)::"rcx", "memory");
-    return (toULong(hi) << 32) | toULong(lo);
-#elif defined(__aarch64__)
-    std::uint64_t val {};
-    __asm__ __volatile__("isb; mrs %0, cntvct_el0; isb" : "=r"(val)::"memory");
-    return val;
-#else
-    return rdtsc();
-#endif
-}
-
-/**
- * @brief Calibrate the cycle frequency against a steady clock.
- * @param duration Duration to calibrate for (default 10ms).
- * @return Cycles per nanosecond.
- */
-[[nodiscard]] inline double calibrate(std::chrono::nanoseconds duration = std::chrono::milliseconds(10)) noexcept {
-    const auto t0 = std::chrono::steady_clock::now();
-    const auto c0 = rdtsc_ordered();
-
-    // Busy wait for better precision than sleep
-    while (std::chrono::steady_clock::now() - t0 < duration) {
-        cpu_pause();
-    }
-
-    const auto t1 = std::chrono::steady_clock::now();
-    const auto c1 = rdtscp_ordered();
-
-    const auto elapsed_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
-    return toDouble(c1 - c0) / toDouble(elapsed_ns);
-}
-
-} // namespace tsc
-
-/**
- * @brief Safely multiply two unsigned 64-bit integers with overflow checking.
- * @return The result if no overflow occurred, otherwise @c std::nullopt.
- */
-inline constexpr auto safe_mul
-    = [](std::uint64_t left_value, std::uint64_t right_value) noexcept -> std::optional<std::uint64_t> {
-    std::uint64_t result {};
-    if (__builtin_mul_overflow(left_value, right_value, &result)) { return std::nullopt; }
-    return result;
+/** @brief Compile-time tag for selecting the arithmetic operation in @ref safe_arith. */
+enum class overflow_op {
+    add,
+    mul,
+    sub
 };
 
+namespace overflow_impl {
+
+/** @brief Primary template — intentionally undefined; forces an explicit specialization per operation. */
+template <overflow_op Op> struct builtin_overflow;
+
+/** @brief Dispatches to @c __builtin_add_overflow. */
+template <> struct builtin_overflow<overflow_op::add> {
+    template <cast::standard_integer_type T> [[nodiscard]] static constexpr bool apply(T lhs, T rhs, T* out) noexcept {
+        return __builtin_add_overflow(lhs, rhs, out);
+    }
+};
+
+/** @brief Dispatches to @c __builtin_mul_overflow. */
+template <> struct builtin_overflow<overflow_op::mul> {
+    template <cast::standard_integer_type T> [[nodiscard]] static constexpr bool apply(T lhs, T rhs, T* out) noexcept {
+        return __builtin_mul_overflow(lhs, rhs, out);
+    }
+};
+
+/** @brief Dispatches to @c __builtin_sub_overflow. */
+template <> struct builtin_overflow<overflow_op::sub> {
+    template <cast::standard_integer_type T> [[nodiscard]] static constexpr bool apply(T lhs, T rhs, T* out) noexcept {
+        return __builtin_sub_overflow(lhs, rhs, out);
+    }
+};
+
+} // namespace overflow_impl
+
 /**
- * @brief Safely add two unsigned 64-bit integers with overflow checking.
- * @return The result if no overflow occurred, otherwise @c std::nullopt.
+ * @brief Overflow-checked arithmetic on unsigned integers.
+ *
+ * The operation is selected at compile time via @ref overflow_impl::builtin_overflow specialization.
+ * No runtime branching occurs for the operation itself — only the mandatory overflow sentinel check remains.
+ *
+ * @tparam Op  The arithmetic operation to perform (@ref overflow_op).
+ * @tparam T   Any standard integer type (signed or unsigned, per @ref cast::standard_integer_type).
+ * @return The result, or @c std::nullopt on overflow.
  */
+template <overflow_op Op, cast::standard_integer_type T>
+[[nodiscard]] constexpr auto safe_arith(T lhs, T rhs) noexcept -> std::optional<T> {
+    T result {};
+    return overflow_impl::builtin_overflow<Op>::apply(lhs, rhs, &result) ? std::nullopt : std::optional<T> { result };
+}
+
+/** @brief Safely multiply two @c uint64_t values with overflow checking. */
+inline constexpr auto safe_mul
+    = [](std::uint64_t lhs, std::uint64_t rhs) noexcept { return safe_arith<overflow_op::mul>(lhs, rhs); };
+
+/** @brief Safely add two @c uint64_t values with overflow checking. */
 inline constexpr auto safe_add
-    = [](std::uint64_t left_value, std::uint64_t right_value) noexcept -> std::optional<std::uint64_t> {
-    std::uint64_t result {};
-    if (__builtin_add_overflow(left_value, right_value, &result)) { return std::nullopt; }
-    return result;
+    = [](std::uint64_t lhs, std::uint64_t rhs) noexcept { return safe_arith<overflow_op::add>(lhs, rhs); };
+
+/** @brief Safely subtract two @c uint64_t values with overflow checking. */
+inline constexpr auto safe_sub
+    = [](std::uint64_t lhs, std::uint64_t rhs) noexcept { return safe_arith<overflow_op::sub>(lhs, rhs); };
+
+/**
+ * @brief Checks if a value equals any of the specified template constants.
+ *
+ * Dispatched at compile time using fold expressions.
+ */
+template <auto... Vals, class T>
+    requires(std::equality_comparable_with<T, decltype(Vals)> && ...)
+[[nodiscard]] constexpr bool is_one_of(const T& val) noexcept {
+    return ((val == Vals) || ...);
+}
+
+/**
+ * @brief Idiomatic overload set generator for exhaustive std::variant matching.
+ *
+ * Inherits from multiple lambdas to create a unified visitation object.
+ * @note Explicit deduction guides are omitted in favor of C++20 aggregate CTAD.
+ */
+template <class... Ts>
+    requires(std::is_class_v<Ts> && ...)
+struct overloaded : Ts... {
+    using Ts::operator()...;
 };
 
 namespace fs = std::filesystem;
@@ -215,11 +157,13 @@ inline constexpr auto get_term_width = []() noexcept -> std::size_t {
 };
 
 inline constexpr auto print_line = []() noexcept {
+    using namespace std::string_view_literals;
     const std::size_t width = get_term_width();
-    std::println("{:-<{}}", "", width);
+    std::println("{}", std::views::repeat("\u2500"sv, width) | std::views::join | std::ranges::to<std::string>());
 };
 
 inline constexpr auto print_centered_header = [](std::string_view text) noexcept {
+    using namespace std::string_view_literals;
     const std::size_t width    = get_term_width();
     const std::size_t text_len = text.length();
 
@@ -232,17 +176,113 @@ inline constexpr auto print_centered_header = [](std::string_view text) noexcept
     const std::size_t left_pad  = remaining / 2;
     const std::size_t right_pad = remaining - left_pad;
 
-    std::println("{0:-<{1}} {2} {0:-<{3}}", "", left_pad, text, right_pad);
+    const auto left_line = std::views::repeat("\u2500"sv, left_pad) | std::views::join | std::ranges::to<std::string>();
+    const auto right_line
+        = std::views::repeat("\u2500"sv, right_pad) | std::views::join | std::ranges::to<std::string>();
+
+    std::println("{} {} {}", left_line, text, right_line);
 };
 
-inline constexpr auto trim_sv = [](std::string_view str) noexcept -> std::string_view {
-    const auto first = str.find_first_not_of(" \t\n\r\v\f");
-    if (first == std::string_view::npos) { return {}; }
-    const auto last = str.find_last_not_of(" \t\n\r\v\f");
-    return str.substr(first, last - first + 1);
+[[nodiscard]] constexpr std::string_view trim_sv(std::convertible_to<std::string_view> auto&& str) noexcept {
+    const std::string_view sv { std::forward<decltype(str)>(str) };
+    constexpr auto is_space = [](char const ch) noexcept {
+        return ch == ' ' || ch == '\n' || ch == '\r' || ch == '\t' || ch == '\v' || ch == '\f';
+    };
+    auto first = std::ranges::find_if_not(sv, is_space);
+    if (first == sv.end()) { return {}; }
+    auto last = std::ranges::find_if_not(sv | std::views::reverse, is_space).base();
+    return std::string_view(first, last);
+}
+
+[[nodiscard]] constexpr std::string trim(std::convertible_to<std::string_view> auto&& str) {
+    return std::string { trim_sv(std::forward<decltype(str)>(str)) };
+}
+
+namespace string_utils {
+
+/**
+ * @brief Case-insensitive equality between two runtime strings.
+ *
+ * Symmetric: both sides are lowercased before comparison.
+ */
+[[nodiscard]] constexpr bool equals_ic(
+    std::convertible_to<std::string_view> auto&& lhs, std::convertible_to<std::string_view> auto&& rhs) noexcept {
+    const std::string_view sv1 { std::forward<decltype(lhs)>(lhs) };
+    const std::string_view sv2 { std::forward<decltype(rhs)>(rhs) };
+    return sv1.size() == sv2.size() && std::ranges::equal(sv1, sv2, [](char a, char b) noexcept {
+        return std::tolower(toUChar(a)) == std::tolower(toUChar(b));
+    });
+}
+
+/**
+ * @brief Evaluates whether a character is equal to a known lowercase ASCII character,
+ *        performing case-insensitive comparison on the left character.
+ *
+ * @note This comparator is asymmetric: the right-hand operand (rhs) MUST be
+ *       already lowercase ASCII for the comparison to be correct.
+ */
+struct AsciiLowerEqualRight {
+    [[nodiscard]] constexpr bool operator()(char lhs, char rhs) const noexcept {
+        const unsigned char lhs_ch = toUChar(lhs);
+        const unsigned char rhs_ch = toUChar(rhs);
+        return std::tolower(lhs_ch) == rhs_ch;
+    }
 };
 
-inline constexpr auto trim = [](const std::string& str) -> std::string { return std::string(trim_sv(str)); };
+template <std::size_t N> struct FixedString {
+    std::array<char, N> chars {};
+    consteval FixedString(const char (&str)[N]) { std::ranges::copy(str, chars.begin()); }
+    [[nodiscard]] consteval std::size_t size() const noexcept { return N - 1uz; }
+};
+
+template <FixedString Pattern> [[nodiscard]] constexpr bool contains_ic(std::string_view str) noexcept {
+    static constexpr auto kPattern = Pattern;
+    static constexpr std::string_view pattern { kPattern.chars.begin(), kPattern.size() };
+    return std::ranges::contains_subrange(str, pattern, AsciiLowerEqualRight {});
+}
+
+template <FixedString Pattern> [[nodiscard]] constexpr bool starts_with_ic(std::string_view str) noexcept {
+    static constexpr auto kPattern = Pattern;
+    if (str.size() < kPattern.size()) { return false; }
+    static constexpr std::string_view prefix { kPattern.chars.begin(), kPattern.size() };
+    return std::ranges::equal(str.substr(0, kPattern.size()), prefix, AsciiLowerEqualRight {});
+}
+
+/**
+ * @brief Case-insensitive exact matcher against a compile-time pattern.
+ *
+ * Completes the matcher family alongside @ref contains_ic (substring)
+ * and @ref starts_with_ic (prefix).
+ *
+ * @note Asymmetric: the Pattern MUST be all-lowercase for correct matching.
+ */
+template <FixedString Pattern> [[nodiscard]] constexpr bool equals_ic(std::string_view str) noexcept {
+    static constexpr auto kPattern = Pattern;
+    if (str.size() != kPattern.size()) { return false; }
+    static constexpr std::string_view pattern { kPattern.chars.begin(), kPattern.size() };
+    return std::ranges::equal(str, pattern, AsciiLowerEqualRight {});
+}
+
+[[nodiscard]] constexpr std::string_view strip_bracketed_prefix(std::string_view sv) noexcept {
+    return std::optional { sv }
+        .and_then([](auto str) { return str.starts_with('[') ? std::optional { str } : std::nullopt; })
+        .and_then([](auto str) {
+            const auto close = str.find(']');
+            return (close != std::string_view::npos)
+                ? std::optional { std::pair { str.substr(0, close).substr(1), str.substr(close).substr(1) } }
+                : std::optional<std::pair<std::string_view, std::string_view>> {};
+        })
+        .and_then([](auto&& pair) {
+            const auto [inside, rest]     = pair;
+            constexpr auto is_ascii_digit = [](char ch) noexcept { return ch >= '0' && ch <= '9'; };
+            return !inside.empty() && std::ranges::all_of(inside, is_ascii_digit) ? std::optional { pair }
+                                                                                  : std::nullopt;
+        })
+        .transform([](auto&& pair) { return trim_sv(pair.second); })
+        .value_or(sv);
+}
+
+} // namespace string_utils
 
 /**
  * @brief Truncates a string to a maximum length, appending an ellipsis if needed.
@@ -265,34 +305,76 @@ inline constexpr auto get_page_size = []() noexcept -> std::uint64_t {
     return size;
 };
 
+namespace format_impl {
+
+/**
+ * @brief Aggregates the mutable state of scaled formatting variables.
+ * @details Grouped into a single structure to avoid passing multiple output references
+ *          in formatting helper signatures.
+ */
+struct format_state {
+    double scaled_value {};
+    std::size_t suffix_index {};
+};
+
+inline constexpr auto adjust_overflow
+    = [](format_state state, double base, std::size_t max_suffixes) noexcept -> format_state {
+    const double rounded = std::round(state.scaled_value * 100.0) / 100.0;
+
+    const bool overflow = (rounded >= base) && (toSize(safe_add(state.suffix_index, 1uz).value_or(0uz)) < max_suffixes);
+    const std::size_t next_suffix_index
+        = toSize(safe_add(state.suffix_index, toSize(+overflow)).value_or(state.suffix_index));
+
+    const std::array kScaleValues  = { rounded, rounded / base };
+    const double next_scaled_value = kScaleValues[toSize(+overflow)];
+    const double next_rounded      = std::round(next_scaled_value * 100.0) / 100.0;
+
+    return { next_rounded, next_suffix_index };
+};
+
+} // namespace format_impl
+
 /**
  * @brief Formats a byte count into a human-readable string (e.g., "1.2 MB").
+ * @details Evaluates the scale index and dynamic precision in a single allocation pass
+ *          without string mutations or float subtraction instability.
  */
 inline constexpr auto format_bytes = [](std::uint64_t bytes) -> std::string {
-    if (bytes == 0) { return "0 B"; }
-    static constexpr std::array kUnits = { "B", "KB", "MB", "GB", "TB" };
-    const std::size_t unit_index = std::min<std::size_t>(toSize(std::bit_width(bytes) - 1) / 10, kUnits.size() - 1);
-    const double scaled_value    = toDouble(bytes) / toDouble(1ULL << (unit_index * 10));
-    std::string s                = std::format("{:.1f}", scaled_value);
-    if (s.ends_with(".0")) { s.erase(s.size() - 2); }
-    return std::format("{} {}", s, kUnits[unit_index]);
+    static constexpr std::array kSuffixes = { "B", "KB", "MB", "GB", "TB" };
+
+    const std::size_t bits         = toSize(std::bit_width(bytes));
+    const std::size_t shift        = toSize(safe_sub(bits, toSize(+(bits > 0))).value_or(0uz));
+    const std::size_t suffix_index = std::min<std::size_t>(shift / 10uz, kSuffixes.size() - 1uz);
+    const double scaled_value = toDouble(bytes) / toDouble(1ULL << toSize(safe_mul(suffix_index, 10uz).value_or(0uz)));
+
+    const auto state = format_impl::adjust_overflow(
+        format_impl::format_state { scaled_value, suffix_index }, 1024.0, kSuffixes.size());
+
+    return std::format("{} {}", state.scaled_value, kSuffixes[state.suffix_index]);
 };
 
 /**
  * @brief Formats a generic count with SI suffixes (e.g., "5.8 M").
+ * @details Avoids floating-point power approximations (std::pow) by using a compile-time
+ *          powers table and binary search to ensure precise boundary transitions.
  */
 inline constexpr auto format_count = [](std::uint64_t count) -> std::string {
-    if (count < 1000) { return std::to_string(count); }
-    static constexpr std::array kUnits = { "", "K", "M", "G", "T" };
-    double scaled                      = toDouble(count);
-    std::size_t unit                   = 0;
-    while (scaled >= 1000.0 && unit < kUnits.size() - 1) {
-        scaled /= 1000.0;
-        unit++;
-    }
-    std::string s = std::format("{:.1f}", scaled);
-    if (s.ends_with(".0")) { s.erase(s.size() - 2); }
-    return std::format("{}{}", s, kUnits[unit]);
+    static constexpr std::array kSuffixes   = { "", "K", "M", "G", "T" };
+    static constexpr auto kPowersOfThousand = []() {
+        std::array<std::uint64_t, kSuffixes.size()> powers {};
+        std::ranges::generate(powers, [current = 1ULL]() mutable { return std::exchange(current, current * 1'000); });
+        return powers;
+    }();
+
+    const auto upper_bound_it = std::ranges::upper_bound(kPowersOfThousand, count);
+    const std::size_t suffix_index
+        = toSize(safe_sub(toSize(std::ranges::distance(kPowersOfThousand.begin(), upper_bound_it)), 1uz).value_or(0uz));
+    const double scaled_value = toDouble(count) / toDouble(kPowersOfThousand[suffix_index]);
+
+    const auto state = format_impl::adjust_overflow(
+        format_impl::format_state { scaled_value, suffix_index }, 1000.0, kSuffixes.size());
+
+    return std::format("{}{}", state.scaled_value, kSuffixes[state.suffix_index]);
 };
 
 inline constexpr auto check_disk_space
@@ -313,10 +395,10 @@ inline constexpr auto check_disk_space
     if (!target_res) { return std::unexpected(target_res.error()); }
     const auto target = *target_res;
 
-    auto space_info = fs::space(target, ec);
+    const auto space_info = fs::space(target, ec);
     if (ec) { return std::unexpected(ec); }
 
-    auto total_req = safe_add(required_bytes, config::kMinBufferBytes);
+    const auto total_req = safe_add(required_bytes, config::kMinBufferBytes);
     if (!total_req) { return std::unexpected(std::make_error_code(std::errc::value_too_large)); }
 
     if (space_info.available < *total_req) {
@@ -337,18 +419,20 @@ inline constexpr auto cleanup_artifacts = []() noexcept {
 inline constexpr auto capitalize = [](std::string_view text) noexcept -> std::string {
     if (text.empty()) { return {}; }
 
-    if (text == "zram" || text == "Zram") { return "ZRAM"; }
+    if (string_utils::equals_ic<"zram">(text)) { return "ZRAM"; }
 
-    if (std::isupper(toUChar(text[0]))) { return std::string(text); }
+    if (std::isupper(toUChar(text.front()))) { return std::string(text); }
 
     std::string result_string(text);
-    result_string[0] = toChar(std::toupper(toUChar(result_string[0])));
+    result_string.front() = toChar(std::toupper(toUChar(result_string.front())));
     return result_string;
 };
 
-template <typename T> [[nodiscard]] std::expected<T, std::errc> parse_number(std::string_view input_view) noexcept {
+template <cast::numeric_type T>
+[[nodiscard]] std::expected<T, std::errc> parse_number(std::string_view input_view) noexcept {
     T value {};
-    auto [end_pointer, error_status] = std::from_chars(input_view.data(), input_view.data() + input_view.size(), value);
+    const auto [end_pointer, error_status]
+        = std::from_chars(input_view.data(), input_view.data() + input_view.size(), value);
     if (error_status == std::errc()) {
         if (end_pointer == input_view.data() + input_view.size()) { return value; }
         return std::unexpected(std::errc::invalid_argument);
@@ -382,9 +466,13 @@ inline std::expected<std::size_t, posix::file_descriptor::write_failure> write_a
     return write_all(fd, std::as_bytes(std::span { data.data(), data.size() }));
 }
 
+template <typename T>
+concept writeable_data = std::convertible_to<T, std::span<const std::byte>> || std::convertible_to<T, std::string_view>;
+
+template <writeable_data T>
 inline std::expected<std::size_t, posix::file_descriptor::write_failure> write_all(
-    const posix::file_descriptor& fd, auto&& data) {
-    return write_all(fd.native_handle(), std::forward<decltype(data)>(data));
+    const posix::file_descriptor& fd, T&& data) {
+    return write_all(fd.native_handle(), std::forward<T>(data));
 }
 
 inline constexpr auto write_file
@@ -398,11 +486,10 @@ inline constexpr auto write_file
  * @param parser Callable that takes std::string_view and returns T.
  * @param fallback Value returned if the file cannot be read.
  */
-template <typename T, typename Parser>
-    requires std::invocable<Parser, std::string_view>
-    && std::convertible_to<std::invoke_result_t<Parser, std::string_view>, T>
+template <typename T, std::invocable<std::string_view> Parser>
+    requires std::convertible_to<std::invoke_result_t<Parser, std::string_view>, T>
 inline T parse_file_or(const std::filesystem::path& path, Parser&& parser, T fallback) {
-    auto content = read_file(path);
+    const auto content = read_file(path);
     if (!content) { return fallback; }
     return std::forward<Parser>(parser)(*content);
 }
@@ -447,4 +534,24 @@ inline auto tokenize_sv() {
                   | std::views::filter([](std::string_view sub_token) { return !sub_token.empty(); });
           })
         | std::views::join;
+}
+
+template <std::ranges::input_range KeysRange>
+inline std::optional<std::string_view> lookup_info_field(std::string_view content, const KeysRange& keys) {
+    auto lines = std::views::split(content, '\n') | std::views::transform([](auto raw) {
+        return std::string_view(raw);
+    }) | std::views::transform([](std::string_view line) {
+        const auto colon = line.find(':');
+        return (colon == std::string_view::npos)
+            ? std::pair { std::string_view {}, std::string_view {} }
+            : std::pair { trim_sv(line.substr(0, colon)), trim_sv(line.substr(colon + 1)) };
+    }) | std::views::filter([&keys](const auto& pair) {
+        return !pair.first.empty() && !pair.second.empty() && std::ranges::any_of(keys, [&pair](std::string_view key) {
+            return string_utils::equals_ic(pair.first, key);
+        });
+    }) | std::views::transform([](const auto& pair) { return pair.second; })
+        | std::views::take(1);
+
+    auto it = lines.begin();
+    return (it != lines.end()) ? std::optional<std::string_view> { *it } : std::nullopt;
 }

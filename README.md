@@ -3,6 +3,7 @@
 [![License: MPL 2.0](https://img.shields.io/badge/License-MPL%202.0-brightgreen.svg)](https://opensource.org/licenses/MPL-2.0)
 [![C++23 Standard](https://img.shields.io/badge/C%2B%2B-23-blue.svg)](https://en.cppreference.com/w/cpp/compiler_support/23)
 ![Static Binary](https://img.shields.io/badge/Build-Static--PIE-orange.svg)
+![Architecture](https://img.shields.io/badge/Arch-x86__64%20%7C%20ARM64-lightgrey.svg)
 
 **Calyx** is a lightweight, all-in-one system benchmarking and diagnostic tool for Linux. It is designed as a high-performance, fully native C++23 alternative to classic scripts like `bench.sh` or `yabs.sh`.
 
@@ -79,6 +80,7 @@ If you prefer to compile Calyx yourself, you can build a fully static, portable 
 
 ### Requirements
 *   **Operating System**: Linux (any distribution)
+*   **Architecture**: `x86_64` (Intel/AMD) and `aarch64` (ARM64)
 *   **Kernel**: Version `5.10` or newer (required for modern disk benchmarks)
 *   **Docker**: Version `20.10` or newer (Version `23.0` or newer recommended)
 
@@ -106,11 +108,11 @@ Once completed, your single portable binary will be generated at `./dist/calyx`.
 Here is what the terminal output looks like when Calyx finishes running:
 
 ```text
-------------------- Calyx - Linux System Benchmarking Utility (v1.0.0) -------------------
+──────────────────────── Calyx - Linux System Benchmarking Utility (v1.1.0) ────────────────────────
  Author             : Alfie Ardinata (https://calyx.pages.dev/)
  GitHub             : https://github.com/relvinarsenio/calyx
  Usage              : ./calyx
- ---------------------------------------------------------------------------------------
+────────────────────────────────────────────────────────────────────────────────────────────────────
   -> CPU & Hardware
   CPU Model            : AMD Ryzen 5 7535HS with Radeon Graphics
   CPU Cores            : 6 @ 4584.2 MHz (Max)
@@ -141,13 +143,22 @@ Here is what the terminal output looks like when Calyx finishes running:
   ISP                  : AS13335 Cloudflare, Inc.
   Location             : Bandar Lampung / ID
   Region               : Lampung
- ---------------------------------------------------------------------------------------
- Running I/O Test (1 GB File)...
-  I/O Speed (Run #1)   :  Write   3337.3 MB/s   Read   4500.9 MB/s
-  I/O Speed (Run #2)   :  Write   3289.3 MB/s   Read   4523.6 MB/s
-  I/O Speed (Run #3)   :  Write   3360.9 MB/s   Read   4524.8 MB/s
-  I/O Speed (Average)  :  Write   3328.9 MB/s   Read   4516.4 MB/s
- ---------------------------------------------------------------------------------------
+────────────────────────────────────────────────────────────────────────────────────────────────────
+Running I/O Test (1 GB File, Seq 1M Q16T1)...
+ [ Throughput ]
+   I/O Speed (Run #1)  :  Write    2.96 GB/s  │  Read    4.47 GB/s
+   I/O Speed (Run #2)  :  Write    3.13 GB/s  │  Read    4.41 GB/s
+   I/O Speed (Run #3)  :  Write    3.21 GB/s  │  Read    4.47 GB/s
+   I/O Speed (Average) :  Write    3.11 GB/s  │  Read    4.45 GB/s
+
+ [ Write Latency ]
+   • Summary    :  Avg:    5.02 ms │ Min:    1.93 ms │ Max:    16.7 ms
+   • Percentile :  p50:     4.2 ms │ p95:    9.51 ms │ p99:    10.6 ms │ p99.9:   16.59 ms
+
+ [ Read Latency ]
+   • Summary    :  Avg:    3.48 ms │ Min:    1.43 ms │ Max:    5.44 ms
+   • Percentile :  p50:    3.49 ms │ p95:    3.96 ms │ p99:    4.47 ms │ p99.9:    5.25 ms
+────────────────────────────────────────────────────────────────────────────────────────────────────
  Downloading Speedtest CLI...
   Node Name              Download          Upload            Latency     Loss    
   Speedtest.net (Auto)   138.91 Mbps       44.68 Mbps        19.87 ms    0.00 %  
@@ -157,9 +168,17 @@ Here is what the terminal output looks like when Calyx finishes running:
   London, UK             147.87 Mbps       22.79 Mbps        212.89 ms   0.00 %  
   Amsterdam, NL          131.58 Mbps       16.16 Mbps        282.82 ms   0.00 %  
   Sydney, AU             144.35 Mbps       15.17 Mbps        235.15 ms   0.00 %  
- ---------------------------------------------------------------------------------------
+ ────────────────────────────────────────────────────────────────────────────────────────────────────
   Finished in        : 3 min 47 sec
 ```
+
+---
+
+## 🤝 Contributing & Support
+
+We welcome contributions! Whether it's adding new features, fixing bugs, or improving documentation, check out our [Contributing Guidelines](CONTRIBUTING.md) to get started.
+
+Found a bug or have a feature request? Please [open an issue](https://github.com/relvinarsenio/calyx/issues) on our GitHub repository.
 
 ---
 

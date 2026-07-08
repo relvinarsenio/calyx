@@ -25,8 +25,8 @@ struct ZSwapStats {
 };
 
 struct SwapEntry {
-    std::string type;
-    std::string path;
+    std::string type {};
+    std::string path {};
     std::uint64_t size = 0;
     std::uint64_t used = 0;
     bool is_zswap      = false;
