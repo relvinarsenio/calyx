@@ -18,7 +18,6 @@ RUN --mount=type=cache,target=/var/cache/apk \
     llvm \
     ninja \
     perl \
-    xxd \
     && mkdir -p /src /build /root/.ccache
 
 WORKDIR /src

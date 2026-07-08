@@ -20,7 +20,6 @@
 #include "http_client.hpp"
 
 #include "config.hpp"
-#include "embedded_cert.hpp"
 #include "file_descriptor.hpp"
 #include "http_context.hpp"
 #include "interrupts.hpp"
@@ -44,6 +43,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+
 namespace {
 
 using prng::Xoshiro256PlusPlus;
@@ -356,9 +356,11 @@ std::expected<HttpClient, std::string> HttpClient::create() {
 }
 
 std::expected<void, std::string> HttpClient::apply_base_options() {
+    const auto cert           = curl::get_embedded_cert();
+    const void* cert_data_ptr = static_cast<const void*>(cert.data());
     struct curl_blob blob {};
-    blob.data  = const_cast<unsigned char*>(cacert_pem);
-    blob.len   = cacert_pem_len;
+    blob.data  = const_cast<void*>(cert_data_ptr);
+    blob.len   = cert.size();
     blob.flags = CURL_BLOB_NOCOPY;
 
     return set_option(CURLOPT_SOCKOPTFUNCTION, sockopt_callback)

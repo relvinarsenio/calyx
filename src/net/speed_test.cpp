@@ -38,9 +38,6 @@
 #include <variant>
 #include <vector>
 
-extern unsigned char cacert_pem[];
-extern unsigned int cacert_pem_len;
-
 using namespace std::chrono;
 namespace fs = std::filesystem;
 
@@ -85,7 +82,7 @@ constexpr std::string_view kRateLimitError = "Rate Limit Reached";
 constexpr double kBitsPerByte = 8.0;
 constexpr double kBitsPerMbps = 1'000'000.0;
 
-std::expected<std::string, std::error_code> write_cert_file(const fs::path& dir, std::span<const unsigned char> data) {
+std::expected<std::string, std::error_code> write_cert_file(const fs::path& dir, std::span<const std::byte> data) {
     fs::path cert_path = dir / "cacert.pem";
 
     return posix::file::open(cert_path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, S_IRUSR | S_IWUSR)
@@ -438,7 +435,7 @@ SpeedTestResult SpeedTest::run() {
     SpeedTestResult result;
     result.entries.reserve(st_impl::kServers.size());
 
-    const auto cert_expected = st_impl::write_cert_file(base_dir_, std::span { cacert_pem, cacert_pem_len });
+    const auto cert_expected = st_impl::write_cert_file(base_dir_, curl::get_embedded_cert());
 
     if (!cert_expected) {
         SpeedEntryResult entry;

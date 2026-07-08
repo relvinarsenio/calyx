@@ -185,24 +185,33 @@ endif()
 
 message(STATUS "✅ CA Certificate downloaded and verified.")
 
-# Setup Generated Paths
-set(GEN_INC_DIR "${CMAKE_BINARY_DIR}/generated")
-set(EMBEDDED_CERT_PATH "${GEN_INC_DIR}/include/embedded_cert.hpp")
+set(EMBEDDED_CERT_OBJ "${CMAKE_BINARY_DIR}/cacert.o")
 
-# Ensure directory exists at Configure time
-file(MAKE_DIRECTORY "${GEN_INC_DIR}/include")
+# Detect Architecture for objcopy
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+    set(OBJCOPY_O_FLAG "elf64-x86-64")
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(i.86|x86)$")
+    set(OBJCOPY_O_FLAG "elf32-i386")
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
+    set(OBJCOPY_O_FLAG "elf64-littleaarch64")
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm.*|armv7.*)$")
+    set(OBJCOPY_O_FLAG "elf32-littlearm")
+else()
+    message(FATAL_ERROR "Unsupported architecture for embedded cert: ${CMAKE_SYSTEM_PROCESSOR}")
+endif()
+
+find_program(OBJCOPY_TOOL NAMES llvm-objcopy objcopy REQUIRED)
 
 add_custom_command(
-    OUTPUT "${EMBEDDED_CERT_PATH}"
-    # Force creation at Build time (Fix for parallel build race condition)
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${GEN_INC_DIR}/include"
-    COMMAND "${XXD_EXE}" -i cacert.pem "${EMBEDDED_CERT_PATH}"
+    OUTPUT "${EMBEDDED_CERT_OBJ}"
+    COMMAND ${OBJCOPY_TOOL} -I binary -O ${OBJCOPY_O_FLAG} cacert.pem cacert.o
+    COMMAND ${OBJCOPY_TOOL} --rename-section .data=.rodata,contents,alloc,load,readonly,data --set-section-alignment .rodata=8 cacert.o
     WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
     DEPENDS "${CMAKE_BINARY_DIR}/cacert.pem"
-    COMMENT "Embedding CA Cert into header..."
+    COMMENT "Embedding CA Cert via llvm-objcopy for ${CMAKE_SYSTEM_PROCESSOR}..."
 )
 
-add_custom_target(generate_cert DEPENDS "${EMBEDDED_CERT_PATH}")
+add_custom_target(generate_cert DEPENDS "${EMBEDDED_CERT_OBJ}")
 
 # =============================================================================
 # 6. Build Target
@@ -221,7 +230,7 @@ add_executable(calyx
     src/io/disk_benchmark.cpp
     src/net/speed_test.cpp
     src/ui/cli_renderer.cpp
-    "${EMBEDDED_CERT_PATH}"
+    "${EMBEDDED_CERT_OBJ}"
 )
 
 # === OPTIMIZATION: ICF (Identical Code Folding) ===

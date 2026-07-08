@@ -8,12 +8,14 @@
 #pragma once
 
 #include <concepts>
+#include <cstddef>
 #include <curl/curl.h>
 #include <expected>
 #include <filesystem>
 #include <format>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -25,7 +27,19 @@ namespace posix {
 class file_descriptor;
 }
 
+extern "C" {
+extern const std::byte _binary_cacert_pem_start[];
+extern const std::byte _binary_cacert_pem_end[];
+}
+
 namespace curl {
+/**
+ * @brief Retrieves the embedded CA certificate data linked via llvm-objcopy.
+ * @return A span of bytes representing the CA certificate in PEM format.
+ */
+[[nodiscard]] inline std::span<const std::byte> get_embedded_cert() noexcept {
+    return { _binary_cacert_pem_start, _binary_cacert_pem_end };
+}
 using shared_handle       = std::shared_ptr<CURL>;
 using unique_multi_handle = std::unique_ptr<CURLM, decltype([](CURLM* p) {
     if (p) { curl_multi_cleanup(p); }
