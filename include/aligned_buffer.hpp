@@ -29,9 +29,10 @@ namespace memory {
 namespace aligned_buffer_impl {
 
 /**
- * @brief Custom deleter for over-aligned pointers.
+ * @brief Concepts for enforcing type safety in over-aligned memory operations.
  *
- * Ensures memory allocated via over-aligned new is correctly deallocated.
+ * Constrains custom deleters and buffers to ensure they are only instantiated
+ * for appropriate types (e.g., unbounded arrays or trivially destructible types).
  */
 template <typename T>
 concept unbounded_array = std::is_unbounded_array_v<T>;

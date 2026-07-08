@@ -7,7 +7,7 @@ set(CMAKE_POLICY_DEFAULT_CMP0069 NEW)
 # =============================================================================
 # Calyx - Rapid Linux Server Profiler
 # =============================================================================
-project(calyx VERSION 1.0.2 LANGUAGES CXX C)
+project(calyx VERSION 1.1.0 LANGUAGES CXX C)
 
 # Ensure all libraries and targets are built with -fPIC (Required for static-pie)
 # C++23 Required
