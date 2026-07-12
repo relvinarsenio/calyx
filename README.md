@@ -78,6 +78,10 @@ This is a very common hint on VPS servers or non-root accounts. It means Calyx w
 
 If you prefer to compile Calyx yourself, you can build a fully static, portable binary using Docker.
 
+> [!IMPORTANT]
+> Using the provided `build-static.sh` script is highly recommended, as it builds Calyx using a Docker environment for consistent results.
+> Manual host builds may fail or behave differently depending on the build environment.
+
 ### Requirements
 *   **Operating System**: Linux (any distribution)
 *   **Architecture**: `x86_64` (Intel/AMD) and `aarch64` (ARM64)
