@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <concepts>
 #include <cstdint>
 #include <functional>
 #include <limits>
@@ -25,6 +26,8 @@ namespace prng {
  * @details Standard recommended generator for initializing Xoshiro states.
  */
 class SplitMix64 {
+    std::uint64_t state_ {};
+
 public:
     using result_type = std::uint64_t;
     constexpr explicit SplitMix64(std::uint64_t seed) noexcept
@@ -36,10 +39,92 @@ public:
         z               = (z ^ (z >> 27)) * 0x94d049bb133111eb;
         return z ^ (z >> 31);
     }
-
-private:
-    std::uint64_t state_ {};
 };
+
+/**
+ * @brief GF(2) ring arithmetic for jump-polynomial computation.
+ *
+ * @details Implementation detail of the PRNG's jump functions not public API.
+ * Ported from prng.di.unimi.it/f2x.c.
+ */
+namespace f2x_impl {
+
+/** @brief Constrains T to std::array<uint64_t, N> for some N. */
+template <typename T>
+concept CharPolyArray = requires(T poly) { []<std::size_t N>(const std::array<std::uint64_t, N>&) {}(poly); };
+
+/**
+ * @brief GF(2)[x] / (kCharPoly) ring, parameterized on the characteristic polynomial itself.
+ *
+ * @details CharPoly is a non-type template parameter so word count and poly_deg are
+ * derived from it via .size(), never hardcoded. The requires clause enforces a
+ * necessary condition for validity: the constant term must be 1, i.e. x=0 must not
+ * be a root. Full irreducibility of the supplied constant is assumed already
+ * established (Blackman & Vigna, Section 6).
+ */
+template <auto CharPoly>
+    requires CharPolyArray<decltype(CharPoly)> && (CharPoly.size() > 0) && ((CharPoly[0] & 1u) != 0)
+struct GF2Ring {
+    using Poly = decltype(CharPoly);
+
+    static constexpr std::size_t kWords   = CharPoly.size();
+    static constexpr std::size_t kPolyDeg = kWords * 64;
+    static constexpr Poly kCharPoly       = CharPoly;
+
+    /** @brief Multiplies a by x modulo kCharPoly, in place. */
+    static constexpr void mulx(Poly& a) noexcept {
+        std::uint64_t carry {};
+        for (auto i : std::views::iota(std::size_t { 0 }, kWords)) {
+            const std::uint64_t next_carry = a[i] >> 63;
+            a[i]                           = (a[i] << 1) | carry;
+            carry                          = next_carry;
+        }
+        if (carry != 0) { std::ranges::transform(a, kCharPoly, a.begin(), std::bit_xor<> {}); }
+    }
+
+    /** @brief Multiplies a by b modulo kCharPoly, in place, via Horner's method over the bits of a. */
+    static constexpr void mulmod(Poly& a, const Poly& b) noexcept {
+        Poly result {};
+        for (auto k : std::views::iota(std::size_t { 0 }, kPolyDeg) | std::views::reverse) {
+            mulx(result);
+            if ((a[k >> 6] >> (k & 63uz)) & 1uz) {
+                std::ranges::transform(result, b, result.begin(), std::bit_xor<> {});
+            }
+        }
+        a = result;
+    }
+
+    /** @brief Computes x^(c * 2^e) mod kCharPoly via square-and-multiply. */
+    [[nodiscard]] static constexpr Poly jumppoly_ce(std::uint64_t c, std::uint32_t e) noexcept {
+        Poly out {};
+        out[0] = 1;
+
+        for (auto k : std::views::iota(std::size_t { 0 }, std::size_t { 64 }) | std::views::reverse) {
+            mulmod(out, out);
+            if ((c >> k) & 1u) { mulx(out); }
+        }
+        for ([[maybe_unused]] auto _ : std::views::iota(0u, e)) {
+            mulmod(out, out);
+        }
+
+        return out;
+    }
+
+    /** @brief Computes x^n mod kCharPoly via square-and-multiply over all kPolyDeg bits of n. */
+    [[nodiscard]] static constexpr Poly jumppoly_n(const Poly& n) noexcept {
+        Poly out {};
+        out[0] = 1;
+
+        for (auto k : std::views::iota(std::size_t { 0 }, kPolyDeg) | std::views::reverse) {
+            mulmod(out, out);
+            if ((n[k >> 6] >> (k & 63uz)) & 1uz) { mulx(out); }
+        }
+
+        return out;
+    }
+};
+
+} // namespace f2x_impl
 
 /**
  * @brief Xoshiro256++ 1.0 — Fast, general-purpose 256-bit PRNG.
@@ -51,6 +136,40 @@ private:
  * polynomial of the generator.
  */
 class Xoshiro256PlusPlus {
+    std::array<std::uint64_t, 4> state_ {};
+
+    /**
+     * @brief Characteristic polynomial of xoshiro256++.
+     *
+     * @details Coefficients packed as four 64-bit words (little-endian bits);
+     * the leading x^256 term is implicit. Source: prng.di.unimi.it/xoshiro256plusplus.c
+     */
+    static constexpr std::array<std::uint64_t, 4> kCharPoly
+        = { 0x9d116f2bb0f0f001, 0x0280002bcefd1a5e, 0x04b4edcf26259f85, 0x0003c03c3f3ecb19 };
+
+    /** @brief GF(2) ring bound to the characteristic polynomial of xoshiro256++. */
+    using GF2 = f2x_impl::GF2Ring<kCharPoly>;
+
+    using Poly = GF2::Poly;
+
+    /**
+     * @brief Core accumulate-and-step loop shared by all jump variants.
+     * @details Matches the jump_apply() logic from the reference C source (prng.di.unimi.it),
+     * extended to also serve jump() and long_jump() by accepting any Poly by const-ref.
+     */
+    constexpr void jump_apply(const Poly& poly) noexcept {
+        std::array<result_type, GF2::kWords> accumulator {};
+
+        for (auto [word, bit] :
+            std::views::cartesian_product(std::views::iota(0uz, GF2::kWords), std::views::iota(0uz, 64uz))) {
+            if (poly[word] & (result_type { 1 } << bit)) {
+                std::ranges::transform(accumulator, state_, accumulator.begin(), std::bit_xor<> {});
+            }
+            [[maybe_unused]] auto _ = operator()();
+        }
+        state_ = accumulator;
+    }
+
 public:
     using result_type                             = std::uint64_t;
     static constexpr result_type kDefaultSeedWord = 0x9e3779b97f4a7c15;
@@ -121,7 +240,7 @@ public:
      * @param c  Coefficient; c * 2^e must be less than the period (2^256 - 1).
      * @param e  Power-of-two exponent.
      */
-    constexpr void jump_ce(result_type c, std::uint32_t e) noexcept { jump_apply(gf2_jumppoly_ce(c, e)); }
+    constexpr void jump_ce(result_type c, std::uint32_t e) noexcept { jump_apply(GF2::jumppoly_ce(c, e)); }
 
     /**
      * @brief Advance state by an arbitrary 256-bit distance n.
@@ -131,104 +250,7 @@ public:
      *
      * @param n  Jump distance as a 256-bit little-endian packed integer.
      */
-    constexpr void jump_n(const std::array<result_type, 4>& n) noexcept { jump_apply(gf2_jumppoly_n(n)); }
-
-private:
-    std::array<result_type, 4> state_ {};
-
-    /** 256-bit polynomial in GF(2)[x] packed as four 64-bit words (little-endian bits). */
-    using Poly = std::array<result_type, 4>;
-
-    /**
-     * @brief Characteristic polynomial of xoshiro256++.
-     *
-     * @details Coefficient k is bit (k & 63) of word (k >> 6); the leading x^256 term is implicit.
-     * Source: prng.di.unimi.it/xoshiro256plusplus.c
-     */
-    static constexpr Poly kCharPoly
-        = { 0x9d116f2bb0f0f001, 0x0280002bcefd1a5e, 0x04b4edcf26259f85, 0x0003c03c3f3ecb19 };
-
-    /**
-     * @brief Core accumulate-and-step loop shared by all jump variants.
-     * @details Matches the jump_apply() logic from the reference C source (prng.di.unimi.it),
-     * extended to also serve jump() and long_jump() by accepting any Poly by const-ref.
-     */
-    constexpr void jump_apply(const Poly& poly) noexcept {
-        std::array<result_type, 4> accumulator {};
-
-        for (auto [word, bit] :
-            std::views::cartesian_product(std::views::iota(0uz, 4uz), std::views::iota(0uz, 64uz))) {
-            if (poly[word] & (1ULL << bit)) {
-                std::ranges::transform(accumulator, state_, accumulator.begin(), std::bit_xor<> {});
-            }
-            [[maybe_unused]] auto _ = operator()();
-        }
-        state_ = accumulator;
-    }
-
-    /**
-     * @brief Multiply polynomial a by x modulo kCharPoly in place.
-     * @details Since POLY_DEG=256 is a multiple of 64, the x^256 overflow lives entirely in carry.
-     */
-    static constexpr void gf2_mulx(Poly& a) noexcept {
-        std::uint64_t carry {};
-        for (auto i : std::views::iota(0uz, 4uz)) {
-            const std::uint64_t next_carry = a[i] >> 63;
-            a[i]                           = (a[i] << 1) | carry;
-            carry                          = next_carry;
-        }
-        if (carry != 0) { std::ranges::transform(a, kCharPoly, a.begin(), std::bit_xor<> {}); }
-    }
-
-    /**
-     * @brief Multiply polynomial a by b modulo kCharPoly in place.
-     * @details Horner's method over the bits of a from most-significant to least-significant.
-     */
-    static constexpr void gf2_mulmod(Poly& a, const Poly& b) noexcept {
-        Poly result {};
-        for (auto k : std::views::iota(0uz, 256uz) | std::views::reverse) {
-            gf2_mulx(result);
-            if ((a[k >> 6] >> (k & 63uz)) & 1uz) {
-                std::ranges::transform(result, b, result.begin(), std::bit_xor<> {});
-            }
-        }
-        a = result;
-    }
-
-    /**
-     * @brief Compute x^(c * 2^e) mod kCharPoly via square-and-multiply.
-     * @details Square-and-multiply over 64 bits of c, then e additional squarings.
-     */
-    [[nodiscard]] static constexpr Poly gf2_jumppoly_ce(result_type c, std::uint32_t e) noexcept {
-        Poly out {};
-        out[0] = 1;
-
-        for (auto k : std::views::iota(0uz, 64uz) | std::views::reverse) {
-            gf2_mulmod(out, out);
-            if ((c >> k) & 1u) { gf2_mulx(out); }
-        }
-        for ([[maybe_unused]] auto _ : std::views::iota(0u, e)) {
-            gf2_mulmod(out, out);
-        }
-
-        return out;
-    }
-
-    /**
-     * @brief Compute x^n mod kCharPoly via square-and-multiply over all 256 bits of n.
-     * @details Bits of n are processed from the most-significant down to bit 0.
-     */
-    [[nodiscard]] static constexpr Poly gf2_jumppoly_n(const Poly& n) noexcept {
-        Poly out {};
-        out[0] = 1;
-
-        for (auto k : std::views::iota(0uz, 256uz) | std::views::reverse) {
-            gf2_mulmod(out, out);
-            if ((n[k >> 6] >> (k & 63uz)) & 1uz) { gf2_mulx(out); }
-        }
-
-        return out;
-    }
+    constexpr void jump_n(const Poly& n) noexcept { jump_apply(GF2::jumppoly_n(n)); }
 };
 
 static_assert(std::uniform_random_bit_generator<Xoshiro256PlusPlus>);
