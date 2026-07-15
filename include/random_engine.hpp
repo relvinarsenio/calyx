@@ -16,7 +16,6 @@
 #include <limits>
 #include <random>
 #include <ranges>
-#include <span>
 
 namespace prng {
 
@@ -49,9 +48,13 @@ public:
  */
 namespace f2x_impl {
 
+template <typename T> struct is_uint64_array : std::false_type {};
+
+template <std::size_t N> struct is_uint64_array<std::array<std::uint64_t, N>> : std::true_type {};
+
 /** @brief Constrains T to std::array<uint64_t, N> for some N. */
 template <typename T>
-concept CharPolyArray = requires(T poly) { []<std::size_t N>(const std::array<std::uint64_t, N>&) {}(poly); };
+concept CharPolyArray = is_uint64_array<T>::value;
 
 /**
  * @brief GF(2)[x] / (kCharPoly) ring, parameterized on the characteristic polynomial itself.
@@ -63,7 +66,7 @@ concept CharPolyArray = requires(T poly) { []<std::size_t N>(const std::array<st
  * established (Blackman & Vigna, Section 6).
  */
 template <auto CharPoly>
-    requires CharPolyArray<decltype(CharPoly)> && (CharPoly.size() > 0) && ((CharPoly[0] & 1u) != 0)
+    requires CharPolyArray<decltype(CharPoly)> && (CharPoly.size() > 0) && ((CharPoly[0] & std::uint64_t { 1 }) != 0)
 struct GF2Ring {
     using Poly = decltype(CharPoly);
 
@@ -101,9 +104,9 @@ struct GF2Ring {
 
         for (auto k : std::views::iota(std::size_t { 0 }, std::size_t { 64 }) | std::views::reverse) {
             mulmod(out, out);
-            if ((c >> k) & 1u) { mulx(out); }
+            if ((c >> k) & std::uint64_t { 1 }) { mulx(out); }
         }
-        for ([[maybe_unused]] auto _ : std::views::iota(0u, e)) {
+        for ([[maybe_unused]] auto _ : std::views::iota(std::uint32_t { 0 }, e)) {
             mulmod(out, out);
         }
 
@@ -127,13 +130,12 @@ struct GF2Ring {
 } // namespace f2x_impl
 
 /**
- * @brief Xoshiro256++ 1.0 — Fast, general-purpose 256-bit PRNG.
+ * @brief Xoshiro256++ 1.0 — 256-bit PRNG by Blackman & Vigna.
  *
- * @details Implements the original specification by Blackman and Vigna.
- * Models the C++23 std::uniform_random_bit_generator concept.
- * Supports fixed jumps (jump, long_jump) and arbitrary-distance jumps
- * (jump_ce, jump_n) via GF(2) polynomial arithmetic over the characteristic
- * polynomial of the generator.
+ * @details A general-purpose, non-cryptographic PRNG suitable for parallel and
+ * statistical workloads. Satisfies C++20 UniformRandomBitGenerator. Full C++23 required.
+ * Supports fixed (jump, long_jump) and arbitrary-distance jumps (jump_ce, jump_n)
+ * to partition the period for independent parallel streams without overlap.
  */
 class Xoshiro256PlusPlus {
     std::array<std::uint64_t, 4> state_ {};
@@ -165,40 +167,55 @@ class Xoshiro256PlusPlus {
             if (poly[word] & (result_type { 1 } << bit)) {
                 std::ranges::transform(accumulator, state_, accumulator.begin(), std::bit_xor<> {});
             }
-            [[maybe_unused]] auto _ = operator()();
+            operator()();
         }
         state_ = accumulator;
     }
 
+    /** @brief Fills state_ by running SplitMix64 from the given seed. */
+    constexpr void seed_from(std::uint64_t seed) noexcept {
+        SplitMix64 sm(seed);
+        std::ranges::generate(state_, [&sm] { return sm(); });
+    }
+
 public:
-    using result_type                             = std::uint64_t;
+    using result_type = std::uint64_t;
+    /** @brief 2^64 / φ (golden ratio), widely used as a well-distributed increment. */
     static constexpr result_type kDefaultSeedWord = 0x9e3779b97f4a7c15;
     [[nodiscard]] static constexpr result_type min() noexcept { return 0; }
     [[nodiscard]] static constexpr result_type max() noexcept { return std::numeric_limits<result_type>::max(); }
+
+    /**
+     * @brief Default constructor. Seeds via kDefaultSeedWord.
+     *
+     * @details Prevents the implicit value-initialization of state_ to all-zeros,
+     * which would produce a degenerate generator that emits zero forever.
+     */
+    constexpr Xoshiro256PlusPlus() noexcept
+        : Xoshiro256PlusPlus(kDefaultSeedWord) {}
 
     /**
      * @brief Construct from a 64-bit seed via SplitMix64.
      */
     constexpr explicit Xoshiro256PlusPlus(std::uint64_t seed) noexcept
         : state_ {} {
-        SplitMix64 sm(seed);
-        std::ranges::generate(state_, [&sm] { return sm(); });
+        seed_from(seed);
     }
 
     /**
      * @brief Construct from explicit 256-bit state.
-     * @details Guards against the all-zero degenerate state by falling back
-     * to the golden ratio constant.
+     * @details Guards against the all-zero degenerate state — the fixed point of
+     * xoshiro256++ where operator()() would emit zero indefinitely.
      */
-    constexpr Xoshiro256PlusPlus(result_type s0, result_type s1, result_type s2, result_type s3) noexcept
+    constexpr explicit Xoshiro256PlusPlus(result_type s0, result_type s1, result_type s2, result_type s3) noexcept
         : state_ { s0, s1, s2, s3 } {
-        if ((s0 | s1 | s2 | s3) == 0) { state_[0] = kDefaultSeedWord; }
+        if ((s0 | s1 | s2 | s3) == 0) { seed_from(kDefaultSeedWord); }
     }
 
     /**
      * @brief Generate next 64-bit random value.
      */
-    [[nodiscard]] constexpr result_type operator()() noexcept {
+    constexpr result_type operator()() noexcept {
         const result_type res = std::rotl(state_[0] + state_[3], 23) + state_[0];
         const result_type t   = state_[1] << 17;
 
@@ -233,12 +250,12 @@ public:
     /**
      * @brief Advance state by exactly c * 2^e steps.
      *
-     * @details Computes x^(c * 2^e) mod charpoly at runtime via square-and-multiply
-     * in GF(2)[x]. jump_ce(1, 128) is equivalent to jump(); jump_ce(1, 192) to long_jump().
-     * Cost is O(log c + e) ring multiplications — negligible against the stream that follows.
+     * @details Evaluates x^(c * 2^e) mod charpoly in GF(2)[x].
+     * jump_ce(1, 128) ≡ jump(); jump_ce(1, 192) ≡ long_jump(). Cost: O(64 + e)
+     * multiplications. Keep e ≤ 256, large values will block.
      *
-     * @param c  Coefficient; c * 2^e must be less than the period (2^256 - 1).
-     * @param e  Power-of-two exponent.
+     * @param c  Coefficient of the jump distance.
+     * @param e  Power-of-two exponent. Cost is O(e). Keep small (≤ 256) to avoid blocking.
      */
     constexpr void jump_ce(result_type c, std::uint32_t e) noexcept { jump_apply(GF2::jumppoly_ce(c, e)); }
 
@@ -246,7 +263,7 @@ public:
      * @brief Advance state by an arbitrary 256-bit distance n.
      *
      * @details n is a little-endian 256-bit integer: n[0] + n[1]*2^64 + n[2]*2^128 + n[3]*2^192.
-     * Computes x^n mod charpoly via square-and-multiply, then applies the result to the state.
+     * The result is the linear transformation equivalent to exactly n steps of operator()().
      *
      * @param n  Jump distance as a 256-bit little-endian packed integer.
      */
