@@ -234,9 +234,11 @@ add_executable(calyx
 )
 
 # === OPTIMIZATION: ICF (Identical Code Folding) ===
-set_target_properties(calyx PROPERTIES
-    LINK_FLAGS "-Wl,--icf=all"
-)
+include(CheckLinkerFlag)
+check_linker_flag(CXX "-Wl,--icf=all" HAS_ICF)
+if(HAS_ICF)
+    set_target_properties(calyx PROPERTIES LINK_FLAGS "-Wl,--icf=all")
+endif()
 
 # === OPTIMIZATION: UNITY BUILD (Batch Mode) ===
 # Enable unity build to speed up compilation times

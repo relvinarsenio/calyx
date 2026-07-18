@@ -7,11 +7,13 @@
  */
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <ranges>
 #include <type_traits>
 #include <utility>
 
@@ -80,23 +82,28 @@ template <std::integral T> constexpr auto to_std_int(T value) noexcept {
 }
 
 /**
+ * @brief Computes 2^n exactly at compile time for any IEEE 754 floating-point type.
+ *
+ * @note Relies on standard IEEE 754 binary representation where multiplication by 2
+ *       is exact and merely increments the exponent without precision loss.
+ */
+template <std::floating_point U> [[nodiscard]] consteval U ipow2(std::integral auto n) noexcept {
+    const U factor = static_cast<U>(2);
+    return std::ranges::fold_left(std::views::iota(decltype(n) { 0 }, n), static_cast<U>(1),
+        [factor](U acc, auto) noexcept { return acc * factor; });
+}
+
+/**
  * @brief Computes the exclusive upper bound (as a floating-point power-of-2) for saturating
  *        conversion from floating-point type U to integer type T.
  *
- * @note Uses exact power-of-2 values to avoid rounding errors that arise from casting
+ * @note Uses exact power-of-2 values (2^digits) to avoid rounding errors that arise from casting
  *       std::numeric_limits<T>::max() directly to a floating-point type.
  */
 template <std::integral T, std::floating_point U> [[nodiscard]] consteval U fp_saturation_upper_bound() noexcept {
-    static_assert(sizeof(T) <= 8, "Unsupported target integer width for floating-point saturation.");
-    if constexpr (sizeof(T) == 8) {
-        return std::is_signed_v<T> ? U { 0x1p63 } : U { 0x1p64 };
-    } else if constexpr (sizeof(T) == 4) {
-        return std::is_signed_v<T> ? U { 0x1p31 } : U { 0x1p32 };
-    } else if constexpr (sizeof(T) == 2) {
-        return std::is_signed_v<T> ? U { 0x1p15 } : U { 0x1p16 };
-    } else {
-        return std::is_signed_v<T> ? U { 0x1p7 } : U { 0x1p8 };
-    }
+    static_assert(std::numeric_limits<U>::is_iec559, "Floating-point type must conform to IEEE 754 (IEC 559).");
+    static_assert(sizeof(T) <= 8, "Target integer type must be at most 8 bytes (64 bits) wide.");
+    return ipow2<U>(std::numeric_limits<T>::digits);
 }
 
 /**
