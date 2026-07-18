@@ -154,6 +154,7 @@ template <numeric_type T, numeric_type U> [[nodiscard]] constexpr T saturating_c
  * range of T. This prevents undefined behavior associated with integer overflow.
  */
 template <standard_integer_type T, standard_integer_type U> [[nodiscard]] constexpr T saturate_cast(U x) noexcept {
+    if constexpr (std::is_same_v<T, U>) { return x; }
     if (std::cmp_greater(x, std::numeric_limits<T>::max())) { return std::numeric_limits<T>::max(); }
     if (std::cmp_less(x, std::numeric_limits<T>::min())) { return std::numeric_limits<T>::min(); }
     return static_cast<T>(x);
