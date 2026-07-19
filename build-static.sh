@@ -137,6 +137,15 @@ fi
 # 3. Build Toolchain Image (only if needed)
 # =============================================================================
 NEED_BUILD=false
+GHCR_IMAGE="${GHCR_IMAGE:-ghcr.io/relvinarsenio/calyx-builder}"
+
+case "$PLATFORM" in
+    *arm64*|*aarch64*) GHCR_TAG="arm64" ;;
+    *amd64*|*x86_64*)  GHCR_TAG="amd64" ;;
+    *) 
+        if [[ "$(uname -m)" == "aarch64" ]]; then GHCR_TAG="arm64"; else GHCR_TAG="amd64"; fi
+        ;;
+esac
 
 if [[ "$REBUILD_IMAGE" == "true" ]]; then
     echo "🗑️  Rebuild image requested — rebuilding toolchain and clearing everything..."
@@ -144,10 +153,21 @@ if [[ "$REBUILD_IMAGE" == "true" ]]; then
     docker volume rm "$VOL_BUILD" "$VOL_CCACHE" >/dev/null 2>&1 || true
     NEED_BUILD=true
 elif ! docker image inspect "$IMAGE_NAME" &>/dev/null; then
-    echo "📦 Toolchain image not found — building for the first time..."
-    NEED_BUILD=true
-elif [[ $(docker container inspect -f "{{ range .Mounts }}{{ if eq .Destination \"$C_SRC\" }}{{ .Source }}{{ break }}{{ end }}{{ end }}" "$CONTAINER_NAME" 2>/dev/null || true) != "$SCRIPT_DIR" ]]; then
-    NEED_BUILD=true
+    echo "📦 Toolchain image not found locally."
+    echo "⬇️  Attempting to pull pre-built image from GHCR ($GHCR_IMAGE:${GHCR_TAG})..."
+    if docker pull "$GHCR_IMAGE:${GHCR_TAG}"; then
+        echo "✅ Successfully pulled pre-built image!"
+        docker tag "$GHCR_IMAGE:${GHCR_TAG}" "$IMAGE_NAME"
+    else
+        echo "⚠️  Pull failed or image not available. Building toolchain from scratch..."
+        NEED_BUILD=true
+    fi
+else
+    if docker container inspect "$CONTAINER_NAME" &>/dev/null; then
+        if [[ $(docker container inspect -f "{{ range .Mounts }}{{ if eq .Destination \"$C_SRC\" }}{{ .Source }}{{ break }}{{ end }}{{ end }}" "$CONTAINER_NAME" 2>/dev/null || true) != "$SCRIPT_DIR" ]]; then
+            NEED_BUILD=true
+        fi
+    fi
 fi
 
 if [[ "$NEED_BUILD" == "true" ]]; then
