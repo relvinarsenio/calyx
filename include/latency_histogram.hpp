@@ -270,10 +270,8 @@ class LatencyAnalyzer final {
      */
     [[nodiscard]] static std::chrono::nanoseconds to_nanoseconds(double cycles, double cycles_to_ns) noexcept {
         if (!std::isfinite(cycles_to_ns) || cycles_to_ns <= 0.0) [[unlikely]] { return std::chrono::nanoseconds { 0 }; }
-        const double ns         = cycles / cycles_to_ns;
-        constexpr double max_ns = toDouble(std::chrono::nanoseconds::max().count());
-        if (ns >= max_ns) [[unlikely]] { return std::chrono::nanoseconds::max(); }
-        return std::chrono::nanoseconds { static_cast<std::chrono::nanoseconds::rep>(ns) };
+        const double ns = cycles / cycles_to_ns;
+        return std::chrono::nanoseconds { cast::saturate_cast<std::chrono::nanoseconds::rep>(ns) };
     }
 
 public:
