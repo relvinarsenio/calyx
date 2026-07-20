@@ -56,6 +56,19 @@ cleanup_on_interrupt() {
 
 trap cleanup_on_interrupt SIGINT SIGTERM
 
+clean_docker_assets() {
+    # Graceful stop
+    docker ps -a --format '{{.Names}}' | grep "^${PROJECT_NAME}-" | xargs -r docker stop -t 5 >/dev/null 2>&1 || true
+    # Remove containers
+    docker ps -a --format '{{.Names}}' | grep "^${PROJECT_NAME}-" | xargs -r docker rm -f >/dev/null 2>&1 || true
+    # Remove volumes
+    docker volume ls --format '{{.Name}}' | grep "^${PROJECT_NAME}-" | xargs -r docker volume rm >/dev/null 2>&1 || true
+    # Remove images
+    docker image ls --format '{{.Repository}}:{{.Tag}}' | grep -E "(/|^)${PROJECT_NAME}-" | xargs -r docker image rm -f >/dev/null 2>&1 || true
+    # Prune any dangling images left behind
+    docker image prune -f >/dev/null 2>&1 || true
+}
+
 # =============================================================================
 # 2. Parse Arguments
 # =============================================================================
@@ -118,22 +131,7 @@ done
 
 if [ "$CLEAN_ALL" = "true" ]; then
     echo "🧹 Deep cleaning all ${PROJECT_NAME}-related Docker assets..."
-    
-    # Graceful stop
-    docker ps -a --format '{{.Names}}' | grep "^${PROJECT_NAME}-" | xargs -r docker stop -t 5 >/dev/null 2>&1 || true
-    
-    # Remove containers
-    docker ps -a --format '{{.Names}}' | grep "^${PROJECT_NAME}-" | xargs -r docker rm -f >/dev/null 2>&1 || true
-    
-    # Remove volumes
-    docker volume ls --format '{{.Name}}' | grep "^${PROJECT_NAME}-" | xargs -r docker volume rm >/dev/null 2>&1 || true
-    
-    # Remove images
-    docker image ls --format '{{.Repository}}:{{.Tag}}' | grep -E "(/|^)${PROJECT_NAME}-" | xargs -r docker image rm -f >/dev/null 2>&1 || true
-    
-    # Prune any dangling images left behind
-    docker image prune -f >/dev/null 2>&1 || true
-    
+    clean_docker_assets
     echo "✨ Deep cleanup complete. No other Docker projects were affected."
     exit 0
 fi
@@ -187,8 +185,7 @@ esac
 
 if [[ "$REBUILD_IMAGE" == "true" ]]; then
     echo "🗑️  Rebuild image requested — rebuilding toolchain and clearing everything..."
-    docker container rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-    docker volume rm "$VOL_BUILD" "$VOL_CCACHE" >/dev/null 2>&1 || true
+    clean_docker_assets
     NEED_BUILD=true
 elif [[ "$UPDATE_IMAGE" == "true" ]] || ! docker image inspect "$IMAGE_NAME" &>/dev/null; then
     if [[ "$UPDATE_IMAGE" == "true" ]]; then
