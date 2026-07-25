@@ -285,8 +285,7 @@ NodeExecutionResult run_speed_test_for_node(const Node& node, NodeRunContext con
         return node_result;
     }
 
-    const auto pipe_res = pipe->read_all(
-        config::kSpeedtestDlTimeout + seconds(15), {}, []() noexcept { return check_interrupted(); }, false);
+    const auto pipe_res = pipe->read_all(config::kSpeedtestDlTimeout + seconds(15), {}, check_interrupted, false);
     if (pipe_res.status == ShellPipeStatus::interrupted || check_interrupted()) {
         node_result.entry.success = false;
         node_result.entry.error   = std::string { config::kInterruptMsg };

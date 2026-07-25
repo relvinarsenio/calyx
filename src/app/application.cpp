@@ -393,8 +393,7 @@ void display_storage_memory() {
         .label             = label,
     };
 
-    const auto result
-        = DiskBenchmark::run_io_test(io_config, progress_cb, {}, []() noexcept { return check_interrupted(); });
+    const auto result = DiskBenchmark::run_io_test(io_config, progress_cb, {}, check_interrupted);
 
     if (!result) { return std::unexpected(DiskBenchmark::format_error(result.error())); }
 
@@ -469,7 +468,6 @@ void Application::show_version() const {
 }
 
 std::expected<void, std::string> Application::run(int argc, char* argv[]) {
-    init_signal_handlers();
     auto http_context = HttpContext::create();
     if (!http_context) {
         return std::unexpected(std::format("\n[!] HttpContext create failed: {}", http_context.error()));

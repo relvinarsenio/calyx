@@ -9,125 +9,218 @@
 
 #include <array>
 #include <atomic>
+#include <concepts>
 #include <csignal>
-#include <mutex>
+#include <cstddef>
 #include <ranges>
 #include <type_traits>
+#include <utility>
 
 /**
  * @file interrupts.hpp
- * @brief Async-signal-safe interrupt flag and thread-safe automatic signal handling.
+ * @brief Thread-safe and async-signal-safe POSIX signal handling infrastructure.
  *
- * @details Provides a thread-safe and async-signal-safe mechanism to handle OS
- * interrupts (SIGINT, SIGTERM) gracefully across a multi-threaded application.
- * Compliant with POSIX.1-2024 by utilizing lock-free atomics.
+ * @details Provides an intrusive linked-list RAII controller (PosixSignalController) for managing
+ * process-wide OS signals (SIGINT, SIGTERM). Compliant with POSIX.1-2024 using lock-free atomics
+ * and move-only ownership transfer across nested scopes.
  *
- * @note @c SA_RESTART is intentionally omitted from @c sa_flags. This ensures that
- * blocking syscalls (e.g., @c read, @c poll) fail immediately with @c EINTR,
- * allowing the application's event loops to detect the interrupt and shut down.
+ * @note Overkill for Calyx's single-instance use case, built for fun/practice — API stays simple
+ * either way.
  */
-namespace interrupt_state {
 
 /**
- * @brief Concept ensuring a type yields a lock-free std::atomic.
- * @note Per C++ Core Guidelines T.10 and T.20, we constrain T to be trivially
- * copyable first to prevent hard compiler errors before evaluating lock-free status.
+ * @brief Concept defining the required public interface contract for signal controllers.
  */
 template <typename T>
-concept async_signal_safe = std::is_trivially_copyable_v<T> && std::atomic<T>::is_always_lock_free;
-
-/**
- * @brief Atomic type guaranteed to be async-signal-safe per POSIX.1-2024.
- * @note Per C++ Core Guidelines T.42, we use a template alias to enforce
- * the concept constraint implicitly and simplify notation.
- */
-template <async_signal_safe T> using signal_safe_atomic = std::atomic<T>;
-
-/** @brief Global interrupt flag, written by the signal handler, polled by the app. */
-inline signal_safe_atomic<bool> g_interrupted { false };
-
-} // namespace interrupt_state
-
-namespace interrupts_impl {
-
-/** @brief Signals to handle. Extend this array to add more. */
-inline constexpr std::array kHandledSignals { SIGINT, SIGTERM };
-
-/** @brief Minimal async-signal-safe OS handler. */
-extern "C" inline void signal_handler(int /*signum*/) noexcept {
-    /** @note Relaxed ordering is sufficient here. This flag is a one-way latch with no dependent memory stores. */
-    interrupt_state::g_interrupted.store(true, std::memory_order_relaxed);
-}
-
-/** @brief Constructs a sigaction configured for our handler. */
-inline auto make_handler_action() noexcept {
-    struct sigaction sa {};
-    sa.sa_handler = signal_handler;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;
-    return sa;
-}
-
-/** @brief Installs signal_handler for all kHandledSignals. */
-inline void install_signal_handler() noexcept {
-    auto sa = make_handler_action();
-    for (auto sig : kHandledSignals) {
-        sigaction(sig, &sa, nullptr);
-    }
-}
-
-/** @brief Overload capturing previous dispositions for later restore. */
-inline void install_signal_handler(std::array<struct sigaction, kHandledSignals.size()>& old) noexcept {
-    auto sa = make_handler_action();
-    for (auto&& [sig, prev] : std::views::zip(kHandledSignals, old)) {
-        sigaction(sig, &sa, &prev);
-    }
-}
-
-/** @brief Scoped RAII guard that captures and restores previous signal dispositions. */
-class SignalGuard {
-    std::array<struct sigaction, kHandledSignals.size()> prev_ {};
-
-public:
-    SignalGuard() noexcept { install_signal_handler(prev_); }
-
-    ~SignalGuard() noexcept {
-        for (auto&& [sig, prev] : std::views::zip(kHandledSignals, prev_)) {
-            sigaction(sig, &prev, nullptr);
-        }
-    }
-
-    SignalGuard(const SignalGuard&)            = delete;
-    SignalGuard& operator=(const SignalGuard&) = delete;
-    SignalGuard(SignalGuard&&)                 = delete;
-    SignalGuard& operator=(SignalGuard&&)      = delete;
+concept SignalControllerType = requires(T t, const T ct) {
+    t.install();
+    t.restore();
+    { ct.is_interrupted() } -> std::convertible_to<bool>;
+    t.trigger();
+    t.reset();
 };
 
 /**
- * @brief Thread-safe, idempotent process-wide signal handler registration.
- * @note Uses std::call_once (not static SignalGuard) to avoid restoration during
- * static destruction. noexcept is intentional — OS futex failure is unrecoverable.
+ * @brief Concept ensuring a type is async-signal-safe for atomic operations.
+ * @note Constrained per C++ Core Guidelines T.10 to trivially copyable/destructible types.
  */
-inline void ensure_signal_handler_installed() noexcept {
-    static std::once_flag flag;
-    std::call_once(flag, []() noexcept { install_signal_handler(); });
-}
+template <typename T>
+concept AsyncSignalSafe
+    = std::is_trivially_copyable_v<T> && std::is_trivially_destructible_v<T> && std::atomic<T>::is_always_lock_free;
 
-} // namespace interrupts_impl
+/**
+ * @brief Template alias enforcing async-signal-safe atomic types per POSIX.1-2024 and C++ Core Guidelines T.42.
+ */
+template <AsyncSignalSafe T> using signal_safe_atomic = std::atomic<T>;
 
-/** @brief Explicitly initialize process-wide signal handlers (optional, for early startup). */
-inline void init_signal_handlers() noexcept {
-    interrupts_impl::ensure_signal_handler_installed();
-}
+/**
+ * @brief RAII controller managing nested POSIX signal handlers via an intrusive doubly-linked list.
+ * @details Transfers OS handler ownership O(1) on out-of-order destruction, eliminating redundant syscalls.
+ * @note Thread Safety: Status polling and signal delivery are lock-free and thread-safe.
+ * Concurrent construction/destruction across threads requires external synchronization as intrusive list
+ * pointer mutations (prev_, next_) are not atomic.
+ */
+class PosixSignalController {
+public:
+    /** @brief OS signals registered and handled by this controller. */
+    static constexpr std::array kHandledSignals { SIGINT, SIGTERM };
 
-/** @brief Polls global interrupt flag (auto-installs handlers if needed). */
+    /**
+     * @brief Constructs and registers the controller instance into the intrusive stack.
+     */
+    PosixSignalController() noexcept {
+        prev_ = active_instance_.exchange(this, std::memory_order_relaxed);
+        if (prev_) {
+            prev_->next_ = this;
+        } else {
+            install_root();
+        }
+    }
+
+    /**
+     * @brief Destroys the controller instance, unstacking or transferring OS handler ownership.
+     */
+    ~PosixSignalController() noexcept {
+        if (next_) { next_->prev_ = prev_; }
+        if (prev_) { prev_->next_ = next_; }
+
+        if (installed_) {
+            if (auto* const survivor = find_survivor()) {
+                transfer_ownership_to(survivor);
+            } else {
+                restore();
+            }
+        }
+
+        PosixSignalController* expected = this;
+        active_instance_.compare_exchange_strong(expected, prev_, std::memory_order_relaxed);
+    }
+
+    /**
+     * @brief Programmatically triggers interrupt flag on the active top-level instance.
+     */
+    static void trigger_active() noexcept {
+        auto* ptr = active_instance_.load(std::memory_order_relaxed);
+        if (ptr) { ptr->trigger(); }
+    }
+
+    /**
+     * @brief Checks whether the active top-level instance has been interrupted.
+     * @return True if the active instance is interrupted, false otherwise.
+     */
+    [[nodiscard]] static bool check_active() noexcept {
+        const auto* ptr = active_instance_.load(std::memory_order_relaxed);
+        return ptr ? ptr->is_interrupted() : false;
+    }
+
+    /**
+     * @brief Registers POSIX signal handlers with the OS.
+     * @note SA_RESTART is intentionally omitted from sa_flags. This ensures blocking syscalls
+     * (e.g., read, poll) fail immediately with EINTR, allowing application loops to detect signals cleanly.
+     */
+    void install() noexcept {
+        if (installed_) { return; }
+
+        struct sigaction sa {};
+        sa.sa_handler = &PosixSignalController::signal_trampoline;
+        sigemptyset(&sa.sa_mask);
+        sa.sa_flags = 0;
+
+        for (auto&& [idx, sig, old_act] : std::views::zip(std::views::iota(0u), kHandledSignals, old_actions_)) {
+            if (sigaction(sig, &sa, &old_act) != 0) {
+                rollback(idx);
+                return;
+            }
+        }
+        installed_ = true;
+    }
+
+    /**
+     * @brief Restores original POSIX signal dispositions to the OS.
+     */
+    void restore() noexcept {
+        if (!installed_) { return; }
+        rollback(kHandledSignals.size());
+        installed_ = false;
+    }
+
+    /**
+     * @brief Returns whether this specific controller instance has been interrupted.
+     */
+    [[nodiscard]] bool is_interrupted() const noexcept { return interrupted_.load(std::memory_order_relaxed); }
+
+    /**
+     * @brief Sets the interrupt flag on this specific controller instance.
+     */
+    void trigger() noexcept { interrupted_.store(true, std::memory_order_relaxed); }
+
+    /**
+     * @brief Resets the interrupt flag on this specific controller instance.
+     */
+    void reset() noexcept { interrupted_.store(false, std::memory_order_relaxed); }
+
+    PosixSignalController(const PosixSignalController&)            = delete;
+    PosixSignalController& operator=(const PosixSignalController&) = delete;
+    PosixSignalController(PosixSignalController&&)                 = delete;
+    PosixSignalController& operator=(PosixSignalController&&)      = delete;
+
+private:
+    void install_root() noexcept {
+        install();
+        if (!installed_) {
+            PosixSignalController* expected = this;
+            active_instance_.compare_exchange_strong(expected, nullptr, std::memory_order_relaxed);
+        }
+    }
+
+    void rollback(std::size_t count) noexcept {
+        for (auto&& [sig, old_act] : std::views::zip(kHandledSignals, old_actions_) | std::views::take(count)) {
+            sigaction(sig, &old_act, nullptr);
+        }
+    }
+
+    [[nodiscard]] PosixSignalController* find_survivor() noexcept {
+        if (next_) { return next_; }
+        if (prev_) { return prev_->find_root(); }
+        return nullptr;
+    }
+
+    [[nodiscard]] PosixSignalController* find_root() noexcept {
+        auto* curr = this;
+        while (curr->prev_) {
+            curr = curr->prev_;
+        }
+        return curr;
+    }
+
+    void transfer_ownership_to(PosixSignalController* target) noexcept {
+        if (!target) { return; }
+        target->installed_   = true;
+        target->old_actions_ = std::move(old_actions_);
+        installed_           = false;
+    }
+
+    static void signal_trampoline(int) noexcept { trigger_active(); }
+
+    PosixSignalController* prev_ { nullptr };
+    PosixSignalController* next_ { nullptr };
+    static inline signal_safe_atomic<PosixSignalController*> active_instance_ { nullptr };
+    signal_safe_atomic<bool> interrupted_ { false };
+    bool installed_ { false };
+    std::array<struct sigaction, kHandledSignals.size()> old_actions_ {};
+};
+
+/**
+ * @brief Polls whether the active signal controller has received an interrupt.
+ * @return True if an interrupt signal was received or triggered, false otherwise.
+ */
 [[nodiscard]] inline bool check_interrupted() noexcept {
-    interrupts_impl::ensure_signal_handler_installed();
-    return interrupt_state::g_interrupted.load(std::memory_order_relaxed);
+    return PosixSignalController::check_active();
 }
 
-/** @brief Programmatically raise the interrupt flag without an OS signal. */
+/**
+ * @brief Programmatically triggers an interrupt on the active signal controller.
+ */
 inline void trigger_interrupt() noexcept {
-    interrupts_impl::ensure_signal_handler_installed();
-    interrupt_state::g_interrupted.store(true, std::memory_order_relaxed);
+    PosixSignalController::trigger_active();
 }
