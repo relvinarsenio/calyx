@@ -469,7 +469,7 @@ void Application::show_version() const {
 }
 
 std::expected<void, std::string> Application::run(int argc, char* argv[]) {
-    SignalGuard signal_guard;
+    init_signal_handlers();
     auto http_context = HttpContext::create();
     if (!http_context) {
         return std::unexpected(std::format("\n[!] HttpContext create failed: {}", http_context.error()));

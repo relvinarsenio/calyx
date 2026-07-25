@@ -214,26 +214,23 @@ template <IoBufferSpan BufferType> struct IoContextBase {
     const posix::file_descriptor& fd;
     IoLayout layout;
     IoObserver observer;
-
-    template <typename Self>
-    [[nodiscard]] auto get_slice(
-        this const Self& self, std::uint16_t idx, std::size_t done, std::size_t remaining) noexcept {
-        constexpr bool is_write = Self::is_write_op;
-        if constexpr (is_write) {
-            const auto subspan_offset = toSize(idx) * self.layout.mem_stride + done;
-            return self.buffers.subspan(subspan_offset, remaining);
-        } else {
-            return self.buffers[idx].span().subspan(done, remaining);
-        }
-    }
 };
 
 struct WriteContext final : IoContextBase<std::span<const std::byte>> {
     static constexpr bool is_write_op = true;
+
+    [[nodiscard]] constexpr auto get_slice(std::uint16_t idx, std::size_t done, std::size_t remaining) const noexcept {
+        const auto subspan_offset = toSize(idx) * layout.mem_stride + done;
+        return buffers.subspan(subspan_offset, remaining);
+    }
 };
 
 struct ReadContext final : IoContextBase<std::span<memory::AlignedBuffer>> {
     static constexpr bool is_write_op = false;
+
+    [[nodiscard]] constexpr auto get_slice(std::uint16_t idx, std::size_t done, std::size_t remaining) const noexcept {
+        return buffers[idx].span().subspan(done, remaining);
+    }
 };
 
 template <typename Context>

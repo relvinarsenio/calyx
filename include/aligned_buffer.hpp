@@ -76,9 +76,11 @@ template <unbounded_array T>
 [[nodiscard]] std::unique_ptr<T, AlignedDeleter<T>> make_unique_aligned_nothrow(
     std::size_t size, std::size_t alignment) noexcept {
 
-    using ElementType = std::remove_extent_t<T>;
+    using ElementType     = std::remove_extent_t<T>;
+    using difference_type = std::ptrdiff_t;
 
-    static constexpr std::size_t max_size = std::numeric_limits<std::size_t>::max() / sizeof(ElementType);
+    static constexpr std::size_t max_size
+        = std::size_t { std::numeric_limits<difference_type>::max() } / sizeof(ElementType);
 
     if (size > max_size) [[unlikely]] { return { nullptr, AlignedDeleter<T> { alignment } }; }
 
@@ -109,7 +111,7 @@ public:
 
 private:
     std::unique_ptr<value_type[], aligned_buffer_impl::AlignedDeleter<value_type[]>> ptr_;
-    size_type size_ = 0;
+    size_type size_ = 0uz;
 
     constexpr explicit BasicAlignedBuffer(
         std::unique_ptr<value_type[], aligned_buffer_impl::AlignedDeleter<value_type[]>> ptr, size_type size) noexcept
@@ -122,12 +124,12 @@ public:
 
     constexpr BasicAlignedBuffer(BasicAlignedBuffer&& other) noexcept
         : ptr_(std::move(other.ptr_))
-        , size_(std::exchange(other.size_, 0)) {}
+        , size_(std::exchange(other.size_, 0uz)) {}
 
     constexpr BasicAlignedBuffer& operator=(BasicAlignedBuffer&& other) noexcept {
         if (this != &other) [[likely]] {
             ptr_  = std::move(other.ptr_);
-            size_ = std::exchange(other.size_, 0);
+            size_ = std::exchange(other.size_, 0uz);
         }
         return *this;
     }
@@ -140,35 +142,59 @@ public:
     BasicAlignedBuffer(const BasicAlignedBuffer&)            = delete;
     BasicAlignedBuffer& operator=(const BasicAlignedBuffer&) = delete;
 
-    [[nodiscard]] constexpr pointer data() noexcept { return ptr_.get(); }
-    [[nodiscard]] constexpr const_pointer data() const noexcept { return ptr_.get(); }
+    template <typename Self>
+    [[nodiscard]] constexpr auto data(this Self&& self) noexcept
+        -> std::conditional_t<std::is_const_v<std::remove_reference_t<Self>>, const_pointer, pointer> {
+        return self.ptr_.get();
+    }
 
-    [[nodiscard]] constexpr iterator begin() noexcept { return ptr_.get(); }
-    [[nodiscard]] constexpr const_iterator begin() const noexcept { return ptr_.get(); }
+    template <typename Self>
+    [[nodiscard]] constexpr auto begin(this Self&& self) noexcept
+        -> std::conditional_t<std::is_const_v<std::remove_reference_t<Self>>, const_iterator, iterator> {
+        return self.ptr_.get();
+    }
     [[nodiscard]] constexpr const_iterator cbegin() const noexcept { return ptr_.get(); }
 
-    [[nodiscard]] constexpr iterator end() noexcept { return ptr_.get() + size_; }
-    [[nodiscard]] constexpr const_iterator end() const noexcept { return ptr_.get() + size_; }
+    template <typename Self>
+    [[nodiscard]] constexpr auto end(this Self&& self) noexcept
+        -> std::conditional_t<std::is_const_v<std::remove_reference_t<Self>>, const_iterator, iterator> {
+        return self.ptr_.get() + self.size_;
+    }
     [[nodiscard]] constexpr const_iterator cend() const noexcept { return ptr_.get() + size_; }
 
-    [[nodiscard]] constexpr reverse_iterator rbegin() noexcept { return reverse_iterator(end()); }
-    [[nodiscard]] constexpr const_reverse_iterator rbegin() const noexcept { return const_reverse_iterator(end()); }
+    template <typename Self> [[nodiscard]] constexpr auto rbegin(this Self&& self) noexcept {
+        using IteratorType
+            = std::conditional_t<std::is_const_v<std::remove_reference_t<Self>>, const_iterator, iterator>;
+        return std::reverse_iterator<IteratorType>(self.end());
+    }
     [[nodiscard]] constexpr const_reverse_iterator crbegin() const noexcept { return const_reverse_iterator(end()); }
 
-    [[nodiscard]] constexpr reverse_iterator rend() noexcept { return reverse_iterator(begin()); }
-    [[nodiscard]] constexpr const_reverse_iterator rend() const noexcept { return const_reverse_iterator(begin()); }
+    template <typename Self> [[nodiscard]] constexpr auto rend(this Self&& self) noexcept {
+        using IteratorType
+            = std::conditional_t<std::is_const_v<std::remove_reference_t<Self>>, const_iterator, iterator>;
+        return std::reverse_iterator<IteratorType>(self.begin());
+    }
     [[nodiscard]] constexpr const_reverse_iterator crend() const noexcept { return const_reverse_iterator(begin()); }
 
-    [[nodiscard]] constexpr reference operator[](size_type pos) noexcept { return ptr_[pos]; }
-    [[nodiscard]] constexpr const_reference operator[](size_type pos) const noexcept { return ptr_[pos]; }
+    template <typename Self>
+    [[nodiscard]] constexpr auto operator[](this Self&& self, size_type pos) noexcept
+        -> std::conditional_t<std::is_const_v<std::remove_reference_t<Self>>, const_reference, reference> {
+        return self.ptr_[pos];
+    }
 
-    [[nodiscard]] constexpr reference front() noexcept { return ptr_[0]; }
-    [[nodiscard]] constexpr const_reference front() const noexcept { return ptr_[0]; }
+    template <typename Self>
+    [[nodiscard]] constexpr auto front(this Self&& self) noexcept
+        -> std::conditional_t<std::is_const_v<std::remove_reference_t<Self>>, const_reference, reference> {
+        return self.ptr_[0];
+    }
 
-    [[nodiscard]] constexpr reference back() noexcept { return ptr_[size_ - 1]; }
-    [[nodiscard]] constexpr const_reference back() const noexcept { return ptr_[size_ - 1]; }
+    template <typename Self>
+    [[nodiscard]] constexpr auto back(this Self&& self) noexcept
+        -> std::conditional_t<std::is_const_v<std::remove_reference_t<Self>>, const_reference, reference> {
+        return self.ptr_[self.size_ - 1];
+    }
 
-    [[nodiscard]] constexpr explicit operator bool() const noexcept { return ptr_ != nullptr; }
+    [[nodiscard]] constexpr explicit operator bool(this auto&& self) noexcept { return self.ptr_ != nullptr; }
 
     /**
      * @brief Factory method to create an AlignedBuffer safely.
@@ -189,15 +215,17 @@ public:
         return std::nullopt;
     }
 
-    [[nodiscard]] constexpr std::span<value_type> span() noexcept { return { ptr_.get(), size_ }; }
-
-    [[nodiscard]] constexpr std::span<const value_type> span() const noexcept { return { ptr_.get(), size_ }; }
-
-    [[nodiscard]] constexpr size_type size() const noexcept { return size_; }
-    [[nodiscard]] constexpr size_type max_size() const noexcept {
-        return std::numeric_limits<size_type>::max() / sizeof(value_type);
+    [[nodiscard]] constexpr auto span(this auto&& self) noexcept {
+        using ElementType = std::conditional_t<std::is_const_v<std::remove_reference_t<decltype(self)>>,
+            const value_type, value_type>;
+        return std::span<ElementType> { self.ptr_.get(), self.size_ };
     }
-    [[nodiscard]] constexpr bool empty() const noexcept { return size_ == 0; }
+
+    [[nodiscard]] constexpr size_type size(this auto&& self) noexcept { return self.size_; }
+    [[nodiscard]] constexpr size_type max_size(this auto&&) noexcept {
+        return size_type { std::numeric_limits<difference_type>::max() } / sizeof(value_type);
+    }
+    [[nodiscard]] constexpr bool empty(this auto&& self) noexcept { return self.size_ == 0uz; }
 };
 
 template <aligned_buffer_impl::trivial T>

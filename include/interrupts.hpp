@@ -7,80 +7,94 @@
  */
 #pragma once
 
+#include <array>
+#include <atomic>
 #include <csignal>
+#include <mutex>
+#include <ranges>
+#include <type_traits>
 
 /**
  * @file interrupts.hpp
- * @brief Async-signal-safe interrupt flag and RAII signal guard.
+ * @brief Async-signal-safe interrupt flag and thread-safe automatic signal handling.
  *
- * @details Compliant with ISO C 2024 §7.14.1.1 and POSIX.1-2024 signal-safety requirements.
+ * @details Provides a thread-safe and async-signal-safe mechanism to handle OS
+ * interrupts (SIGINT, SIGTERM) gracefully across a multi-threaded application.
+ * Compliant with POSIX.1-2024 by utilizing lock-free atomics.
  *
- * The interrupt flag uses @c volatile @c std::sig_atomic_t — the only type formally
- * guaranteed by both ISO C and POSIX to be safely readable and writable from within
- * a signal handler without undefined behavior. While @c std::atomic<bool> is lock-free
- * on all mainstream platforms, using it inside a signal handler is only conditionally
- * valid per the C++ standard (requires @c is_always_lock_free to be true).
- *
- * @note @c SA_RESTART is intentionally omitted from @c sa_flags. This causes blocking
- * syscalls (e.g., @c read, @c write, @c poll) to fail with @c EINTR when a signal is
- * delivered, allowing the application's EINTR retry loops (@ref posix::eintr_loop) to
- * detect the interrupt flag and break out cleanly. Setting @c SA_RESTART would silently
- * resume those syscalls, defeating graceful cancellation.
+ * @note @c SA_RESTART is intentionally omitted from @c sa_flags. This ensures that
+ * blocking syscalls (e.g., @c read, @c poll) fail immediately with @c EINTR,
+ * allowing the application's event loops to detect the interrupt and shut down.
  */
 namespace interrupt_state {
 
 /**
- * @brief Global interrupt flag, written by signal handler, polled by application loops.
- *
- * @note @c volatile ensures the compiler re-reads the variable on each access.
- * @c sig_atomic_t guarantees atomic store/load even from an async signal context.
+ * @brief Concept ensuring a type yields a lock-free std::atomic.
+ * @note Per C++ Core Guidelines T.10 and T.20, we constrain T to be trivially
+ * copyable first to prevent hard compiler errors before evaluating lock-free status.
  */
-inline volatile std::sig_atomic_t g_interrupted = 0;
+template <typename T>
+concept async_signal_safe = std::is_trivially_copyable_v<T> && std::atomic<T>::is_always_lock_free;
+
+/**
+ * @brief Atomic type guaranteed to be async-signal-safe per POSIX.1-2024.
+ * @note Per C++ Core Guidelines T.42, we use a template alias to enforce
+ * the concept constraint implicitly and simplify notation.
+ */
+template <async_signal_safe T> using signal_safe_atomic = std::atomic<T>;
+
+/** @brief Global interrupt flag, written by the signal handler, polled by the app. */
+inline signal_safe_atomic<bool> g_interrupted { false };
 
 } // namespace interrupt_state
 
-/**
- * @brief Minimal async-signal-safe handler that sets the interrupt flag.
- *
- * @note Per POSIX.1-2024, only async-signal-safe operations are permitted here.
- * Writing to a @c volatile @c sig_atomic_t is the canonical safe pattern.
- */
+namespace interrupts_impl {
+
+/** @brief Signals to handle. Extend this array to add more. */
+inline constexpr std::array kHandledSignals { SIGINT, SIGTERM };
+
+/** @brief Minimal async-signal-safe OS handler. */
 extern "C" inline void signal_handler(int /*signum*/) noexcept {
-    interrupt_state::g_interrupted = 1;
+    /** @note Relaxed ordering is sufficient here. This flag is a one-way latch with no dependent memory stores. */
+    interrupt_state::g_interrupted.store(true, std::memory_order_relaxed);
 }
 
-/** @brief Poll the global interrupt flag (non-blocking). */
-inline constexpr auto check_interrupted = []() noexcept -> bool { return interrupt_state::g_interrupted != 0; };
+/** @brief Constructs a sigaction configured for our handler. */
+inline auto make_handler_action() noexcept {
+    struct sigaction sa {};
+    sa.sa_handler = signal_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    return sa;
+}
 
-/** @brief Programmatically raise the interrupt flag without delivering a signal. */
-inline constexpr auto trigger_interrupt = []() noexcept { interrupt_state::g_interrupted = 1; };
+/** @brief Installs signal_handler for all kHandledSignals. */
+inline void install_signal_handler() noexcept {
+    auto sa = make_handler_action();
+    for (auto sig : kHandledSignals) {
+        sigaction(sig, &sa, nullptr);
+    }
+}
 
-/**
- * @brief RAII guard that installs signal handlers on construction and restores originals on destruction.
- *
- * @details Captures the previous @c SIGINT and @c SIGTERM dispositions via the @c oldact
- * output parameter of @c sigaction(2), and restores them when the guard goes out of scope.
- * This ensures that nested or library-installed handlers are preserved correctly.
- */
+/** @brief Overload capturing previous dispositions for later restore. */
+inline void install_signal_handler(std::array<struct sigaction, kHandledSignals.size()>& old) noexcept {
+    auto sa = make_handler_action();
+    for (auto&& [sig, prev] : std::views::zip(kHandledSignals, old)) {
+        sigaction(sig, &sa, &prev);
+    }
+}
+
+/** @brief Scoped RAII guard that captures and restores previous signal dispositions. */
 class SignalGuard {
-    struct sigaction prev_sigint_ {};
-    struct sigaction prev_sigterm_ {};
+    std::array<struct sigaction, kHandledSignals.size()> prev_ {};
 
 public:
-    SignalGuard() noexcept {
-        struct sigaction sa {};
-        sa.sa_handler = signal_handler;
-        sigemptyset(&sa.sa_mask);
-        /** @note sa_flags = 0: intentionally no SA_RESTART, see file-level documentation. */
-        sa.sa_flags = 0;
-
-        sigaction(SIGINT, &sa, &prev_sigint_);
-        sigaction(SIGTERM, &sa, &prev_sigterm_);
-    }
+    SignalGuard() noexcept { install_signal_handler(prev_); }
 
     ~SignalGuard() noexcept {
-        sigaction(SIGINT, &prev_sigint_, nullptr);
-        sigaction(SIGTERM, &prev_sigterm_, nullptr);
+        for (auto&& [sig, prev] : std::views::zip(kHandledSignals, prev_)) {
+            sigaction(sig, &prev, nullptr);
+        }
     }
 
     SignalGuard(const SignalGuard&)            = delete;
@@ -88,3 +102,32 @@ public:
     SignalGuard(SignalGuard&&)                 = delete;
     SignalGuard& operator=(SignalGuard&&)      = delete;
 };
+
+/**
+ * @brief Thread-safe, idempotent process-wide signal handler registration.
+ * @note Uses std::call_once (not static SignalGuard) to avoid restoration during
+ * static destruction. noexcept is intentional — OS futex failure is unrecoverable.
+ */
+inline void ensure_signal_handler_installed() noexcept {
+    static std::once_flag flag;
+    std::call_once(flag, []() noexcept { install_signal_handler(); });
+}
+
+} // namespace interrupts_impl
+
+/** @brief Explicitly initialize process-wide signal handlers (optional, for early startup). */
+inline void init_signal_handlers() noexcept {
+    interrupts_impl::ensure_signal_handler_installed();
+}
+
+/** @brief Polls global interrupt flag (auto-installs handlers if needed). */
+[[nodiscard]] inline bool check_interrupted() noexcept {
+    interrupts_impl::ensure_signal_handler_installed();
+    return interrupt_state::g_interrupted.load(std::memory_order_relaxed);
+}
+
+/** @brief Programmatically raise the interrupt flag without an OS signal. */
+inline void trigger_interrupt() noexcept {
+    interrupts_impl::ensure_signal_handler_installed();
+    interrupt_state::g_interrupted.store(true, std::memory_order_relaxed);
+}
