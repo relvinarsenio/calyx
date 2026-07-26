@@ -20,6 +20,8 @@
  * @brief Global configuration constants and build-time settings.
  */
 namespace config {
+/** @brief Auto-detect CPU core for thread affinity pinning (-1). */
+inline constexpr std::int32_t kAffinityAutoCore = -1;
 /** @brief Number of iterations for disk I/O benchmarks. */
 inline constexpr std::uint8_t kDiskIoRuns = 3;
 /** @brief Size of the temporary file used for disk tests (in megabytes). */
