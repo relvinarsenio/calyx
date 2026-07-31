@@ -8,9 +8,9 @@
 #pragma once
 
 #include "config.hpp"
-#include "numeric_cast.hpp"
 #include "posix.hpp"
 #include "posix_error.hpp"
+#include "utils.hpp"
 
 #include <algorithm>
 #include <concepts>
@@ -26,6 +26,7 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
+#include <variant>
 
 /**
  * @file affinity.hpp
@@ -36,30 +37,14 @@
  */
 namespace affinity {
 
-/**
- * @brief Strong type tag explicitly targeting a specific CPU core for isolation.
- */
-struct TargetCpu {
-    std::int32_t core { config::kAffinityAutoCore };
-    constexpr explicit TargetCpu(std::int32_t c) noexcept
-        : core(c) {}
-};
-
-/**
- * @brief Structured error context for CPU isolation failures.
- */
 struct IsolationError {
-    std::error_code ec {}; /**< POSIX or system error code. */
-    std::string_view context {}; /**< Failure point description. */
+    std::error_code ec {};
+    std::string_view context {};
 };
 
-/**
- * @brief Logical state of thread isolation and worker synchronization.
- */
 enum class IsolationState : std::uint8_t {
-    NotIsolated, /**< Thread affinity is unpinned or restored to initial state. */
-    PinnedOnly, /**< Thread is pinned to target CPU without worker pool sync. */
-    PinnedAndSynced, /**< Thread is pinned and worker pool synchronization succeeded. */
+    NotIsolated,
+    Isolated,
 };
 
 /**
@@ -68,28 +53,7 @@ enum class IsolationState : std::uint8_t {
 class CpuSet {
 public:
     constexpr CpuSet() noexcept = default;
-
-    /**
-     * @brief Allocates a CPU mask sized for the specified processor count.
-     * @param num_cpus Total processors to allocate space for.
-     * @return Allocated CpuSet instance or OS error code on failure.
-     */
-    [[nodiscard]] static std::expected<CpuSet, std::error_code> allocate(std::uint32_t num_cpus) noexcept {
-        if (num_cpus == 0u || num_cpus > toUInt(std::numeric_limits<int>::max())) [[unlikely]] {
-            return std::unexpected(posix::make_error(EINVAL));
-        }
-
-        const auto count { toInt(num_cpus) };
-        const std::size_t mask_size { CPU_ALLOC_SIZE(count) };
-        const auto raw { posix::expect_result<posix::error_style::pointer>(CPU_ALLOC(count)) };
-        if (!raw) [[unlikely]] { return std::unexpected(raw.error()); }
-
-        CpuSet set { *raw, mask_size, num_cpus };
-        set.zero();
-        return set;
-    }
-
-    ~CpuSet() noexcept = default;
+    ~CpuSet() noexcept          = default;
 
     CpuSet(const CpuSet&)            = delete;
     CpuSet& operator=(const CpuSet&) = delete;
@@ -106,6 +70,21 @@ public:
             num_cpus_  = std::exchange(other.num_cpus_, 0u);
         }
         return *this;
+    }
+
+    [[nodiscard]] static std::expected<CpuSet, std::error_code> allocate(std::uint32_t num_cpus) noexcept {
+        if (num_cpus == 0u || num_cpus > toUInt(std::numeric_limits<int>::max())) [[unlikely]] {
+            return std::unexpected(posix::make_error(EINVAL));
+        }
+
+        const auto count { toInt(num_cpus) };
+        const std::size_t mask_size { CPU_ALLOC_SIZE(count) };
+        const auto raw { posix::expect_result<posix::error_style::pointer>(CPU_ALLOC(count)) };
+        if (!raw) [[unlikely]] { return std::unexpected(raw.error()); }
+
+        CpuSet set { *raw, mask_size, num_cpus };
+        set.zero();
+        return set;
     }
 
     void zero() noexcept {
@@ -129,7 +108,8 @@ public:
 
     [[nodiscard]] std::optional<std::uint32_t> first_set_cpu() const noexcept {
         if (!ptr_) [[unlikely]] { return std::nullopt; }
-        const std::uint32_t total_cpus { num_cpus_ > 0u ? num_cpus_ : toUInt(capacity_bits()) };
+        std::uint32_t total_cpus { toUInt(capacity_bits()) };
+        if (num_cpus_ > 0u) { total_cpus = num_cpus_; }
         const auto cpus_range { std::views::iota(0u, total_cpus) };
         const auto match { std::ranges::find_if(
             cpus_range, [this](std::uint32_t cpu) noexcept { return is_set(cpu); }) };
@@ -139,9 +119,8 @@ public:
 
     [[nodiscard]] cpu_set_t* get() noexcept { return ptr_.get(); }
     [[nodiscard]] const cpu_set_t* get() const noexcept { return ptr_.get(); }
-
     [[nodiscard]] std::size_t size_bytes() const noexcept { return mask_size_; }
-    [[nodiscard]] std::size_t capacity_bits() const noexcept { return mask_size_ * 8uz; }
+    [[nodiscard]] std::size_t capacity_bits() const noexcept { return safe_mul(mask_size_, 8uz).value_or(mask_size_); }
     [[nodiscard]] explicit operator bool() const noexcept { return ptr_ != nullptr; }
 
 private:
@@ -165,103 +144,95 @@ private:
  * @brief Callback signature for synchronizing kernel worker pools with pinned affinity.
  */
 using WorkerSyncCallback = std::move_only_function<std::expected<void, IsolationError>(
-    const cpu_set_t*, std::size_t, std::uint32_t, std::int32_t) const noexcept>;
+    const cpu_set_t* mask, std::size_t mask_size, std::uint32_t num_cpus, std::int32_t target_cpu) const noexcept>;
 
-/**
- * @brief Concept constraining callables compatible with WorkerSyncCallback.
- */
 template <typename F>
 concept WorkerSyncCallable
-    = requires(F&& f, const cpu_set_t* mask, std::size_t size, std::uint32_t cpus, std::int32_t target_cpu) {
+    = requires(F&& f, const cpu_set_t* mask, std::size_t mask_size, std::uint32_t num_cpus, std::int32_t target_cpu) {
           {
-              std::forward<F>(f)(mask, size, cpus, target_cpu)
+              std::forward<F>(f)(mask, mask_size, num_cpus, target_cpu)
           } -> std::convertible_to<std::expected<void, IsolationError>>;
       };
 
-/**
- * @brief Concept constraining factory callables compatible with make_guarded.
- */
-template <typename F>
-concept IsolatedFactory = std::invocable<F> && requires {
-    typename std::invoke_result_t<F>::value_type;
-    typename std::invoke_result_t<F>::error_type;
-} && (std::convertible_to<typename std::invoke_result_t<F>::error_type, IsolationError> || std::convertible_to<typename std::invoke_result_t<F>::error_type, std::error_code>);
+template <typename T> struct is_variant : std::false_type {};
+template <typename... Ts> struct is_variant<std::variant<Ts...>> : std::true_type {};
+template <typename T> inline constexpr bool is_variant_v = is_variant<T>::value;
 
-/**
- * @brief Concept constraining types supporting set_worker_affinity.
- */
-template <typename T>
-concept HasSetWorkerAffinity
-    = requires(T& obj, const cpu_set_t* mask, std::size_t size, std::uint32_t cpus, std::int32_t target_cpu) {
-          { obj.set_worker_affinity(mask, size, cpus, target_cpu) };
-      };
-
-/**
- * @brief Concept constraining types supporting register_worker_affinity.
- */
-template <typename T>
-concept HasRegisterWorkerAffinity = requires(T& obj, const cpu_set_t* mask, std::size_t size) {
-    { obj.register_worker_affinity(mask, size) };
+template <typename T> struct FactoryResultTraits {
+    using value_type                  = T;
+    using error_type                  = void;
+    static constexpr bool is_expected = false;
 };
 
-/**
- * @brief Concept constraining objects supporting direct worker affinity injection at compile time.
- */
+template <typename T, typename E> struct FactoryResultTraits<std::expected<T, E>> {
+    using value_type                  = T;
+    using error_type                  = E;
+    static constexpr bool is_expected = true;
+};
+
+template <typename R>
+concept ValidFactoryResult = !std::same_as<std::remove_cvref_t<R>, void>;
+
+template <typename F>
+concept IsolatedFactory = std::invocable<F> && ValidFactoryResult<std::invoke_result_t<F>>;
+
+template <typename T>
+concept HasSetWorkerAffinity
+    = requires(T& obj, const cpu_set_t* mask, std::size_t mask_size, std::uint32_t num_cpus, std::int32_t target_cpu) {
+          { obj.set_worker_affinity(mask, mask_size, num_cpus, target_cpu) };
+      };
+
+template <typename T>
+concept HasRegisterWorkerAffinity = requires(T& obj, const cpu_set_t* mask, std::size_t mask_size) {
+    { obj.register_worker_affinity(mask, mask_size) };
+};
+
 template <typename T>
 concept WorkerSyncObject = HasSetWorkerAffinity<T> || HasRegisterWorkerAffinity<T>;
 
-/**
- * @brief Concept constraining objects that do not support worker affinity injection.
- */
-template <typename T>
-concept NonWorkerSyncObject = !WorkerSyncObject<T>;
+template <typename E>
+concept ErrorType
+    = std::convertible_to<E, std::error_code> || std::convertible_to<E, IsolationError> || requires(const E& e) {
+          { e.ec } -> std::convertible_to<std::error_code>;
+      } || std::is_integral_v<E> || std::is_enum_v<E> || is_variant_v<E>;
 
-/**
- * @brief Concept constraining types supportable by make_isolated<T> factory construction.
+/** @brief Superset of ErrorType covering fallback error types (e.g. empty sentinel structs) with no extractable code.
  */
+template <typename E>
+concept AnyErrorSource = ErrorType<E> || std::is_empty_v<E>;
+
 template <typename T, typename... Args>
-concept FactoryCreatable = requires(Args&&... args) {
-    { T::create(std::forward<Args>(args)...) } -> std::convertible_to<std::expected<T, std::error_code>>;
+concept HasStaticCreate = requires(Args&&... args) {
+    { T::create(std::forward<Args>(args)...) };
 };
 
+template <typename T, typename... Args>
+concept FactoryCreatable = HasStaticCreate<T, Args...> || std::is_constructible_v<T, Args...>;
+
 /**
- * @brief RAII controller pinning the executing thread to a specific CPU core.
+ * @brief Scope-based CPU affinity isolation controller.
  *
- * Captures initial thread affinity upon construction and restores it on destruction.
+ * Provides CPU core pinning guarantees for high-performance execution threads
+ * with RAII lifetime management.
  *
  * @note Thread affinity operations apply exclusively to the calling thread.
  * Construction and destruction MUST occur on the exact same thread.
  */
 class [[nodiscard]] CoreAffinityGuard {
 public:
-    /**
-     * @brief Pins the calling thread to a target CPU core or active core.
-     * @param target_cpu Target core index, or kAffinityAutoCore to detect active core.
-     */
-    explicit CoreAffinityGuard(std::int32_t target_cpu = config::kAffinityAutoCore) noexcept {
-        isolate_impl(target_cpu, nullptr);
+    explicit CoreAffinityGuard(
+        std::int32_t target_cpu = config::kAffinityAutoCore, WorkerSyncCallback worker_sync = nullptr) noexcept {
+        isolate_impl(target_cpu, std::move(worker_sync));
     }
 
-    /**
-     * @brief Pins the calling thread and invokes worker pool synchronization.
-     * @param target_cpu Target core index.
-     * @param worker_sync Callback for kernel worker pool alignment.
-     */
     template <WorkerSyncCallable F> explicit CoreAffinityGuard(std::int32_t target_cpu, F&& worker_sync) noexcept {
         isolate_impl(target_cpu, WorkerSyncCallback { std::forward<F>(worker_sync) });
     }
 
-    /**
-     * @brief Pins the calling thread to active core and invokes worker pool synchronization.
-     * @param worker_sync Callback for kernel worker pool alignment.
-     */
     template <WorkerSyncCallable F> explicit CoreAffinityGuard(F&& worker_sync) noexcept {
         isolate_impl(config::kAffinityAutoCore, WorkerSyncCallback { std::forward<F>(worker_sync) });
     }
 
-    /**
-     * @brief Restores the original thread affinity mask captured at construction.
-     */
     ~CoreAffinityGuard() noexcept { restore(); }
 
     CoreAffinityGuard(const CoreAffinityGuard&)            = delete;
@@ -289,7 +260,54 @@ public:
     }
 
     /**
-     * @brief Restores the original thread affinity mask captured at construction.
+     * @brief Constructs an isolated object pinned to the active CPU core.
+     * @param args Arguments for target object construction.
+     * @return Guard and constructed object pair, or isolation error.
+     */
+    template <typename T, typename... Args>
+        requires FactoryCreatable<T, Args...>
+    [[nodiscard]] static auto make_isolated(Args&&... args) noexcept
+        -> std::expected<std::pair<CoreAffinityGuard, T>, IsolationError> {
+        return make_isolated_at<T>(config::kAffinityAutoCore, std::forward<Args>(args)...);
+    }
+
+    /**
+     * @brief Constructs an isolated object pinned to a specified CPU core.
+     * @param target_cpu Target core index.
+     * @param args Arguments for target object construction.
+     * @return Guard and constructed object pair, or isolation error.
+     */
+    template <typename T, typename... Args>
+        requires FactoryCreatable<T, Args...>
+    [[nodiscard]] static auto make_isolated_at(std::int32_t target_cpu, Args&&... args) noexcept
+        -> std::expected<std::pair<CoreAffinityGuard, T>, IsolationError> {
+        return make_isolated_with([&args...] { return construct<T>(std::forward<Args>(args)...); }, target_cpu, nullptr)
+            .and_then([](std::pair<CoreAffinityGuard, T>&& pair) {
+                return pair.first.fix_pin()
+                    .and_then([&pair]() { return sync_worker_object(pair.second, pair.first); })
+                    .transform([pair = std::move(pair)]() mutable { return std::move(pair); });
+            });
+    }
+
+    /**
+     * @brief Executes a factory within an isolated CPU core scope.
+     * @param factory Callable constructing the target object.
+     * @param target_cpu Target core index, or auto-detect core.
+     * @param worker_sync Optional kernel worker pool alignment callback.
+     * @return Guard and constructed object pair, or isolation error.
+     */
+    template <IsolatedFactory F>
+    [[nodiscard]] static auto make_isolated_with(F&& factory, std::int32_t target_cpu = config::kAffinityAutoCore,
+        WorkerSyncCallback worker_sync = nullptr) noexcept
+        -> std::expected<
+            std::pair<CoreAffinityGuard, typename FactoryResultTraits<std::invoke_result_t<F>>::value_type>,
+            IsolationError> {
+        CoreAffinityGuard guard { target_cpu, std::move(worker_sync) };
+        return execute_guarded_factory(std::move(guard), std::forward<F>(factory));
+    }
+
+    /**
+     * @brief Reverts thread affinity to pre-isolation state.
      */
     void restore() noexcept {
         if (is_pinned_ && original_mask_) [[likely]] {
@@ -299,25 +317,8 @@ public:
         }
     }
 
-    [[nodiscard]] IsolationState state() const noexcept { return state_; }
-    [[nodiscard]] bool is_isolated() const noexcept { return state_ != IsolationState::NotIsolated; }
-    [[nodiscard]] std::int32_t pinned_cpu() const noexcept { return target_cpu_; }
-    [[nodiscard]] std::uint32_t num_cpus() const noexcept { return num_cpus_; }
-    [[nodiscard]] const IsolationError& error() const noexcept { return error_; }
-    [[nodiscard]] explicit operator bool() const noexcept { return is_isolated(); }
-
     /**
-     * @brief Checks in real-time whether the calling thread is currently executing on the pinned CPU core.
-     * @return True if active CPU core matches the target pinned core index.
-     */
-    [[nodiscard]] bool is_on_core() const noexcept {
-        if (!is_pinned_ || target_cpu_ < 0) { return false; }
-        const auto current { posix::expect_result<posix::error_style::posix>(::sched_getcpu()) };
-        return current && *current == target_cpu_;
-    }
-
-    /**
-     * @brief Proactively verifies and re-applies thread affinity if execution core has drifted.
+     * @brief Enforces thread affinity pinning integrity.
      * @return Success status or IsolationError context.
      */
     [[nodiscard]] std::expected<void, IsolationError> fix_pin() noexcept {
@@ -335,79 +336,53 @@ public:
         return std::unexpected(error_);
     }
 
-    /**
-     * @brief Executes a factory within an isolated CPU core scope, returning the guard and object.
-     *
-     * @param target_cpu Target core index for pinning.
-     * @param worker_sync Callback for kernel worker pool alignment.
-     * @param factory Callable constructing the object returning std::expected<T, std::error_code>.
-     */
-    template <typename F>
-        requires IsolatedFactory<F>
-    [[nodiscard]] static auto make_isolated(
-        std::int32_t target_cpu, WorkerSyncCallback worker_sync, F&& factory) noexcept
-        -> std::expected<std::pair<CoreAffinityGuard, typename std::invoke_result_t<F>::value_type>, IsolationError> {
-        CoreAffinityGuard guard { worker_sync ? CoreAffinityGuard { target_cpu, std::move(worker_sync) }
-                                               : CoreAffinityGuard { target_cpu } };
-        return execute_guarded_factory(std::move(guard), std::forward<F>(factory));
-    }
-
-    /** @overload Targets the calling thread's current core, no worker sync. */
-    template <typename F>
-        requires IsolatedFactory<F>
-    [[nodiscard]] static auto make_isolated(F&& factory) noexcept
-        -> std::expected<std::pair<CoreAffinityGuard, typename std::invoke_result_t<F>::value_type>, IsolationError> {
-        return make_isolated(config::kAffinityAutoCore, nullptr, std::forward<F>(factory));
-    }
-
-    /**
-     * @brief Direct type-deducted factory isolating specified target_cpu before constructing T in-place.
-     * Automatically registers worker affinity if T supports set_worker_affinity or register_worker_affinity.
-     */
-    template <typename T, typename... Args>
-        requires FactoryCreatable<T, Args...>
-    [[nodiscard]] static auto make_isolated(TargetCpu target_cpu, Args&&... args) noexcept
-        -> std::expected<std::pair<CoreAffinityGuard, T>, IsolationError> {
-        return make_isolated(target_cpu.core, nullptr, [&args...]() {
-            return T::create(std::forward<Args>(args)...);
-        }).and_then([](std::pair<CoreAffinityGuard, T>&& pair) {
-            return pair.first.fix_pin()
-                .and_then([&pair]() { return sync_worker_object(pair.second, pair.first); })
-                .transform([pair = std::move(pair)]() mutable { return std::move(pair); });
-        });
-    }
-
-    /**
-     * @brief Direct type-deducted factory isolating calling thread's current core before constructing T.
-     */
-    template <typename T, typename... Args>
-        requires FactoryCreatable<T, Args...>
-    [[nodiscard]] static auto make_isolated(Args&&... args) noexcept
-        -> std::expected<std::pair<CoreAffinityGuard, T>, IsolationError> {
-        return make_isolated<T>(TargetCpu { config::kAffinityAutoCore }, std::forward<Args>(args)...);
-    }
-
-    /**
-     * @brief Explicitly-named factory method pinning to a specific CPU core.
-     */
-    template <typename T, typename... Args>
-        requires FactoryCreatable<T, Args...>
-    [[nodiscard]] static auto make_isolated_at(std::int32_t target_cpu, Args&&... args) noexcept
-        -> std::expected<std::pair<CoreAffinityGuard, T>, IsolationError> {
-        return make_isolated<T>(TargetCpu { target_cpu }, std::forward<Args>(args)...);
-    }
+    [[nodiscard]] IsolationState state() const noexcept { return state_; }
+    [[nodiscard]] bool is_isolated() const noexcept { return state_ != IsolationState::NotIsolated; }
+    [[nodiscard]] std::int32_t pinned_cpu() const noexcept { return target_cpu_; }
+    [[nodiscard]] std::uint32_t num_cpus() const noexcept { return num_cpus_; }
+    [[nodiscard]] const IsolationError& error() const noexcept { return error_; }
+    [[nodiscard]] explicit operator bool() const noexcept { return is_isolated(); }
 
 private:
+    template <typename T, typename... Args>
+        requires FactoryCreatable<T, Args...>
+    [[nodiscard]] static auto construct(Args&&... args) noexcept {
+        if constexpr (HasStaticCreate<T, Args...>) {
+            return T::create(std::forward<Args>(args)...);
+        } else {
+            return T(std::forward<Args>(args)...);
+        }
+    }
+
+    [[nodiscard]] bool is_on_core() const noexcept {
+        if (!is_pinned_ || target_cpu_ < 0) { return false; }
+        const auto current { posix::expect_result<posix::error_style::posix>(::sched_getcpu()) };
+        return current && *current == target_cpu_;
+    }
+
+    template <ValidFactoryResult Res>
+    [[nodiscard]] static auto to_expected(Res&& res) noexcept
+        -> std::expected<typename FactoryResultTraits<std::remove_cvref_t<Res>>::value_type, IsolationError> {
+        using Traits = FactoryResultTraits<std::remove_cvref_t<Res>>;
+        if constexpr (Traits::is_expected) {
+            if (!res) { return std::unexpected(map_error(res.error())); }
+            return std::move(*res);
+        } else {
+            return std::forward<Res>(res);
+        }
+    }
+
     template <IsolatedFactory Fn>
     [[nodiscard]] static auto execute_guarded_factory(CoreAffinityGuard guard, Fn&& factory_fn) noexcept
-        -> std::expected<std::pair<CoreAffinityGuard, typename std::invoke_result_t<Fn>::value_type>, IsolationError> {
-        using ResultT = typename std::invoke_result_t<Fn>::value_type;
+        -> std::expected<
+            std::pair<CoreAffinityGuard, typename FactoryResultTraits<std::invoke_result_t<Fn>>::value_type>,
+            IsolationError> {
         if (!guard) { return std::unexpected(guard.error()); }
 
         try {
-            auto obj_res { std::forward<Fn>(factory_fn)() };
-            if (!obj_res) { return std::unexpected(map_error(obj_res.error())); }
-            return std::pair<CoreAffinityGuard, ResultT> { std::move(guard), std::move(*obj_res) };
+            return to_expected(std::forward<Fn>(factory_fn)())
+                .transform([guard = std::move(guard)](
+                               auto&& obj) mutable { return std::pair { std::move(guard), std::move(obj) }; });
         } catch (const std::bad_alloc&) {
             return std::unexpected(IsolationError {
                 .ec      = posix::make_error(ENOMEM),
@@ -426,91 +401,85 @@ private:
         }
     }
 
-    template <typename ErrT> [[nodiscard]] static constexpr std::error_code extract_ec(const ErrT& err) noexcept {
-        if constexpr (std::convertible_to<ErrT, std::error_code>) {
+    template <AnyErrorSource ErrT> [[nodiscard]] static constexpr std::error_code extract_ec(const ErrT& err) noexcept {
+        using CleanErrT = std::remove_cvref_t<ErrT>;
+        if constexpr (std::convertible_to<CleanErrT, std::error_code>) {
             return err;
         } else if constexpr (requires { err.ec; }) {
-            return err.ec;
+            return extract_ec(err.ec);
+        } else if constexpr (is_variant_v<CleanErrT>) {
+            return std::visit([](const auto& v) noexcept { return extract_ec(v); }, err);
+        } else if constexpr (std::is_enum_v<CleanErrT>) {
+            return posix::make_error(std::to_underlying(err));
+        } else if constexpr (std::is_integral_v<CleanErrT>) {
+            return posix::make_error(err);
         } else {
             return posix::make_error(EIO);
         }
     }
 
     template <HasSetWorkerAffinity T>
-    [[nodiscard]] static std::expected<void, IsolationError> sync_object(
-        T& obj, const cpu_set_t* mask, std::size_t size, std::uint32_t cpus, std::int32_t target) noexcept {
-        return obj.set_worker_affinity(mask, size, cpus, target)
+    [[nodiscard]] static auto invoke_affinity_api(T& obj, const CpuSet& mask, const CoreAffinityGuard& guard) noexcept {
+        return obj.set_worker_affinity(mask.get(), mask.size_bytes(), guard.num_cpus(), guard.pinned_cpu())
             .transform([](auto&&...) noexcept {})
             .transform_error([](const auto& err) noexcept {
-                return IsolationError {
-                    .ec      = extract_ec(err),
-                    .context = "set_worker_affinity failed",
-                };
+                return IsolationError { .ec = extract_ec(err), .context = "set_worker_affinity failed" };
             });
     }
 
     template <HasRegisterWorkerAffinity T>
         requires(!HasSetWorkerAffinity<T>)
-    [[nodiscard]] static std::expected<void, IsolationError> sync_object(
-        T& obj, const cpu_set_t* mask, std::size_t size, std::uint32_t, std::int32_t) noexcept {
-        return obj.register_worker_affinity(mask, size)
+    [[nodiscard]] static auto invoke_affinity_api(T& obj, const CpuSet& mask, const CoreAffinityGuard&) noexcept {
+        return obj.register_worker_affinity(mask.get(), mask.size_bytes())
             .transform([](auto&&...) noexcept {})
             .transform_error([](const auto& err) noexcept {
-                return IsolationError {
-                    .ec      = extract_ec(err),
-                    .context = "register_worker_affinity failed",
-                };
+                return IsolationError { .ec = extract_ec(err), .context = "register_worker_affinity failed" };
             });
     }
 
     template <WorkerSyncObject T>
+    [[nodiscard]] static auto apply_worker_affinity(T& obj, const CoreAffinityGuard& guard) noexcept {
+        return CpuSet::allocate(guard.num_cpus())
+            .transform_error(
+                [](const auto& ec) noexcept { return IsolationError { .ec = ec, .context = "CPU_ALLOC" }; })
+            .and_then([&obj, &guard](CpuSet&& mask) noexcept {
+                mask.set(toUInt(guard.pinned_cpu()));
+                return invoke_affinity_api(obj, mask, guard);
+            });
+    }
+
+    template <typename T>
+        requires std::is_object_v<T>
     [[nodiscard]] static std::expected<void, IsolationError> sync_worker_object(
         T& obj, const CoreAffinityGuard& guard) noexcept {
-        auto mask_res { CpuSet::allocate(guard.num_cpus()) };
-        if (!mask_res) { return std::unexpected(IsolationError { .ec = mask_res.error(), .context = "CPU_ALLOC" }); }
-        auto mask { std::move(*mask_res) };
-        mask.set(toUInt(guard.pinned_cpu()));
-        return sync_object(obj, mask.get(), mask.size_bytes(), guard.num_cpus(), guard.pinned_cpu());
+        if constexpr (WorkerSyncObject<T>) {
+            return apply_worker_affinity(obj, guard);
+        } else {
+            return {};
+        }
     }
 
-    template <NonWorkerSyncObject T>
-    [[nodiscard]] static std::expected<void, IsolationError> sync_worker_object(T&, const CoreAffinityGuard&) noexcept {
-        return {};
-    }
-
-    template <typename ErrT> [[nodiscard]] static constexpr IsolationError map_error(const ErrT& err) noexcept {
+    template <AnyErrorSource ErrT> [[nodiscard]] static constexpr IsolationError map_error(const ErrT& err) noexcept {
         if constexpr (std::convertible_to<ErrT, IsolationError>) {
             return err;
-        } else if constexpr (std::convertible_to<ErrT, std::error_code>) {
-            return IsolationError {
-                .ec      = err,
-                .context = "CoreAffinityGuard::make_isolated factory",
-            };
         } else {
             return IsolationError {
-                .ec      = posix::make_error(err),
+                .ec      = extract_ec(err),
                 .context = "CoreAffinityGuard::make_isolated factory",
             };
         }
     }
 
-    /**
-     * @brief Queries the number of configured online CPU cores from the OS.
-     */
     [[nodiscard]] static std::expected<std::uint32_t, IsolationError> query_system_cpus() noexcept {
         const auto cpus_res { posix::expect_result<posix::error_style::posix>(::sysconf(_SC_NPROCESSORS_ONLN)) };
         if (!cpus_res || *cpus_res < 1) {
-            return std::unexpected(IsolationError {
-                .ec      = cpus_res ? posix::make_error(ENOTSUP) : cpus_res.error(),
-                .context = "sysconf",
-            });
+            std::error_code ec { posix::make_error(ENOTSUP) };
+            if (!cpus_res) { ec = cpus_res.error(); }
+            return std::unexpected(IsolationError { .ec = ec, .context = "sysconf" });
         }
         return toUInt(*cpus_res);
     }
 
-    /**
-     * @brief Allocates and captures the calling thread's current affinity mask.
-     */
     [[nodiscard]] static std::expected<CpuSet, IsolationError> capture_current_mask(std::uint32_t max_cpus) noexcept {
         auto orig_res { CpuSet::allocate(max_cpus) };
         if (!orig_res) { return std::unexpected(IsolationError { .ec = orig_res.error(), .context = "CPU_ALLOC" }); }
@@ -523,18 +492,13 @@ private:
         return mask;
     }
 
-    /**
-     * @brief Allocates working mask and pins the calling thread to target CPU core.
-     */
     [[nodiscard]] static std::expected<CpuSet, IsolationError> apply_pinning(
         std::int32_t target_cpu, std::uint32_t num_cpus) noexcept {
-        const std::uint32_t max_cpus { std::max(num_cpus, toUInt(target_cpu) + 1u) };
-        auto working_res { CpuSet::allocate(max_cpus) };
+        auto working_res { CpuSet::allocate(num_cpus) };
         if (!working_res) {
             return std::unexpected(IsolationError { .ec = working_res.error(), .context = "CPU_ALLOC" });
         }
         auto working_mask { std::move(*working_res) };
-        working_mask.zero();
         working_mask.set(toUInt(target_cpu));
 
         const auto pin_res { posix::expect_success<posix::error_style::pthreads>(
@@ -545,13 +509,6 @@ private:
         return working_mask;
     }
 
-    /**
-     * @brief Smartly detects the optimal CPU core for isolation dynamically from OS topology.
-     *
-     * If requested_cpu is non-negative, validates it against online CPUs.
-     * If requested_cpu < 0 (auto mode), queries the executing thread's active core via sched_getcpu,
-     * falling back to the first available core in the process affinity mask.
-     */
     [[nodiscard]] static std::expected<std::int32_t, IsolationError> detect_optimal_cpu(
         std::int32_t requested_cpu, std::uint32_t num_cpus, const CpuSet& orig_mask) noexcept {
         if (requested_cpu >= 0 && toUInt(requested_cpu) < num_cpus) { return requested_cpu; }
@@ -576,9 +533,6 @@ private:
         });
     }
 
-    /**
-     * @brief Re-verifies active core and re-applies pinning in-place if thread migrated during setup window.
-     */
     [[nodiscard]] static std::expected<void, IsolationError> reverify_and_repin(
         std::int32_t requested_cpu, std::uint32_t num_cpus, std::int32_t& target_cpu, CpuSet& working_mask) noexcept {
         if (requested_cpu >= 0) { return {}; }
@@ -593,9 +547,6 @@ private:
         return {};
     }
 
-    /**
-     * @brief Internal isolation pipeline orchestrating affinity capturing, pinning, and synchronization.
-     */
     void isolate_impl(std::int32_t requested_cpu, WorkerSyncCallback worker_sync) noexcept {
         const auto num_cpus_res { query_system_cpus() };
         if (!num_cpus_res) {
@@ -603,9 +554,7 @@ private:
             return;
         }
         const std::uint32_t num_cpus { *num_cpus_res };
-
-        const std::uint32_t query_cpus { std::max(num_cpus, requested_cpu >= 0 ? toUInt(requested_cpu) + 1u : 1u) };
-        auto orig_res { capture_current_mask(query_cpus) };
+        auto orig_res { capture_current_mask(num_cpus) };
         if (!orig_res) {
             error_ = orig_res.error();
             return;
@@ -639,7 +588,7 @@ private:
         }
 
         if (!worker_sync) {
-            state_ = IsolationState::PinnedOnly;
+            state_ = IsolationState::Isolated;
             return;
         }
 
@@ -651,7 +600,7 @@ private:
             return;
         }
 
-        state_ = IsolationState::PinnedAndSynced;
+        state_ = IsolationState::Isolated;
     }
 
     CpuSet original_mask_ {};
