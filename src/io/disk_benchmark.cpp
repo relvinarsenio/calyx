@@ -109,9 +109,9 @@ void fill_pattern_fast(std::span<std::byte> buffer) noexcept {
 [[nodiscard]] std::expected<std::size_t, BenchmarkError> calculate_final_mask(
     std::uint64_t write_block_size, std::uint64_t read_block_size) noexcept {
     if (write_block_size == 0 || read_block_size == 0) { return 0; }
-    const std::size_t gcd_val     = std::gcd(write_block_size, read_block_size);
-    const std::size_t lcm_partial = toSize(write_block_size / gcd_val);
-    const auto lcm_val            = safe_arith<overflow_op::mul>(lcm_partial, toSize(read_block_size));
+    const std::uint64_t gcd_val     = std::gcd(write_block_size, read_block_size);
+    const std::uint64_t lcm_partial = write_block_size / gcd_val;
+    const auto lcm_val              = safe_mul(lcm_partial, read_block_size);
     if (!lcm_val) {
         return std::unexpected(BenchmarkError {
             BenchmarkError::Phase::Configuration, uring::UringError { uring::ConfigError::AlignmentOverflow } });
@@ -187,8 +187,7 @@ struct IoParams {
  */
 [[nodiscard]] std::expected<Buffers, BenchmarkError> allocate_io_buffers(std::uint64_t write_mem_stride,
     std::size_t alignment, const DiskBenchmark::BenchmarkConfig& config, std::uint64_t read_block_size) {
-    const auto write_buf_total
-        = safe_arith<overflow_op::mul>(toSize(write_mem_stride), toSize(config.write_queue_depth));
+    const auto write_buf_total = safe_mul(write_mem_stride, config.write_queue_depth);
     if (!write_buf_total) {
         return std::unexpected(BenchmarkError { BenchmarkError::Phase::BufferAllocation,
             uring::UringError { uring::AllocationError::WriteBufSizeOverflow } });

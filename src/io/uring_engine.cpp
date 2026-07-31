@@ -688,7 +688,7 @@ UringEngine::UringEngine(UringRing ring)
     , event_loop_(UringSharedState { ring_, file_registrar_, timeout_controller_, path_state_ },
           toUShort(ring_.get_ring()->sq.ring_entries)) {
     const auto queue_depth = ring_.get_ring()->sq.ring_entries;
-    registered_iovecs_.resize(safe_add(toSize(queue_depth), 1uz).value_or(0uz));
+    registered_iovecs_.resize(safe_add(queue_depth, 1uz).value_or(0uz));
 
     const auto probed = prober_.probe_io_paths(ring_.get_ring());
     path_state_.write = probed.write_path;
@@ -810,7 +810,7 @@ std::size_t BufferRegistrar::max_registerable_iovecs() noexcept {
 
 bool BufferRegistrar::has_valid_buffer_registration_inputs(std::span<std::byte> write_buf) const noexcept {
     const auto queue_depth = ring_->sq.ring_entries;
-    return !write_buf.empty() && iovecs_.size() == safe_add(toSize(queue_depth), 1uz).value_or(0uz);
+    return !write_buf.empty() && iovecs_.size() == safe_add(queue_depth, 1uz).value_or(0uz);
 }
 
 std::expected<std::size_t, std::error_code> BufferRegistrar::compute_memlock_read_limit(

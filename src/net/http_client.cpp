@@ -132,7 +132,7 @@ std::size_t write_string_callback(void* ptr, std::size_t size, std::size_t nmemb
 std::size_t write_file_callback(void* ptr, std::size_t size, std::size_t nmemb, void* userdata) noexcept {
     if (!ptr || !userdata) [[unlikely]] { return 0; }
 
-    auto total_opt = safe_mul(toSize(size), toSize(nmemb));
+    auto total_opt = safe_mul(size, nmemb);
     if (!total_opt) { return 0; }
 
     auto& ctx = user_data_as<FileWriteContext>(userdata);

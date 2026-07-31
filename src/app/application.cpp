@@ -404,7 +404,7 @@ std::expected<void, std::string> run_disk_benchmarks() {
     std::vector<DiskIORunResult> disk_runs;
     disk_runs.reserve(config::kDiskIoRuns);
 
-    const std::uint64_t total_bytes = safe_mul(toULong(config::kDiskTestSizeMb), 1024ULL * 1024ULL).value_or(0ULL);
+    const std::uint64_t total_bytes = safe_mul(config::kDiskTestSizeMb, 1024ULL * 1024ULL).value_or(0ULL);
     const auto bs_str               = format_bytes(config::kIoWriteBlockSize)
         | std::views::filter([](char c) { return c != ' ' && c != 'B'; }) | std::ranges::to<std::string>();
 

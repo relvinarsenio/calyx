@@ -83,23 +83,28 @@ template <> struct builtin_overflow<overflow_op::sub> {
  * @tparam T   Any standard integer type (signed or unsigned, per @ref cast::standard_integer_type).
  * @return The result, or @c std::nullopt on overflow.
  */
-template <overflow_op Op, cast::standard_integer_type T>
-[[nodiscard]] constexpr auto safe_arith(T lhs, T rhs) noexcept -> std::optional<T> {
-    T result {};
-    return overflow_impl::builtin_overflow<Op>::apply(lhs, rhs, &result) ? std::nullopt : std::optional<T> { result };
+template <overflow_op Op, cast::standard_integer_type T1, cast::standard_integer_type T2>
+    requires(std::is_signed_v<T1> == std::is_signed_v<T2>)
+[[nodiscard]] constexpr auto safe_arith(T1 lhs, T2 rhs) noexcept -> std::optional<std::common_type_t<T1, T2>> {
+    using CommonType = std::common_type_t<T1, T2>;
+    CommonType result {};
+    const bool has_overflow = overflow_impl::builtin_overflow<Op>::apply(
+        cast::saturate_cast<CommonType>(lhs), cast::saturate_cast<CommonType>(rhs), &result);
+    if (has_overflow) { return std::nullopt; }
+    return result;
 }
 
-/** @brief Safely multiply two @c uint64_t values with overflow checking. */
-inline constexpr auto safe_mul
-    = [](std::uint64_t lhs, std::uint64_t rhs) noexcept { return safe_arith<overflow_op::mul>(lhs, rhs); };
+/** @brief Safely multiply two integer values with overflow checking. */
+inline constexpr auto safe_mul = []<cast::standard_integer_type T1, cast::standard_integer_type T2>(
+                                     T1 lhs, T2 rhs) noexcept { return safe_arith<overflow_op::mul>(lhs, rhs); };
 
-/** @brief Safely add two @c uint64_t values with overflow checking. */
-inline constexpr auto safe_add
-    = [](std::uint64_t lhs, std::uint64_t rhs) noexcept { return safe_arith<overflow_op::add>(lhs, rhs); };
+/** @brief Safely add two integer values with overflow checking. */
+inline constexpr auto safe_add = []<cast::standard_integer_type T1, cast::standard_integer_type T2>(
+                                     T1 lhs, T2 rhs) noexcept { return safe_arith<overflow_op::add>(lhs, rhs); };
 
-/** @brief Safely subtract two @c uint64_t values with overflow checking. */
-inline constexpr auto safe_sub
-    = [](std::uint64_t lhs, std::uint64_t rhs) noexcept { return safe_arith<overflow_op::sub>(lhs, rhs); };
+/** @brief Safely subtract two integer values with overflow checking. */
+inline constexpr auto safe_sub = []<cast::standard_integer_type T1, cast::standard_integer_type T2>(
+                                     T1 lhs, T2 rhs) noexcept { return safe_arith<overflow_op::sub>(lhs, rhs); };
 
 /**
  * @brief Checks if a value equals any of the specified template constants.
@@ -320,16 +325,16 @@ struct format_state {
 inline constexpr auto adjust_overflow
     = [](format_state state, double base, std::size_t max_suffixes) noexcept -> format_state {
     const double rounded = std::round(state.scaled_value * 100.0) / 100.0;
+    const auto candidate = safe_add(state.suffix_index, 1uz);
+    const bool overflow  = (rounded >= base) && (candidate.value_or(0uz) < max_suffixes);
 
-    const bool overflow = (rounded >= base) && (toSize(safe_add(state.suffix_index, 1uz).value_or(0uz)) < max_suffixes);
-    const std::size_t next_suffix_index
-        = toSize(safe_add(state.suffix_index, toSize(+overflow)).value_or(state.suffix_index));
+    const std::array kNextIndices = { state.suffix_index, candidate.value_or(state.suffix_index) };
+    const std::array kScaleValues = { rounded, rounded / base };
 
-    const std::array kScaleValues  = { rounded, rounded / base };
-    const double next_scaled_value = kScaleValues[toSize(+overflow)];
+    const double next_scaled_value = kScaleValues[overflow];
     const double next_rounded      = std::round(next_scaled_value * 100.0) / 100.0;
 
-    return { next_rounded, next_suffix_index };
+    return { next_rounded, kNextIndices[overflow] };
 };
 
 } // namespace format_impl
@@ -343,9 +348,9 @@ inline constexpr auto format_bytes = [](std::uint64_t bytes) -> std::string {
     static constexpr std::array kSuffixes = { "B", "KB", "MB", "GB", "TB" };
 
     const std::size_t bits         = toSize(std::bit_width(bytes));
-    const std::size_t shift        = toSize(safe_sub(bits, toSize(+(bits > 0))).value_or(0uz));
+    const std::size_t shift        = safe_sub(bits, 1uz).value_or(0uz);
     const std::size_t suffix_index = std::min<std::size_t>(shift / 10uz, kSuffixes.size() - 1uz);
-    const double scaled_value = toDouble(bytes) / toDouble(1ULL << toSize(safe_mul(suffix_index, 10uz).value_or(0uz)));
+    const double scaled_value      = toDouble(bytes) / toDouble(1ULL << safe_mul(suffix_index, 10uz).value_or(0uz));
 
     const auto state = format_impl::adjust_overflow(
         format_impl::format_state { scaled_value, suffix_index }, 1024.0, kSuffixes.size());
@@ -366,10 +371,10 @@ inline constexpr auto format_count = [](std::uint64_t count) -> std::string {
         return powers;
     }();
 
-    const auto upper_bound_it = std::ranges::upper_bound(kPowersOfThousand, count);
-    const std::size_t suffix_index
-        = toSize(safe_sub(toSize(std::ranges::distance(kPowersOfThousand.begin(), upper_bound_it)), 1uz).value_or(0uz));
-    const double scaled_value = toDouble(count) / toDouble(kPowersOfThousand[suffix_index]);
+    const auto upper_bound_it      = std::ranges::upper_bound(kPowersOfThousand, count);
+    const std::size_t dist         = toSize(std::ranges::distance(kPowersOfThousand.begin(), upper_bound_it));
+    const std::size_t suffix_index = safe_sub(dist, 1uz).value_or(0uz);
+    const double scaled_value      = toDouble(count) / toDouble(kPowersOfThousand[suffix_index]);
 
     const auto state = format_impl::adjust_overflow(
         format_impl::format_state { scaled_value, suffix_index }, 1000.0, kSuffixes.size());

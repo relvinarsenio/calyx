@@ -54,7 +54,7 @@ namespace {
 [[nodiscard]] std::string build_progress_bar(std::size_t percent) {
     static thread_local std::string bar_buffer {};
 
-    const std::size_t required_capacity = safe_mul(toSize(config::kProgressBarWidth), 3uz).value_or(0uz);
+    const std::size_t required_capacity = safe_mul(config::kProgressBarWidth, 3uz).value_or(0uz);
     if (bar_buffer.capacity() < required_capacity) { bar_buffer.reserve(required_capacity); }
     bar_buffer.clear();
 
