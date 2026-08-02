@@ -38,73 +38,42 @@
 #include <type_traits>
 #include <utility>
 
-/** @brief Compile-time tag for selecting the arithmetic operation in @ref safe_arith. */
-enum class overflow_op {
-    add,
-    mul,
-    sub
-};
-
-namespace overflow_impl {
-
-/** @brief Primary template — intentionally undefined; forces an explicit specialization per operation. */
-template <overflow_op Op> struct builtin_overflow;
-
-/** @brief Dispatches to @c __builtin_add_overflow. */
-template <> struct builtin_overflow<overflow_op::add> {
-    template <cast::standard_integer_type T> [[nodiscard]] static constexpr bool apply(T lhs, T rhs, T* out) noexcept {
-        return __builtin_add_overflow(lhs, rhs, out);
-    }
-};
-
-/** @brief Dispatches to @c __builtin_mul_overflow. */
-template <> struct builtin_overflow<overflow_op::mul> {
-    template <cast::standard_integer_type T> [[nodiscard]] static constexpr bool apply(T lhs, T rhs, T* out) noexcept {
-        return __builtin_mul_overflow(lhs, rhs, out);
-    }
-};
-
-/** @brief Dispatches to @c __builtin_sub_overflow. */
-template <> struct builtin_overflow<overflow_op::sub> {
-    template <cast::standard_integer_type T> [[nodiscard]] static constexpr bool apply(T lhs, T rhs, T* out) noexcept {
-        return __builtin_sub_overflow(lhs, rhs, out);
-    }
-};
-
-} // namespace overflow_impl
-
 /**
- * @brief Overflow-checked arithmetic on unsigned integers.
+ * @brief Overflow-checked arithmetic core engine using Higher-Order Functions.
  *
- * The operation is selected at compile time via @ref overflow_impl::builtin_overflow specialization.
+ * The operation is injected at compile time via a stateless lambda expression.
  * No runtime branching occurs for the operation itself — only the mandatory overflow sentinel check remains.
- *
- * @tparam Op  The arithmetic operation to perform (@ref overflow_op).
- * @tparam T   Any standard integer type (signed or unsigned, per @ref cast::standard_integer_type).
- * @return The result, or @c std::nullopt on overflow.
  */
-template <overflow_op Op, cast::standard_integer_type T1, cast::standard_integer_type T2>
+template <cast::standard_integer_type T1, cast::standard_integer_type T2, typename Func>
     requires(std::is_signed_v<T1> == std::is_signed_v<T2>)
-[[nodiscard]] constexpr auto safe_arith(T1 lhs, T2 rhs) noexcept -> std::optional<std::common_type_t<T1, T2>> {
-    using CommonType = std::common_type_t<T1, T2>;
-    CommonType result {};
-    const bool has_overflow = overflow_impl::builtin_overflow<Op>::apply(
-        cast::saturate_cast<CommonType>(lhs), cast::saturate_cast<CommonType>(rhs), &result);
-    if (has_overflow) { return std::nullopt; }
-    return result;
+    && std::invocable<Func, std::common_type_t<T1, T2>, std::common_type_t<T1, T2>, std::common_type_t<T1, T2>&>
+[[nodiscard]] constexpr auto safe_arith(T1 lhs, T2 rhs, Func&& op) noexcept
+    -> std::optional<std::common_type_t<T1, T2>> {
+    using Common = std::common_type_t<T1, T2>;
+    Common result {};
+
+    const bool is_overflow
+        = std::forward<Func>(op)(cast::saturate_cast<Common>(lhs), cast::saturate_cast<Common>(rhs), result);
+    return is_overflow ? std::nullopt : std::make_optional(result);
 }
 
 /** @brief Safely multiply two integer values with overflow checking. */
-inline constexpr auto safe_mul = []<cast::standard_integer_type T1, cast::standard_integer_type T2>(
-                                     T1 lhs, T2 rhs) noexcept { return safe_arith<overflow_op::mul>(lhs, rhs); };
+template <cast::standard_integer_type T1, cast::standard_integer_type T2>
+[[nodiscard]] constexpr auto safe_mul(T1 lhs, T2 rhs) noexcept {
+    return safe_arith(lhs, rhs, [](auto a, auto b, auto& out) { return __builtin_mul_overflow(a, b, &out); });
+}
 
 /** @brief Safely add two integer values with overflow checking. */
-inline constexpr auto safe_add = []<cast::standard_integer_type T1, cast::standard_integer_type T2>(
-                                     T1 lhs, T2 rhs) noexcept { return safe_arith<overflow_op::add>(lhs, rhs); };
+template <cast::standard_integer_type T1, cast::standard_integer_type T2>
+[[nodiscard]] constexpr auto safe_add(T1 lhs, T2 rhs) noexcept {
+    return safe_arith(lhs, rhs, [](auto a, auto b, auto& out) { return __builtin_add_overflow(a, b, &out); });
+}
 
 /** @brief Safely subtract two integer values with overflow checking. */
-inline constexpr auto safe_sub = []<cast::standard_integer_type T1, cast::standard_integer_type T2>(
-                                     T1 lhs, T2 rhs) noexcept { return safe_arith<overflow_op::sub>(lhs, rhs); };
+template <cast::standard_integer_type T1, cast::standard_integer_type T2>
+[[nodiscard]] constexpr auto safe_sub(T1 lhs, T2 rhs) noexcept {
+    return safe_arith(lhs, rhs, [](auto a, auto b, auto& out) { return __builtin_sub_overflow(a, b, &out); });
+}
 
 /**
  * @brief Checks if a value equals any of the specified template constants.
@@ -461,18 +430,15 @@ inline constexpr auto read_file = [](const std::filesystem::path& path) -> std::
     return posix::file::read_all(path);
 };
 
-inline std::expected<std::size_t, posix::file_descriptor::write_failure> write_all(
-    posix::file_descriptor::native_handle_type fd, std::span<const std::byte> data) {
-    return posix::file_descriptor::write_exact_raw(fd, data);
-}
-
-inline std::expected<std::size_t, posix::file_descriptor::write_failure> write_all(
-    posix::file_descriptor::native_handle_type fd, std::string_view data) {
-    return write_all(fd, std::as_bytes(std::span { data.data(), data.size() }));
-}
-
 template <typename T>
-concept writeable_data = std::convertible_to<T, std::span<const std::byte>> || std::convertible_to<T, std::string_view>;
+concept writeable_data = std::ranges::contiguous_range<T> && sizeof(std::ranges::range_value_t<T>) == 1;
+
+template <writeable_data T>
+inline std::expected<std::size_t, posix::file_descriptor::write_failure> write_all(
+    posix::file_descriptor::native_handle_type fd, T&& data) {
+    return posix::file_descriptor::write_exact_raw(
+        fd, std::as_bytes(std::span { std::ranges::data(data), std::ranges::size(data) }));
+}
 
 template <writeable_data T>
 inline std::expected<std::size_t, posix::file_descriptor::write_failure> write_all(
@@ -494,9 +460,7 @@ inline constexpr auto write_file
 template <typename T, std::invocable<std::string_view> Parser>
     requires std::convertible_to<std::invoke_result_t<Parser, std::string_view>, T>
 inline T parse_file_or(const std::filesystem::path& path, Parser&& parser, T fallback) {
-    const auto content = read_file(path);
-    if (!content) { return fallback; }
-    return std::forward<Parser>(parser)(*content);
+    return read_file(path).transform(std::forward<Parser>(parser)).value_or(std::move(fallback));
 }
 
 /**
@@ -542,6 +506,7 @@ inline auto tokenize_sv() {
 }
 
 template <std::ranges::input_range KeysRange>
+    requires std::convertible_to<std::ranges::range_reference_t<KeysRange>, std::string_view>
 inline std::optional<std::string_view> lookup_info_field(std::string_view content, const KeysRange& keys) {
     auto lines = std::views::split(content, '\n') | std::views::transform([](auto raw) {
         return std::string_view(raw);
