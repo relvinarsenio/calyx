@@ -308,6 +308,14 @@ public:
         }
         if (is_on_core()) [[likely]] { return {}; }
 
+        /** @brief Bypass dynamic allocation for repeated drift correction within CPU_SETSIZE range. */
+        if (toUInt(target_cpu_) < CPU_SETSIZE) {
+            cpu_set_t mask;
+            CPU_ZERO(&mask);
+            CPU_SET(target_cpu_, &mask);
+            return pin_thread(&mask, sizeof(mask));
+        }
+
         return apply_pinning(target_cpu_, num_cpus_).transform([](auto&&) noexcept {});
     }
 
@@ -501,18 +509,23 @@ private:
         return std::move(*mask_res);
     }
 
+    [[nodiscard]] static std::expected<void, IsolationError> pin_thread(
+        const cpu_set_t* mask, std::size_t mask_size) noexcept {
+        return posix::expect_success<posix::error_style::pthreads>(
+            ::pthread_setaffinity_np(::pthread_self(), mask_size, mask))
+            .transform_error([](const std::error_code& ec) noexcept {
+                return IsolationError { .ec = ec, .context = "pthread_setaffinity_np" };
+            });
+    }
+
     [[nodiscard]] static std::expected<CpuSet, IsolationError> apply_pinning(
         std::int32_t target_cpu, std::uint32_t num_cpus) noexcept {
         auto mask_res { CpuSet::allocate(num_cpus) };
         if (!mask_res) { return std::unexpected(IsolationError { .ec = mask_res.error(), .context = "CPU_ALLOC" }); }
         mask_res->set(toUInt(target_cpu));
-
-        const auto pin_res { posix::expect_success<posix::error_style::pthreads>(
-            ::pthread_setaffinity_np(::pthread_self(), mask_res->size_bytes(), mask_res->get())) };
-        if (!pin_res) {
-            return std::unexpected(IsolationError { .ec = pin_res.error(), .context = "pthread_setaffinity_np" });
-        }
-        return std::move(*mask_res);
+        return pin_thread(mask_res->get(), mask_res->size_bytes()).transform([&mask_res]() noexcept {
+            return std::move(*mask_res);
+        });
     }
 
     [[nodiscard]] static std::expected<std::int32_t, IsolationError> detect_optimal_cpu(
