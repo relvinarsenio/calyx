@@ -26,7 +26,6 @@
  * Implements standard contiguous container traits for STL compatibility.
  */
 namespace memory {
-namespace aligned_buffer_impl {
 
 /**
  * @brief Concepts for enforcing type safety in over-aligned memory operations.
@@ -43,59 +42,7 @@ concept trivial = std::is_trivial_v<T>;
 template <typename T>
 concept trivially_destructible = std::is_trivially_destructible_v<T>;
 
-/**
- * @brief Custom deleter for over-aligned pointers.
- *
- * Ensures memory allocated via over-aligned new is correctly deallocated.
- */
-template <unbounded_array T> struct AlignedDeleter;
-
-/**
- * @brief Specialization of AlignedDeleter for unbounded arrays (T[]), used by unique_ptr<T[]>.
- */
-template <trivially_destructible T> struct AlignedDeleter<T[]> {
-    std::size_t alignment {};
-    void operator()(T* ptr) const noexcept {
-        if (ptr != nullptr) [[likely]] { ::operator delete(static_cast<void*>(ptr), std::align_val_t { alignment }); }
-    }
-};
-
-/**
- * @brief Instantiates an over-aligned array with value-initialization semantics.
- *
- * Mirrors std::make_unique behavior but supports custom alignment and guarantees
- * zero-initialization of memory to prevent data leaks from uninitialized RAM.
- *
- * @tparam T Unbounded array type to allocate (e.g., std::byte[]).
- * @param size Number of elements to allocate.
- * @param alignment Required memory alignment boundary (must be a power of two).
- * @return unique_ptr managing the aligned memory, or nullptr on allocation failure.
- */
-template <unbounded_array T>
-    requires trivial<std::remove_extent_t<T>>
-[[nodiscard]] std::unique_ptr<T, AlignedDeleter<T>> make_unique_aligned_nothrow(
-    std::size_t size, std::size_t alignment) noexcept {
-
-    using ElementType     = std::remove_extent_t<T>;
-    using difference_type = std::ptrdiff_t;
-
-    static constexpr std::size_t max_size
-        = std::size_t { std::numeric_limits<difference_type>::max() } / sizeof(ElementType);
-
-    if (size > max_size) [[unlikely]] { return { nullptr, AlignedDeleter<T> { alignment } }; }
-
-    const std::size_t total_bytes = size * sizeof(ElementType);
-
-    if (void* const raw = ::operator new(total_bytes, std::align_val_t { alignment }, std::nothrow)) {
-        std::uninitialized_value_construct_n(static_cast<ElementType*>(raw), size);
-        return { static_cast<ElementType*>(raw), AlignedDeleter<T> { alignment } };
-    }
-    return { nullptr, AlignedDeleter<T> { alignment } };
-}
-
-} // namespace aligned_buffer_impl
-
-template <aligned_buffer_impl::trivial T> class BasicAlignedBuffer {
+template <trivial T> class BasicAlignedBuffer {
 public:
     using value_type             = T;
     using size_type              = std::size_t;
@@ -109,18 +56,12 @@ public:
     using reverse_iterator       = std::reverse_iterator<iterator>;
     using const_reverse_iterator = std::reverse_iterator<const_iterator>;
 
-private:
-    std::unique_ptr<value_type[], aligned_buffer_impl::AlignedDeleter<value_type[]>> ptr_;
-    size_type size_ = 0uz;
-
-    constexpr explicit BasicAlignedBuffer(
-        std::unique_ptr<value_type[], aligned_buffer_impl::AlignedDeleter<value_type[]>> ptr, size_type size) noexcept
-        : ptr_(std::move(ptr))
-        , size_(size) {}
-
-public:
     constexpr BasicAlignedBuffer() noexcept
-        : ptr_(nullptr, aligned_buffer_impl::AlignedDeleter<value_type[]> { alignof(value_type) }) {}
+        : ptr_(nullptr, AlignedDeleter { alignof(value_type) }) {}
+    ~BasicAlignedBuffer() noexcept = default;
+
+    BasicAlignedBuffer(const BasicAlignedBuffer&)            = delete;
+    BasicAlignedBuffer& operator=(const BasicAlignedBuffer&) = delete;
 
     constexpr BasicAlignedBuffer(BasicAlignedBuffer&& other) noexcept
         : ptr_(std::move(other.ptr_))
@@ -134,13 +75,29 @@ public:
         return *this;
     }
 
+    /**
+     * @brief Factory method to create an AlignedBuffer safely.
+     *
+     * Ensures the alignment is valid and delegates memory allocation to make_unique_aligned_nothrow.
+     * Returns an empty optional if allocation fails or if parameters are invalid.
+     *
+     * @param size Number of elements to allocate.
+     * @param alignment Required memory alignment (must be a power of two).
+     * @return std::optional<AlignedBuffer> containing the buffer, or std::nullopt on failure.
+     */
+    [[nodiscard]] static std::optional<BasicAlignedBuffer> create(size_type size, size_type alignment) noexcept {
+        if (size == 0) [[unlikely]] { return std::nullopt; }
+        if (!std::has_single_bit(alignment) || alignment < alignof(value_type)) [[unlikely]] { return std::nullopt; }
+
+        auto smart_ptr = make_unique_aligned_nothrow(size, alignment);
+        if (smart_ptr) { return BasicAlignedBuffer(std::move(smart_ptr), size); }
+        return std::nullopt;
+    }
+
     constexpr void swap(BasicAlignedBuffer& other) noexcept {
         std::swap(ptr_, other.ptr_);
         std::swap(size_, other.size_);
     }
-
-    BasicAlignedBuffer(const BasicAlignedBuffer&)            = delete;
-    BasicAlignedBuffer& operator=(const BasicAlignedBuffer&) = delete;
 
     template <typename Self>
     [[nodiscard]] constexpr auto data(this Self&& self) noexcept
@@ -196,25 +153,6 @@ public:
 
     [[nodiscard]] constexpr explicit operator bool(this auto&& self) noexcept { return self.ptr_ != nullptr; }
 
-    /**
-     * @brief Factory method to create an AlignedBuffer safely.
-     *
-     * Ensures the alignment is valid and delegates memory allocation to make_unique_aligned_nothrow.
-     * Returns an empty optional if allocation fails or if parameters are invalid.
-     *
-     * @param size Number of elements to allocate.
-     * @param alignment Required memory alignment (must be a power of two).
-     * @return std::optional<AlignedBuffer> containing the buffer, or std::nullopt on failure.
-     */
-    [[nodiscard]] static std::optional<BasicAlignedBuffer> create(size_type size, size_type alignment) noexcept {
-        if (size == 0) [[unlikely]] { return std::nullopt; }
-        if (!std::has_single_bit(alignment) || alignment < alignof(value_type)) [[unlikely]] { return std::nullopt; }
-
-        auto smart_ptr = aligned_buffer_impl::make_unique_aligned_nothrow<value_type[]>(size, alignment);
-        if (smart_ptr) { return BasicAlignedBuffer(std::move(smart_ptr), size); }
-        return std::nullopt;
-    }
-
     [[nodiscard]] constexpr auto span(this auto&& self) noexcept {
         using ElementType = std::conditional_t<std::is_const_v<std::remove_reference_t<decltype(self)>>,
             const value_type, value_type>;
@@ -226,10 +164,60 @@ public:
         return size_type { std::numeric_limits<difference_type>::max() } / sizeof(value_type);
     }
     [[nodiscard]] constexpr bool empty(this auto&& self) noexcept { return self.size_ == 0uz; }
+
+private:
+    /**
+     * @brief Custom deleter for over-aligned pointers.
+     *
+     * Ensures memory allocated via over-aligned new is correctly deallocated.
+     */
+    struct AlignedDeleter {
+        size_type alignment { alignof(value_type) };
+        void operator()(value_type* ptr) const noexcept {
+            if (ptr != nullptr) [[likely]] {
+                ::operator delete(static_cast<void*>(ptr), std::align_val_t { alignment });
+            }
+        }
+    };
+
+    /**
+     * @brief Instantiates an over-aligned array with value-initialization semantics.
+     *
+     * Mirrors std::make_unique behavior but supports custom alignment and guarantees
+     * zero-initialization of memory to prevent data leaks from uninitialized RAM.
+     *
+     * @param size Number of elements to allocate.
+     * @param alignment Required memory alignment boundary (must be a power of two).
+     * @return unique_ptr managing the aligned memory, or nullptr on allocation failure.
+     */
+    [[nodiscard]] static std::unique_ptr<value_type[], AlignedDeleter> make_unique_aligned_nothrow(
+        size_type size, size_type alignment) noexcept {
+
+        using ElementType = value_type;
+
+        static constexpr size_type max_size
+            = size_type { std::numeric_limits<difference_type>::max() } / sizeof(ElementType);
+
+        if (size > max_size) [[unlikely]] { return { nullptr, AlignedDeleter { alignment } }; }
+
+        const size_type total_bytes = size * sizeof(ElementType);
+
+        if (void* const raw = ::operator new(total_bytes, std::align_val_t { alignment }, std::nothrow)) {
+            std::uninitialized_value_construct_n(static_cast<ElementType*>(raw), size);
+            return { static_cast<ElementType*>(raw), AlignedDeleter { alignment } };
+        }
+        return { nullptr, AlignedDeleter { alignment } };
+    }
+
+    constexpr explicit BasicAlignedBuffer(std::unique_ptr<value_type[], AlignedDeleter> ptr, size_type size) noexcept
+        : ptr_(std::move(ptr))
+        , size_(size) {}
+
+    std::unique_ptr<value_type[], AlignedDeleter> ptr_;
+    size_type size_ = 0uz;
 };
 
-template <aligned_buffer_impl::trivial T>
-constexpr void swap(BasicAlignedBuffer<T>& lhs, BasicAlignedBuffer<T>& rhs) noexcept {
+template <trivial T> constexpr void swap(BasicAlignedBuffer<T>& lhs, BasicAlignedBuffer<T>& rhs) noexcept {
     lhs.swap(rhs);
 }
 
