@@ -52,10 +52,19 @@ std::expected<UringRing, std::error_code> UringRing::create(
         if (last_ret == 0) { break; }
     }
 
-    if (last_ret != 0) { return std::unexpected(posix::make_error(last_ret)); }
+    const auto init_res = posix::expect_success<posix::error_style::linux_internal>(last_ret);
+    if (!init_res) { return std::unexpected(init_res.error()); }
 
     const bool registered
         = posix::expect_success<posix::error_style::linux_internal>(io_uring_register_ring_fd(&ring)).has_value();
+
+    if constexpr (requires(io_uring_clock_register arg) {
+                      { io_uring_register_clock(&ring, &arg) } -> std::convertible_to<int>;
+                  }) {
+        io_uring_clock_register clock_arg {};
+        clock_arg.clockid = CLOCK_MONOTONIC;
+        io_uring_register_clock(&ring, &clock_arg);
+    }
 
     return UringRing { ring, registered };
 }
@@ -400,7 +409,9 @@ void SubmissionQueue::prepare_io_sqe(
     req.start_cycles = tsc::rdtsc_ordered();
     io_uring_sqe_set_data64(sqe, idx);
     /** @brief Mark as fixed file if we are using the registered table index. */
-    if (shared_state_.file_registrar.registered_handle()) { sqe->flags |= IOSQE_FIXED_FILE; }
+    if (shared_state_.file_registrar.registered_handle()) {
+        io_uring_sqe_set_flags(sqe, sqe->flags | IOSQE_FIXED_FILE);
+    }
 }
 
 CompletionQueue::CompletionQueue(UringSharedState shared_state, IoTracker& tracker, std::uint16_t queue_depth)
@@ -478,7 +489,7 @@ std::expected<void, UringError> CompletionQueue::handle_completion(const io_urin
 
     if (is_one_of<-EAGAIN, -EINTR>(cqe->res)) { return tracker_.queue_retry_slot(idx); }
 
-    if (cqe->res == -EINVAL
+    if (is_one_of<-EINVAL, -EOPNOTSUPP, -EBADE, -EBADF>(cqe->res)
         && (is_write ? shared_state_.path_state.write : shared_state_.path_state.read) != IoPath::Vector) {
         if constexpr (is_write) {
             shared_state_.path_state.write = IoPath::Vector;
@@ -796,14 +807,14 @@ std::size_t BufferRegistrar::max_registerable_iovecs() noexcept {
     std::size_t limit              = ct_limit;
     bool has_limit                 = (ct_limit != std::numeric_limits<std::size_t>::max());
 
-#ifdef _SC_IOV_MAX
-    const auto runtime_limit_res     = posix::expect_result<posix::error_style::posix>(::sysconf(_SC_IOV_MAX));
-    const std::int64_t runtime_limit = (runtime_limit_res && *runtime_limit_res > 0) ? *runtime_limit_res : -1L;
-    if (runtime_limit > 0) {
-        limit     = std::min(limit, toSize(runtime_limit));
-        has_limit = true;
+    if constexpr (requires { _SC_IOV_MAX; }) {
+        const auto runtime_limit_res     = posix::expect_result<posix::error_style::posix>(::sysconf(_SC_IOV_MAX));
+        const std::int64_t runtime_limit = (runtime_limit_res && *runtime_limit_res > 0) ? *runtime_limit_res : -1L;
+        if (runtime_limit > 0) {
+            limit     = std::min(limit, toSize(runtime_limit));
+            has_limit = true;
+        }
     }
-#endif
 
     return has_limit ? limit : 1024uz;
 }
