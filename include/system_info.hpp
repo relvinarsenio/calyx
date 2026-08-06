@@ -46,6 +46,11 @@ struct DiskInfo {
     std::uint64_t available = 0;
 };
 
+struct ParentDisk {
+    std::string device_path {};
+    std::uint64_t total_bytes = 0;
+};
+
 class SystemInfo {
 public:
     static std::string get_model_name() noexcept;
@@ -65,6 +70,7 @@ public:
     static std::vector<SwapEntry> get_swaps() noexcept;
 
     static MemInfo get_memory_status() noexcept;
-    static DiskInfo get_disk_usage(const std::string& mountpoint) noexcept;
-    static std::string get_device_name(const std::string& path) noexcept;
+    static DiskInfo get_disk_usage(std::string_view mountpoint) noexcept;
+    static std::string get_device_name(std::string_view path) noexcept;
+    static ParentDisk get_parent_disk(std::string_view path) noexcept;
 };

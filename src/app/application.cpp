@@ -345,15 +345,23 @@ void display_storage_memory() {
         return ec ? "." : current_path.string();
     }();
 
-    const auto dev_name = SystemInfo::get_device_name(current_dir);
-    const auto mem      = SystemInfo::get_memory_status();
-    const auto disk     = SystemInfo::get_disk_usage(current_dir);
+    const auto dev_name    = SystemInfo::get_device_name(current_dir);
+    const auto parent_disk = SystemInfo::get_parent_disk(current_dir);
+    const auto mem         = SystemInfo::get_memory_status();
+    const auto disk        = SystemInfo::get_disk_usage(current_dir);
 
     std::println("\n -> {}", color::colorize("Storage & Memory", color::kBold));
     std::println(" {:<{}} : {} ({})", "Test Path", config::kAppInfoLabelWidth,
         color::colorize(current_dir, color::kCyan), color::colorize(dev_name, color::kYellow));
 
     print_size_usage("Size Partition", disk.total, disk.used);
+
+    if (parent_disk.total_bytes > 0 && !parent_disk.device_path.empty()) {
+        std::println(" {:<{}} : {} ({})", "Disk Capacity", config::kAppInfoLabelWidth,
+            color::colorize(format_bytes(parent_disk.total_bytes), color::kYellow),
+            color::colorize(parent_disk.device_path, color::kCyan));
+    }
+
     print_size_usage("Total Mem", mem.total, mem.used);
 
     auto swaps = SystemInfo::get_swaps();

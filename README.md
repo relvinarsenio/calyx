@@ -136,6 +136,7 @@ Here is what the terminal output looks like when Calyx finishes running:
   -> Storage & Memory
   Test Path            : /home/user/Github/calyx (/dev/sda2 (xfs))
   Size Partition       : 63 GB (25 GB Used)
+  Disk Capacity        : 64 GB (/dev/sda)
   Total Mem            : 6.9 GB (4.5 GB Used)
   Total Swap           : 5.2 GB (3.1 GB Used)
     -> Partition        : 4 GB (2.8 GB Used) (/dev/sdb)
