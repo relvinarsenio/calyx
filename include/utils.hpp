@@ -44,12 +44,12 @@
  * The operation is injected at compile time via a stateless lambda expression.
  * No runtime branching occurs for the operation itself — only the mandatory overflow sentinel check remains.
  */
+template <typename T1, typename T2> using wider_type_t = std::conditional_t<(sizeof(T1) >= sizeof(T2)), T1, T2>;
 template <cast::standard_integer_type T1, cast::standard_integer_type T2, typename Func>
     requires(std::is_signed_v<T1> == std::is_signed_v<T2>)
-    && std::invocable<Func, std::common_type_t<T1, T2>, std::common_type_t<T1, T2>, std::common_type_t<T1, T2>&>
-[[nodiscard]] constexpr auto safe_arith(T1 lhs, T2 rhs, Func&& op) noexcept
-    -> std::optional<std::common_type_t<T1, T2>> {
-    using Common = std::common_type_t<T1, T2>;
+    && std::invocable<Func, wider_type_t<T1, T2>, wider_type_t<T1, T2>, wider_type_t<T1, T2>&>
+[[nodiscard]] constexpr auto safe_arith(T1 lhs, T2 rhs, Func&& op) noexcept -> std::optional<wider_type_t<T1, T2>> {
+    using Common = wider_type_t<T1, T2>;
     Common result {};
 
     const bool is_overflow
@@ -433,17 +433,25 @@ inline constexpr auto read_file = [](const std::filesystem::path& path) -> std::
 template <typename T>
 concept writeable_data = std::ranges::contiguous_range<T> && sizeof(std::ranges::range_value_t<T>) == 1;
 
-template <writeable_data T>
-inline std::expected<std::size_t, posix::file_descriptor::write_failure> write_all(
-    posix::file_descriptor::native_handle_type fd, T&& data) {
-    return posix::file_descriptor::write_exact_raw(
-        fd, std::as_bytes(std::span { std::ranges::data(data), std::ranges::size(data) }));
+[[nodiscard]] constexpr auto to_writeable_bytes(const auto& data) noexcept {
+    const auto bytes { std::as_bytes(std::span { std::ranges::data(data), std::ranges::size(data) }) };
+    using RawT = std::remove_cvref_t<decltype(data)>;
+    if constexpr (!std::is_bounded_array_v<RawT>) { return bytes; }
+    if (bytes.empty() || bytes.back() != std::byte { 0 }) { return bytes; }
+    const auto new_size { safe_sub(bytes.size(), 1uz).value_or(0uz) };
+    return bytes.first(new_size);
 }
 
 template <writeable_data T>
-inline std::expected<std::size_t, posix::file_descriptor::write_failure> write_all(
+inline std::expected<std::size_t, posix::file_descriptor::write_failure> write_bytes(
+    posix::file_descriptor::native_handle_type fd, T&& data) {
+    return posix::file_descriptor::write_exact_raw(fd, to_writeable_bytes(data));
+}
+
+template <writeable_data T>
+inline std::expected<std::size_t, posix::file_descriptor::write_failure> write_bytes(
     const posix::file_descriptor& fd, T&& data) {
-    return write_all(fd.native_handle(), std::forward<T>(data));
+    return write_bytes(fd.native_handle(), std::forward<T>(data));
 }
 
 inline constexpr auto write_file

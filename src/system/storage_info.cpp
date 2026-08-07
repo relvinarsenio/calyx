@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <climits>
 #include <cstdint>
 #include <filesystem>
 #include <format>
@@ -203,7 +204,7 @@ struct MountMatch {
     return {};
 }
 
-[[nodiscard]] std::optional<std::filesystem::path> resolve_slave_path(const std::filesystem::path& sys_path) noexcept {
+[[nodiscard]] std::optional<std::filesystem::path> get_next_slave_path(const std::filesystem::path& sys_path) noexcept {
     std::error_code ec {};
     const std::filesystem::path slaves_dir { sys_path / "slaves" };
     if (!std::filesystem::is_directory(slaves_dir, ec)) { return std::nullopt; }
@@ -221,6 +222,18 @@ struct MountMatch {
 
     std::error_code canonical_ec {};
     return std::filesystem::canonical(it->path(), canonical_ec);
+}
+
+[[nodiscard]] std::filesystem::path resolve_slave_path(std::filesystem::path sys_path) noexcept {
+    constexpr std::size_t kMaxSlaveTraversalDepth { SYMLOOP_MAX };
+    std::ranges::find_if(std::views::iota(0uz, kMaxSlaveTraversalDepth), [&sys_path](auto) noexcept {
+        auto next { get_next_slave_path(sys_path) };
+        const bool stop { !next || *next == sys_path };
+        if (!stop) { sys_path = std::move(*next); }
+        return stop;
+    });
+
+    return sys_path;
 }
 
 [[nodiscard]] std::optional<std::filesystem::path> resolve_sys_block_path(
@@ -253,7 +266,7 @@ struct MountMatch {
 
 [[nodiscard]] std::filesystem::path resolve_parent_disk_dir(std::filesystem::path sys_path) noexcept {
     std::error_code ec {};
-    const auto target_path { resolve_slave_path(sys_path).value_or(std::move(sys_path)) };
+    const auto target_path { resolve_slave_path(std::move(sys_path)) };
     const bool is_partition { std::filesystem::exists(target_path / "partition", ec) };
     return is_partition ? target_path.parent_path() : target_path;
 }
