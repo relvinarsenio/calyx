@@ -368,7 +368,7 @@ private:
 
     template <typename T, typename... Args>
         requires FactoryCreatable<T, Args...>
-    [[nodiscard]] static auto construct(Args&&... args) noexcept {
+    [[nodiscard]] static auto construct(Args&&... args) {
         if constexpr (HasStaticCreate<T, Args...>) {
             return T::create(std::forward<Args>(args)...);
         } else {

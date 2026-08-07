@@ -504,7 +504,7 @@ std::string DiskBenchmark::format_error(const BenchmarkError& err) {
 
     const std::uint16_t max_queue_depth = std::max(config.write_queue_depth, config.read_queue_depth);
 
-    /** @brief Enforce strict single-core isolation with explicit SQPOLL and io-wq worker pool pinning. */
+    /** @brief Enforce strict single-core thread affinity and io-wq worker pool isolation. */
     auto engine_res { affinity::CoreAffinityGuard::make_isolated<UringEngine>(max_queue_depth)
             .transform_error([](const affinity::IsolationError& err) noexcept {
                 return BenchmarkError { BenchmarkError::Phase::EngineSetup, err.ec };
