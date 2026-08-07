@@ -255,7 +255,7 @@ public:
      */
     template <typename T, typename... Args>
         requires FactoryCreatable<T, Args...>
-    [[nodiscard]] static auto make_isolated_at(std::int32_t target_cpu, Args&&... args) noexcept
+    [[nodiscard]] static auto make_isolated_at(std::int32_t target_cpu, Args&&... args)
         -> std::expected<std::pair<CoreAffinityGuard, T>, IsolationError> {
         return make_isolated_with([&args...] { return construct<T>(std::forward<Args>(args)...); }, target_cpu, nullptr)
             .and_then([](auto&& pair) {
