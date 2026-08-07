@@ -13,6 +13,7 @@
 #include "disk_benchmark.hpp"
 #include "http_client.hpp"
 #include "http_context.hpp"
+#include "icmp_ping.hpp"
 #include "interrupts.hpp"
 #include "results.hpp"
 #include "speed_test.hpp"
@@ -140,23 +141,25 @@ struct NetworkMetadata {
 
     std::jthread probe_thread([v4_p = std::move(v4_promise), v6_p = std::move(v6_promise),
                                   ip_p = std::move(ip_promise)](std::stop_token st) mutable {
+        const auto timeout = config::kCheckConnTimeout;
+
+        std::jthread v4_thread(
+            [&v4_p, timeout] { v4_p.set_value(stx::icmp::ping_ipv4(config::kPingTargetIPv4, timeout)); });
+
+        std::jthread v6_thread(
+            [&v6_p, timeout] { v6_p.set_value(stx::icmp::ping_ipv6(config::kPingTargetIPv6, timeout)); });
+
         auto multi_client    = MultiHttpClient::create();
-        auto ipv4_client     = HttpClient::create();
-        auto ipv6_client     = HttpClient::create();
         auto metadata_client = HttpClient::create();
 
         auto execution_status
             = std::expected<void, std::string> {}
-                  .and_then([&multi_client, &ipv4_client, &ipv6_client, &metadata_client] {
-                      return (multi_client && ipv4_client && ipv6_client && metadata_client)
+                  .and_then([&multi_client, &metadata_client] {
+                      return (multi_client && metadata_client)
                           ? std::expected<void, std::string> {}
                           : std::unexpected("Network client initialization failed");
                   })
-                  .and_then([&ipv4_client] { return ipv4_client->prepare_connectivity_check(config::kPingTargetIPv4); })
-                  .and_then([&ipv6_client] { return ipv6_client->prepare_connectivity_check(config::kPingTargetIPv6); })
                   .and_then([&metadata_client] { return metadata_client->prepare_get(config::kUrlCloudflareMeta); })
-                  .and_then([&multi_client, &ipv4_client] { return multi_client->add_handle(*ipv4_client); })
-                  .and_then([&multi_client, &ipv6_client] { return multi_client->add_handle(*ipv6_client); })
                   .and_then([&multi_client, &metadata_client] { return multi_client->add_handle(*metadata_client); })
                   .and_then([&multi_client, st] {
                       if (st.stop_requested()) { return std::expected<void, std::string> {}; }
@@ -164,12 +167,8 @@ struct NetworkMetadata {
                   });
 
         if (execution_status) {
-            v4_p.set_value(ipv4_client->get_result_void().has_value());
-            v6_p.set_value(ipv6_client->get_result_void().has_value());
             ip_p.set_value(metadata_client->get_result_string());
         } else {
-            v4_p.set_value(false);
-            v6_p.set_value(false);
             ip_p.set_value(std::unexpected(execution_status.error()));
         }
     });

@@ -12,6 +12,7 @@
 #include "scope.hpp"
 
 #include <algorithm>
+#include <arpa/inet.h>
 #include <cerrno>
 #include <chrono>
 #include <concepts>
@@ -25,6 +26,7 @@
 #include <format>
 #include <limits>
 #include <linux/fs.h>
+#include <netinet/in.h>
 #include <optional>
 #include <poll.h>
 #include <print>
@@ -34,6 +36,7 @@
 #include <string_view>
 #include <sys/ioctl.h>
 #include <sys/resource.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/statfs.h>
 #include <sys/statvfs.h>
@@ -979,6 +982,143 @@ enum class signal : std::int32_t {
 [[nodiscard]] inline auto make_temp_dir(std::string tmpl) noexcept -> std::expected<std::string, std::error_code> {
     if (::mkdtemp(tmpl.data())) { return tmpl; }
     return std::unexpected(last_error());
+}
+
+/**
+ * @brief Concept constraining valid POSIX socket address structures (POSIX.1, RFC 3493).
+ */
+template <typename T>
+concept socket_address = std::is_standard_layout_v<std::remove_cvref_t<T>>
+    && std::is_trivially_copyable_v<std::remove_cvref_t<T>> && requires(const std::remove_cvref_t<T>& sa) {
+           requires requires {
+               { sa.sin_family } -> std::convertible_to<sa_family_t>;
+           } || requires {
+               { sa.sin6_family } -> std::convertible_to<sa_family_t>;
+           } || requires {
+               { sa.sa_family } -> std::convertible_to<sa_family_t>;
+           };
+       };
+
+/**
+ * @brief Concept constraining valid binary network address structures.
+ */
+template <typename T>
+concept network_address = std::is_standard_layout_v<std::remove_cvref_t<T>>
+    && std::is_trivially_copyable_v<std::remove_cvref_t<T>> && requires(const std::remove_cvref_t<T>& addr) {
+           requires requires {
+               { addr.s_addr } -> std::convertible_to<in_addr_t>;
+           } || requires {
+               { addr.s6_addr };
+           } || std::is_same_v<std::remove_cvref_t<T>, struct in_addr> || std::is_same_v<std::remove_cvref_t<T>, struct in6_addr>;
+       };
+
+/**
+ * @brief Convert socket address structure reference to const sockaddr pointer.
+ */
+template <socket_address Addr> [[nodiscard]] inline auto to_sockaddr(const Addr& addr) noexcept -> const sockaddr* {
+    return std::bit_cast<const sockaddr*>(std::addressof(addr));
+}
+
+/**
+ * @brief Convert socket address structure reference to mutable sockaddr pointer.
+ */
+template <socket_address Addr> [[nodiscard]] inline auto to_sockaddr(Addr& addr) noexcept -> sockaddr* {
+    return std::bit_cast<sockaddr*>(std::addressof(addr));
+}
+
+/**
+ * @brief Extract address family from a POSIX socket address pointer.
+ */
+[[nodiscard]] inline auto get_address_family(const sockaddr* sa) noexcept -> sa_family_t {
+    return sa != nullptr ? sa->sa_family : AF_UNSPEC;
+}
+
+/**
+ * @brief Extract address family from any socket address structure.
+ */
+template <socket_address Addr> [[nodiscard]] inline auto get_address_family(const Addr& addr) noexcept -> sa_family_t {
+    return get_address_family(to_sockaddr(addr));
+}
+
+/**
+ * @brief Create communication endpoint.
+ */
+[[nodiscard]] inline auto socket(std::int32_t domain, std::int32_t type, std::int32_t protocol) noexcept
+    -> std::expected<file_descriptor, std::error_code> {
+    return expect_result<error_style::posix>(::socket(domain, type, protocol))
+        .transform([](std::int32_t raw_fd) noexcept { return file_descriptor { raw_fd }; });
+}
+
+/**
+ * @brief Initiate connection on socket.
+ */
+template <socket_address Addr>
+[[nodiscard]] inline auto connect(const file_descriptor& fd, const Addr& addr) noexcept
+    -> std::expected<void, std::error_code> {
+    const auto len { cast::static_converter<socklen_t> {}(sizeof(addr)) };
+    return expect_result<error_style::posix>(::connect(fd.native_handle(), to_sockaddr(addr), len))
+        .transform([](auto) noexcept {});
+}
+
+/**
+ * @brief Send message on socket.
+ */
+template <socket_address Addr>
+[[nodiscard]] inline auto sendto(const file_descriptor& fd, std::span<const std::byte> data, const Addr& dest_addr,
+    std::int32_t flags = 0) noexcept -> std::expected<std::size_t, std::error_code> {
+    const auto len { cast::static_converter<socklen_t> {}(sizeof(dest_addr)) };
+    return expect_result<error_style::posix>(
+        ::sendto(fd.native_handle(), data.data(), data.size(), flags, to_sockaddr(dest_addr), len))
+        .transform([](auto bytes) noexcept { return toSize(bytes); });
+}
+
+/**
+ * @brief Receive message from socket.
+ */
+template <socket_address Addr>
+[[nodiscard]] inline auto recvfrom(const file_descriptor& fd, std::span<std::byte> buffer, Addr& src_addr,
+    std::int32_t flags = 0) noexcept -> std::expected<std::size_t, std::error_code> {
+    socklen_t len { cast::static_converter<socklen_t> {}(sizeof(src_addr)) };
+    return expect_result<error_style::posix>(
+        ::recvfrom(fd.native_handle(), buffer.data(), buffer.size(), flags, to_sockaddr(src_addr), &len))
+        .transform([](auto bytes) noexcept { return toSize(bytes); });
+}
+
+/**
+ * @brief Convert network address string to binary format.
+ */
+template <network_address AddrIn>
+[[nodiscard]] inline auto inet_pton(std::int32_t af, std::string_view ip, AddrIn& dst) noexcept
+    -> std::expected<void, std::error_code> {
+    const std::string ip_str { ip };
+    return expect_result<error_style::posix>(::inet_pton(af, ip_str.c_str(), static_cast<void*>(&dst)))
+        .and_then(
+            [](std::int32_t res) noexcept { return expect_success<error_style::pthreads>(res == 0 ? EINVAL : 0); });
+}
+
+/**
+ * @brief Get options on socket.
+ */
+template <typename T>
+    requires std::is_standard_layout_v<T> && std::is_trivially_copyable_v<T>
+[[nodiscard]] inline auto getsockopt(const file_descriptor& fd, std::int32_t level, std::int32_t optname,
+    T& optval) noexcept -> std::expected<void, std::error_code> {
+    socklen_t optlen { cast::static_converter<socklen_t> {}(sizeof(optval)) };
+    return expect_result<error_style::posix>(::getsockopt(fd.native_handle(), level, optname, &optval, &optlen))
+        .transform([](auto) noexcept {});
+}
+
+/**
+ * @brief Set options on socket.
+ */
+template <typename T>
+    requires std::is_standard_layout_v<T> && std::is_trivially_copyable_v<T>
+[[nodiscard]] inline auto setsockopt(const file_descriptor& fd, std::int32_t level, std::int32_t optname,
+    const T& optval) noexcept -> std::expected<void, std::error_code> {
+    const auto optlen { cast::static_converter<socklen_t> {}(sizeof(optval)) };
+    const auto* ptr { static_cast<const void*>(std::addressof(optval)) };
+    return expect_result<error_style::posix>(::setsockopt(fd.native_handle(), level, optname, ptr, optlen))
+        .transform([](auto) noexcept {});
 }
 
 } // namespace posix
