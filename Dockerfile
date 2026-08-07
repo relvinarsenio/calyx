@@ -8,8 +8,8 @@ ARG TARGETARCH
 
 # Note: perl is required for some OpenSSL/LibreSSL build scripts
 # Separate cache by architecture to prevent cache corruption during cross-compilation
-RUN --mount=type=cache,id=apk-${TARGETARCH},target=/var/cache/apk \
-    apk add \
+RUN --mount=type=cache,id=apk-${TARGETARCH},target=/var/cache/apk,sharing=locked \
+    apk add --update-cache --cache-dir /var/cache/apk \
     ccache \
     clang \
     cmake \

@@ -165,7 +165,7 @@ private:
         const auto fold_carry { [](std::uint32_t sum_val) noexcept -> std::uint16_t {
             const auto sum1 { safe_add(sum_val & 0xFFFFu, sum_val >> 16u).value_or(sum_val) };
             const auto sum2 { safe_add(sum1 & 0xFFFFu, sum1 >> 16u).value_or(sum1) };
-            return toUShort(~sum2);
+            return toUShort((~sum2) & 0xFFFFu);
         } };
 
         return fold_carry(raw_sum);
@@ -173,7 +173,7 @@ private:
 
     [[nodiscard]] static echo_request_v4 build_echo_request_v4(pid_t pid) noexcept {
         const std::uint64_t nonce { generate_nonce() };
-        const std::uint16_t ident { toUShort((toULong(pid) ^ toUShort(nonce)) & 0xFFFFu) };
+        const std::uint16_t ident { toUShort((toULong(pid) ^ (nonce & 0xFFFFu)) & 0xFFFFu) };
         const std::uint16_t seq { toUShort((nonce >> 16u) & 0xFFFFu) };
 
         echo_request_v4 request {};
@@ -188,7 +188,7 @@ private:
 
     [[nodiscard]] static echo_request_v6 build_echo_request_v6(pid_t pid) noexcept {
         const std::uint64_t nonce { generate_nonce() };
-        const std::uint16_t ident { toUShort((toULong(pid) ^ toUShort(nonce)) & 0xFFFFu) };
+        const std::uint16_t ident { toUShort((toULong(pid) ^ (nonce & 0xFFFFu)) & 0xFFFFu) };
         const std::uint16_t seq { toUShort((nonce >> 16u) & 0xFFFFu) };
 
         echo_request_v6 request {};

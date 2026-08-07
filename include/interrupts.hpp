@@ -81,6 +81,9 @@ public:
      * @brief Destroys the controller instance, unstacking or transferring OS handler ownership.
      */
     ~PosixSignalController() noexcept {
+        PosixSignalController* expected = this;
+        active_instance_.compare_exchange_strong(expected, prev_, std::memory_order_relaxed);
+
         if (next_) { next_->prev_ = prev_; }
         if (prev_) { prev_->next_ = next_; }
 
@@ -91,9 +94,6 @@ public:
                 restore();
             }
         }
-
-        PosixSignalController* expected = this;
-        active_instance_.compare_exchange_strong(expected, prev_, std::memory_order_relaxed);
     }
 
     /**

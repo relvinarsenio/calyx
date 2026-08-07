@@ -1090,8 +1090,10 @@ template <socket_address Addr>
 template <network_address AddrIn>
 [[nodiscard]] inline auto inet_pton(std::int32_t af, std::string_view ip, AddrIn& dst) noexcept
     -> std::expected<void, std::error_code> {
-    const std::string ip_str { ip };
-    return expect_result<error_style::posix>(::inet_pton(af, ip_str.c_str(), static_cast<void*>(&dst)))
+    if (ip.size() >= INET6_ADDRSTRLEN) { return std::unexpected(make_error(EINVAL)); }
+    std::array<char, INET6_ADDRSTRLEN> buf {};
+    std::copy_n(ip.data(), ip.size(), buf.data());
+    return expect_result<error_style::posix>(::inet_pton(af, buf.data(), static_cast<void*>(&dst)))
         .and_then(
             [](std::int32_t res) noexcept { return expect_success<error_style::pthreads>(res == 0 ? EINVAL : 0); });
 }

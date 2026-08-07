@@ -197,6 +197,7 @@ elif [[ "$UPDATE_IMAGE" == "true" ]] || ! docker image inspect "$IMAGE_NAME" &>/
     if docker pull "$GHCR_IMAGE:${GHCR_TAG}"; then
         echo "✅ Successfully pulled pre-built image!"
         docker tag "$GHCR_IMAGE:${GHCR_TAG}" "$IMAGE_NAME"
+        NEED_BUILD=true
     else
         echo "⚠️  Pull failed or image not available. Building toolchain from scratch..."
         NEED_BUILD=true
