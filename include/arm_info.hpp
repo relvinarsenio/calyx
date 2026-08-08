@@ -364,23 +364,8 @@ static constexpr ArmPartEntry kMsParts[] = {
     { 0xd84, "Azure-Cobalt-200" },
 };
 
-static constexpr ArmPartEntry kAmazonParts[] = {
-    { 0x001, "Graviton" },
-    { 0x002, "Graviton2" },
-    { 0x003, "Graviton3" },
-    { 0x004, "Graviton4" },
-};
-
-static constexpr ArmPartEntry kAlibabaParts[] = {
-    { 0x710, "Yitian-710" },
-};
-
-static constexpr ArmPartEntry kMtkParts[] = {
-    { 0x000, "Dimensity" },
-};
 
 inline constexpr auto kArmImplementers = std::to_array<ArmImplEntry>({
-    { 0x1d, "Amazon", kAmazonParts },
     { 0x41, "ARM", kArmParts },
     { 0x42, "Broadcom", kBrcmParts },
     { 0x43, "Cavium", kCaviumParts },
@@ -397,11 +382,9 @@ inline constexpr auto kArmImplementers = std::to_array<ArmImplEntry>({
     { 0x56, "Marvell", kMarvellParts },
     { 0x61, "Apple", kAppleParts },
     { 0x66, "Faraday", kFaradayParts },
-    { 0x68, "MediaTek", kMtkParts },
     { 0x69, "Intel", kIntelParts },
     { 0x6d, "Microsoft", kMsParts },
     { 0x70, "Phytium", kPhytiumParts },
-    { 0x77, "Alibaba", kAlibabaParts },
     { 0xc0, "Ampere", kAmpereParts },
 });
 
