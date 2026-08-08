@@ -88,7 +88,7 @@ std::expected<std::string, std::error_code> write_cert_file(const fs::path& dir,
     return posix::file::open(cert_path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, S_IRUSR | S_IWUSR)
         .and_then([&cert_path, data](posix::file file) -> std::expected<std::string, std::error_code> {
             const auto path_str = cert_path.string();
-            return file.write_exact(std::as_bytes(data))
+            return write_bytes(file, data)
                 .transform_error([](auto fail) { return fail.error; })
                 .and_then([&file](auto) { return file.sync(); })
                 .transform([p_str = std::move(path_str)]() mutable { return p_str; });

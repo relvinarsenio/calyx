@@ -140,7 +140,7 @@ std::size_t write_file_callback(void* ptr, std::size_t size, std::size_t nmemb, 
     if (!ctx.fd) [[unlikely]] { return 0; }
 
     auto bytes = std::span { static_cast<const std::byte*>(ptr), *total_opt };
-    auto res   = ctx.fd.write_exact(bytes);
+    auto res   = write_bytes(ctx.fd, bytes);
     if (!res) {
         ctx.bytes_written += res.error().bytes_transferred;
         ctx.last_error = res.error().error;

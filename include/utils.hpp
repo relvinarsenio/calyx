@@ -454,6 +454,11 @@ inline std::expected<std::size_t, posix::file_descriptor::write_failure> write_b
     return write_bytes(fd.native_handle(), std::forward<T>(data));
 }
 
+template <writeable_data T>
+inline std::expected<std::size_t, posix::file_descriptor::write_failure> write_bytes(const posix::file& f, T&& data) {
+    return write_bytes(f.descriptor(), std::forward<T>(data));
+}
+
 inline constexpr auto write_file
     = [](const std::filesystem::path& path, std::string_view content) -> std::expected<void, std::error_code> {
     return posix::file::write_to(path, content);

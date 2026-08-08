@@ -290,7 +290,11 @@ public:
     [[nodiscard]] static auto write_to(const std::filesystem::path& path, std::string_view content)
         -> std::expected<void, std::error_code> {
         return open(path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH)
-            .and_then([content](file f) { return f.write(content); });
+            .and_then([content](file f) {
+                return f.write_exact(content).transform([](auto) {}).transform_error([](auto fail) {
+                    return fail.error;
+                });
+            });
     }
 
     /** @brief Single read(2) with EINTR retry.  Zero return signals EOF. */

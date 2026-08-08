@@ -39,9 +39,12 @@ namespace arm {
  * - [15:4]  PartNum
  * - [3:0]   Revision
  *
- * Lookup data sourced from: Linux kernel source code (arch/arm64/kernel/cpuinfo.c),
- * util-linux lscpu-arm.c, pytorch/cpuinfo, Apple XNU (osfmk/arm/cpuid.h),
- * Asahi Linux (M-series RE), LLVM AArch64 backend, and Microsoft Azure Cobalt technical documentation.
+ * Lookup data sourced from:
+ * 1. Linux kernel source code (arch/arm64/include/asm/cputype.h, arch/arm64/kernel/cpuinfo.c,
+ *    arch/arm64/kernel/cpufeature.c, errata.c, drivers/perf/arm_pmuv3.c).
+ * 2. User-space tools & libraries: util-linux (sys-utils/lscpu-arm.c), pytorch/cpuinfo (src/arm/linux/cpuinfo.c).
+ * 3. Vendor XNU & RE sources: Apple XNU (osfmk/arm/cpuid.h), Asahi Linux (M-series RE), LLVM AArch64 backend.
+ * 4. Microsoft Azure Cobalt technical documentation.
  */
 
 /**
@@ -363,7 +366,6 @@ static constexpr ArmPartEntry kMsParts[] = {
     { 0xd49, "Azure-Cobalt-100" },
     { 0xd84, "Azure-Cobalt-200" },
 };
-
 
 inline constexpr auto kArmImplementers = std::to_array<ArmImplEntry>({
     { 0x41, "ARM", kArmParts },
