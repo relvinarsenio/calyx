@@ -7,11 +7,13 @@
  */
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <ranges>
 #include <type_traits>
 #include <utility>
 
@@ -80,23 +82,28 @@ template <std::integral T> constexpr auto to_std_int(T value) noexcept {
 }
 
 /**
+ * @brief Computes 2^n exactly at compile time for any IEEE 754 floating-point type.
+ *
+ * @note Relies on standard IEEE 754 binary representation where multiplication by 2
+ *       is exact and merely increments the exponent without precision loss.
+ */
+template <std::floating_point U> [[nodiscard]] consteval U ipow2(std::integral auto n) noexcept {
+    const U factor = static_cast<U>(2);
+    return std::ranges::fold_left(std::views::iota(decltype(n) { 0 }, n), static_cast<U>(1),
+        [factor](U acc, auto) noexcept { return acc * factor; });
+}
+
+/**
  * @brief Computes the exclusive upper bound (as a floating-point power-of-2) for saturating
  *        conversion from floating-point type U to integer type T.
  *
- * @note Uses exact power-of-2 values to avoid rounding errors that arise from casting
+ * @note Uses exact power-of-2 values (2^digits) to avoid rounding errors that arise from casting
  *       std::numeric_limits<T>::max() directly to a floating-point type.
  */
 template <std::integral T, std::floating_point U> [[nodiscard]] consteval U fp_saturation_upper_bound() noexcept {
-    static_assert(sizeof(T) <= 8, "Unsupported target integer width for floating-point saturation.");
-    if constexpr (sizeof(T) == 8) {
-        return std::is_signed_v<T> ? U { 0x1p63 } : U { 0x1p64 };
-    } else if constexpr (sizeof(T) == 4) {
-        return std::is_signed_v<T> ? U { 0x1p31 } : U { 0x1p32 };
-    } else if constexpr (sizeof(T) == 2) {
-        return std::is_signed_v<T> ? U { 0x1p15 } : U { 0x1p16 };
-    } else {
-        return std::is_signed_v<T> ? U { 0x1p7 } : U { 0x1p8 };
-    }
+    static_assert(std::numeric_limits<U>::is_iec559, "Floating-point type must conform to IEEE 754 (IEC 559).");
+    static_assert(sizeof(T) <= 8, "Target integer type must be at most 8 bytes (64 bits) wide.");
+    return ipow2<U>(std::numeric_limits<T>::digits);
 }
 
 /**
@@ -117,24 +124,45 @@ template <std::integral T, std::floating_point U> [[nodiscard]] constexpr T satu
 }
 
 /**
- * @brief Internal engine for saturating casts supporting mixed integral and floating-point types.
+ * @brief Internal engine for saturating casts (Same Type)
  */
-template <numeric_type T, numeric_type U> [[nodiscard]] constexpr T saturating_cast_impl(U x) noexcept {
-    if constexpr (std::is_same_v<T, U>) {
-        return x;
-    } else if constexpr (std::is_integral_v<T> && std::is_integral_v<U>) {
-        auto sx    = to_std_int(x);
-        auto t_min = to_std_int(std::numeric_limits<T>::min());
-        auto t_max = to_std_int(std::numeric_limits<T>::max());
+template <numeric_type T, numeric_type U>
+    requires std::same_as<T, U>
+[[nodiscard]] constexpr T saturating_cast_impl(U x) noexcept {
+    return x;
+}
 
-        if (std::cmp_greater(sx, t_max)) { return std::numeric_limits<T>::max(); }
-        if (std::cmp_less(sx, t_min)) { return std::numeric_limits<T>::min(); }
-        return static_cast<T>(x);
-    } else if constexpr (std::is_integral_v<T> && std::is_floating_point_v<U>) {
-        return saturate_fp_to_int<T>(x);
-    } else {
-        return static_cast<T>(x);
-    }
+/**
+ * @brief Internal engine for saturating casts (Integral to Integral)
+ */
+template <numeric_type T, numeric_type U>
+    requires std::integral<T> && std::integral<U> && (!std::same_as<T, U>)
+[[nodiscard]] constexpr T saturating_cast_impl(U x) noexcept {
+    auto sx    = to_std_int(x);
+    auto t_min = to_std_int(std::numeric_limits<T>::min());
+    auto t_max = to_std_int(std::numeric_limits<T>::max());
+
+    if (std::cmp_greater(sx, t_max)) { return std::numeric_limits<T>::max(); }
+    if (std::cmp_less(sx, t_min)) { return std::numeric_limits<T>::min(); }
+    return static_cast<T>(x);
+}
+
+/**
+ * @brief Internal engine for saturating casts (Floating-Point to Integral)
+ */
+template <numeric_type T, numeric_type U>
+    requires std::integral<T> && std::floating_point<U>
+[[nodiscard]] constexpr T saturating_cast_impl(U x) noexcept {
+    return saturate_fp_to_int<T>(x);
+}
+
+/**
+ * @brief Internal engine for saturating casts (Integral/Floating to Floating-Point)
+ */
+template <numeric_type T, numeric_type U>
+    requires std::floating_point<T> && (!std::same_as<T, U>)
+[[nodiscard]] constexpr T saturating_cast_impl(U x) noexcept {
+    return static_cast<T>(x);
 }
 
 } // namespace saturating_impl
@@ -147,9 +175,7 @@ template <numeric_type T, numeric_type U> [[nodiscard]] constexpr T saturating_c
  * range of T. This prevents undefined behavior associated with integer overflow.
  */
 template <standard_integer_type T, standard_integer_type U> [[nodiscard]] constexpr T saturate_cast(U x) noexcept {
-    if (std::cmp_greater(x, std::numeric_limits<T>::max())) { return std::numeric_limits<T>::max(); }
-    if (std::cmp_less(x, std::numeric_limits<T>::min())) { return std::numeric_limits<T>::min(); }
-    return static_cast<T>(x);
+    return saturating_impl::saturating_cast_impl<T>(x);
 }
 
 /**

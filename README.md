@@ -78,6 +78,10 @@ This is a very common hint on VPS servers or non-root accounts. It means Calyx w
 
 If you prefer to compile Calyx yourself, you can build a fully static, portable binary using Docker.
 
+> [!IMPORTANT]
+> Using the provided `build-static.sh` script is highly recommended, as it builds Calyx using a Docker environment for consistent results.
+> Manual host builds may fail or behave differently depending on the build environment.
+
 ### Requirements
 *   **Operating System**: Linux (any distribution)
 *   **Architecture**: `x86_64` (Intel/AMD) and `aarch64` (ARM64)
@@ -108,7 +112,7 @@ Once completed, your single portable binary will be generated at `./dist/calyx`.
 Here is what the terminal output looks like when Calyx finishes running:
 
 ```text
-──────────────────────── Calyx - Linux System Benchmarking Utility (v1.1.0) ────────────────────────
+──────────────────────── Calyx - Linux System Benchmarking Utility (v1.2.0) ────────────────────────
  Author             : Alfie Ardinata (https://calyx.pages.dev/)
  GitHub             : https://github.com/relvinarsenio/calyx
  Usage              : ./calyx
@@ -132,6 +136,7 @@ Here is what the terminal output looks like when Calyx finishes running:
   -> Storage & Memory
   Test Path            : /home/user/Github/calyx (/dev/sda2 (xfs))
   Size Partition       : 63 GB (25 GB Used)
+  Disk Capacity        : 64 GB (/dev/sda)
   Total Mem            : 6.9 GB (4.5 GB Used)
   Total Swap           : 5.2 GB (3.1 GB Used)
     -> Partition        : 4 GB (2.8 GB Used) (/dev/sdb)

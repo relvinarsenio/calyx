@@ -7,7 +7,7 @@ set(CMAKE_POLICY_DEFAULT_CMP0069 NEW)
 # =============================================================================
 # Calyx - Rapid Linux Server Profiler
 # =============================================================================
-project(calyx VERSION 1.1.0 LANGUAGES CXX C)
+project(calyx VERSION 1.2.0 LANGUAGES CXX C)
 
 # Ensure all libraries and targets are built with -fPIC (Required for static-pie)
 # C++23 Required
@@ -234,9 +234,11 @@ add_executable(calyx
 )
 
 # === OPTIMIZATION: ICF (Identical Code Folding) ===
-set_target_properties(calyx PROPERTIES
-    LINK_FLAGS "-Wl,--icf=all"
-)
+include(CheckLinkerFlag)
+check_linker_flag(CXX "-Wl,--icf=all" HAS_ICF)
+if(HAS_ICF)
+    set_target_properties(calyx PROPERTIES LINK_FLAGS "-Wl,--icf=all")
+endif()
 
 # === OPTIMIZATION: UNITY BUILD (Batch Mode) ===
 # Enable unity build to speed up compilation times

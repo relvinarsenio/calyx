@@ -63,23 +63,16 @@ class alignas(std::hardware_destructive_interference_size) LatencyHistogram fina
     std::uint64_t max_cycles_ {};
 
     /**
-     * @brief Provides read-only multidimensional access to the internal bucket distribution.
+     * @brief Provides multidimensional access to the internal bucket distribution.
      * @details Formalizes the (Groups x Bins) mapping into a first-class view to eliminate
      * manual arithmetic errors and improve maintainability without runtime overhead.
-     * @return A 2D view of the frequency distribution.
-     */
-    [[nodiscard]] constexpr auto view() const noexcept {
-        return stx::mdspan<const std::uint64_t, stx::extents<std::uint32_t, kGroups, kBinsPerGroup>,
-            stx::layout_right> { buckets_.data() };
-    }
-
-    /**
-     * @brief Provides mutable multidimensional access to the internal bucket distribution.
      * @return A 2D mdspan view (Groups x BinsPerGroup).
      */
-    [[nodiscard]] constexpr auto view() noexcept {
-        return stx::mdspan<std::uint64_t, stx::extents<std::uint32_t, kGroups, kBinsPerGroup>, stx::layout_right> {
-            buckets_.data()
+    [[nodiscard]] constexpr auto view(this auto&& self) noexcept {
+        using ElementType = std::conditional_t<std::is_const_v<std::remove_reference_t<decltype(self)>>,
+            const std::uint64_t, std::uint64_t>;
+        return stx::mdspan<ElementType, stx::extents<std::uint32_t, kGroups, kBinsPerGroup>, stx::layout_right> {
+            self.buckets_.data()
         };
     }
 

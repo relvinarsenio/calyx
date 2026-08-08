@@ -38,68 +38,42 @@
 #include <type_traits>
 #include <utility>
 
-/** @brief Compile-time tag for selecting the arithmetic operation in @ref safe_arith. */
-enum class overflow_op {
-    add,
-    mul,
-    sub
-};
-
-namespace overflow_impl {
-
-/** @brief Primary template — intentionally undefined; forces an explicit specialization per operation. */
-template <overflow_op Op> struct builtin_overflow;
-
-/** @brief Dispatches to @c __builtin_add_overflow. */
-template <> struct builtin_overflow<overflow_op::add> {
-    template <cast::standard_integer_type T> [[nodiscard]] static constexpr bool apply(T lhs, T rhs, T* out) noexcept {
-        return __builtin_add_overflow(lhs, rhs, out);
-    }
-};
-
-/** @brief Dispatches to @c __builtin_mul_overflow. */
-template <> struct builtin_overflow<overflow_op::mul> {
-    template <cast::standard_integer_type T> [[nodiscard]] static constexpr bool apply(T lhs, T rhs, T* out) noexcept {
-        return __builtin_mul_overflow(lhs, rhs, out);
-    }
-};
-
-/** @brief Dispatches to @c __builtin_sub_overflow. */
-template <> struct builtin_overflow<overflow_op::sub> {
-    template <cast::standard_integer_type T> [[nodiscard]] static constexpr bool apply(T lhs, T rhs, T* out) noexcept {
-        return __builtin_sub_overflow(lhs, rhs, out);
-    }
-};
-
-} // namespace overflow_impl
-
 /**
- * @brief Overflow-checked arithmetic on unsigned integers.
+ * @brief Overflow-checked arithmetic core engine using Higher-Order Functions.
  *
- * The operation is selected at compile time via @ref overflow_impl::builtin_overflow specialization.
+ * The operation is injected at compile time via a stateless lambda expression.
  * No runtime branching occurs for the operation itself — only the mandatory overflow sentinel check remains.
- *
- * @tparam Op  The arithmetic operation to perform (@ref overflow_op).
- * @tparam T   Any standard integer type (signed or unsigned, per @ref cast::standard_integer_type).
- * @return The result, or @c std::nullopt on overflow.
  */
-template <overflow_op Op, cast::standard_integer_type T>
-[[nodiscard]] constexpr auto safe_arith(T lhs, T rhs) noexcept -> std::optional<T> {
-    T result {};
-    return overflow_impl::builtin_overflow<Op>::apply(lhs, rhs, &result) ? std::nullopt : std::optional<T> { result };
+template <typename T1, typename T2> using wider_type_t = std::conditional_t<(sizeof(T1) >= sizeof(T2)), T1, T2>;
+template <cast::standard_integer_type T1, cast::standard_integer_type T2, typename Func>
+    requires(std::is_signed_v<T1> == std::is_signed_v<T2>)
+    && std::invocable<Func, wider_type_t<T1, T2>, wider_type_t<T1, T2>, wider_type_t<T1, T2>&>
+[[nodiscard]] constexpr auto safe_arith(T1 lhs, T2 rhs, Func&& op) noexcept -> std::optional<wider_type_t<T1, T2>> {
+    using Common = wider_type_t<T1, T2>;
+    Common result {};
+
+    const bool is_overflow
+        = std::forward<Func>(op)(cast::saturate_cast<Common>(lhs), cast::saturate_cast<Common>(rhs), result);
+    return is_overflow ? std::nullopt : std::make_optional(result);
 }
 
-/** @brief Safely multiply two @c uint64_t values with overflow checking. */
-inline constexpr auto safe_mul
-    = [](std::uint64_t lhs, std::uint64_t rhs) noexcept { return safe_arith<overflow_op::mul>(lhs, rhs); };
+/** @brief Safely multiply two integer values with overflow checking. */
+template <cast::standard_integer_type T1, cast::standard_integer_type T2>
+[[nodiscard]] constexpr auto safe_mul(T1 lhs, T2 rhs) noexcept {
+    return safe_arith(lhs, rhs, [](auto a, auto b, auto& out) { return __builtin_mul_overflow(a, b, &out); });
+}
 
-/** @brief Safely add two @c uint64_t values with overflow checking. */
-inline constexpr auto safe_add
-    = [](std::uint64_t lhs, std::uint64_t rhs) noexcept { return safe_arith<overflow_op::add>(lhs, rhs); };
+/** @brief Safely add two integer values with overflow checking. */
+template <cast::standard_integer_type T1, cast::standard_integer_type T2>
+[[nodiscard]] constexpr auto safe_add(T1 lhs, T2 rhs) noexcept {
+    return safe_arith(lhs, rhs, [](auto a, auto b, auto& out) { return __builtin_add_overflow(a, b, &out); });
+}
 
-/** @brief Safely subtract two @c uint64_t values with overflow checking. */
-inline constexpr auto safe_sub
-    = [](std::uint64_t lhs, std::uint64_t rhs) noexcept { return safe_arith<overflow_op::sub>(lhs, rhs); };
+/** @brief Safely subtract two integer values with overflow checking. */
+template <cast::standard_integer_type T1, cast::standard_integer_type T2>
+[[nodiscard]] constexpr auto safe_sub(T1 lhs, T2 rhs) noexcept {
+    return safe_arith(lhs, rhs, [](auto a, auto b, auto& out) { return __builtin_sub_overflow(a, b, &out); });
+}
 
 /**
  * @brief Checks if a value equals any of the specified template constants.
@@ -320,16 +294,16 @@ struct format_state {
 inline constexpr auto adjust_overflow
     = [](format_state state, double base, std::size_t max_suffixes) noexcept -> format_state {
     const double rounded = std::round(state.scaled_value * 100.0) / 100.0;
+    const auto candidate = safe_add(state.suffix_index, 1uz);
+    const bool overflow  = (rounded >= base) && (candidate.value_or(0uz) < max_suffixes);
 
-    const bool overflow = (rounded >= base) && (toSize(safe_add(state.suffix_index, 1uz).value_or(0uz)) < max_suffixes);
-    const std::size_t next_suffix_index
-        = toSize(safe_add(state.suffix_index, toSize(+overflow)).value_or(state.suffix_index));
+    const std::array kNextIndices = { state.suffix_index, candidate.value_or(state.suffix_index) };
+    const std::array kScaleValues = { rounded, rounded / base };
 
-    const std::array kScaleValues  = { rounded, rounded / base };
-    const double next_scaled_value = kScaleValues[toSize(+overflow)];
+    const double next_scaled_value = kScaleValues[overflow];
     const double next_rounded      = std::round(next_scaled_value * 100.0) / 100.0;
 
-    return { next_rounded, next_suffix_index };
+    return { next_rounded, kNextIndices[overflow] };
 };
 
 } // namespace format_impl
@@ -343,9 +317,9 @@ inline constexpr auto format_bytes = [](std::uint64_t bytes) -> std::string {
     static constexpr std::array kSuffixes = { "B", "KB", "MB", "GB", "TB" };
 
     const std::size_t bits         = toSize(std::bit_width(bytes));
-    const std::size_t shift        = toSize(safe_sub(bits, toSize(+(bits > 0))).value_or(0uz));
+    const std::size_t shift        = safe_sub(bits, 1uz).value_or(0uz);
     const std::size_t suffix_index = std::min<std::size_t>(shift / 10uz, kSuffixes.size() - 1uz);
-    const double scaled_value = toDouble(bytes) / toDouble(1ULL << toSize(safe_mul(suffix_index, 10uz).value_or(0uz)));
+    const double scaled_value      = toDouble(bytes) / toDouble(1ULL << safe_mul(suffix_index, 10uz).value_or(0uz));
 
     const auto state = format_impl::adjust_overflow(
         format_impl::format_state { scaled_value, suffix_index }, 1024.0, kSuffixes.size());
@@ -366,10 +340,10 @@ inline constexpr auto format_count = [](std::uint64_t count) -> std::string {
         return powers;
     }();
 
-    const auto upper_bound_it = std::ranges::upper_bound(kPowersOfThousand, count);
-    const std::size_t suffix_index
-        = toSize(safe_sub(toSize(std::ranges::distance(kPowersOfThousand.begin(), upper_bound_it)), 1uz).value_or(0uz));
-    const double scaled_value = toDouble(count) / toDouble(kPowersOfThousand[suffix_index]);
+    const auto upper_bound_it      = std::ranges::upper_bound(kPowersOfThousand, count);
+    const std::size_t dist         = toSize(std::ranges::distance(kPowersOfThousand.begin(), upper_bound_it));
+    const std::size_t suffix_index = safe_sub(dist, 1uz).value_or(0uz);
+    const double scaled_value      = toDouble(count) / toDouble(kPowersOfThousand[suffix_index]);
 
     const auto state = format_impl::adjust_overflow(
         format_impl::format_state { scaled_value, suffix_index }, 1000.0, kSuffixes.size());
@@ -456,23 +430,33 @@ inline constexpr auto read_file = [](const std::filesystem::path& path) -> std::
     return posix::file::read_all(path);
 };
 
-inline std::expected<std::size_t, posix::file_descriptor::write_failure> write_all(
-    posix::file_descriptor::native_handle_type fd, std::span<const std::byte> data) {
-    return posix::file_descriptor::write_exact_raw(fd, data);
-}
-
-inline std::expected<std::size_t, posix::file_descriptor::write_failure> write_all(
-    posix::file_descriptor::native_handle_type fd, std::string_view data) {
-    return write_all(fd, std::as_bytes(std::span { data.data(), data.size() }));
-}
-
 template <typename T>
-concept writeable_data = std::convertible_to<T, std::span<const std::byte>> || std::convertible_to<T, std::string_view>;
+concept writeable_data = std::ranges::contiguous_range<T> && sizeof(std::ranges::range_value_t<T>) == 1;
+
+[[nodiscard]] constexpr auto to_writeable_bytes(const auto& data) noexcept {
+    const auto bytes { std::as_bytes(std::span { std::ranges::data(data), std::ranges::size(data) }) };
+    using RawT = std::remove_cvref_t<decltype(data)>;
+    if constexpr (!std::is_bounded_array_v<RawT>) { return bytes; }
+    if (bytes.empty() || bytes.back() != std::byte { 0 }) { return bytes; }
+    const auto new_size { safe_sub(bytes.size(), 1uz).value_or(0uz) };
+    return bytes.first(new_size);
+}
 
 template <writeable_data T>
-inline std::expected<std::size_t, posix::file_descriptor::write_failure> write_all(
+inline std::expected<std::size_t, posix::file_descriptor::write_failure> write_bytes(
+    posix::file_descriptor::native_handle_type fd, T&& data) {
+    return posix::file_descriptor::write_exact_raw(fd, to_writeable_bytes(data));
+}
+
+template <writeable_data T>
+inline std::expected<std::size_t, posix::file_descriptor::write_failure> write_bytes(
     const posix::file_descriptor& fd, T&& data) {
-    return write_all(fd.native_handle(), std::forward<T>(data));
+    return write_bytes(fd.native_handle(), std::forward<T>(data));
+}
+
+template <writeable_data T>
+inline std::expected<std::size_t, posix::file_descriptor::write_failure> write_bytes(const posix::file& f, T&& data) {
+    return write_bytes(f.descriptor(), std::forward<T>(data));
 }
 
 inline constexpr auto write_file
@@ -489,9 +473,7 @@ inline constexpr auto write_file
 template <typename T, std::invocable<std::string_view> Parser>
     requires std::convertible_to<std::invoke_result_t<Parser, std::string_view>, T>
 inline T parse_file_or(const std::filesystem::path& path, Parser&& parser, T fallback) {
-    const auto content = read_file(path);
-    if (!content) { return fallback; }
-    return std::forward<Parser>(parser)(*content);
+    return read_file(path).transform(std::forward<Parser>(parser)).value_or(std::move(fallback));
 }
 
 /**
@@ -537,6 +519,7 @@ inline auto tokenize_sv() {
 }
 
 template <std::ranges::input_range KeysRange>
+    requires std::convertible_to<std::ranges::range_reference_t<KeysRange>, std::string_view>
 inline std::optional<std::string_view> lookup_info_field(std::string_view content, const KeysRange& keys) {
     auto lines = std::views::split(content, '\n') | std::views::transform([](auto raw) {
         return std::string_view(raw);

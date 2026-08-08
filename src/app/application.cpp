@@ -13,6 +13,7 @@
 #include "disk_benchmark.hpp"
 #include "http_client.hpp"
 #include "http_context.hpp"
+#include "icmp_ping.hpp"
 #include "interrupts.hpp"
 #include "results.hpp"
 #include "speed_test.hpp"
@@ -140,23 +141,25 @@ struct NetworkMetadata {
 
     std::jthread probe_thread([v4_p = std::move(v4_promise), v6_p = std::move(v6_promise),
                                   ip_p = std::move(ip_promise)](std::stop_token st) mutable {
+        const auto timeout = config::kCheckConnTimeout;
+
+        std::jthread v4_thread(
+            [&v4_p, timeout] { v4_p.set_value(stx::icmp::ping_ipv4(config::kPingTargetIPv4, timeout)); });
+
+        std::jthread v6_thread(
+            [&v6_p, timeout] { v6_p.set_value(stx::icmp::ping_ipv6(config::kPingTargetIPv6, timeout)); });
+
         auto multi_client    = MultiHttpClient::create();
-        auto ipv4_client     = HttpClient::create();
-        auto ipv6_client     = HttpClient::create();
         auto metadata_client = HttpClient::create();
 
         auto execution_status
             = std::expected<void, std::string> {}
-                  .and_then([&multi_client, &ipv4_client, &ipv6_client, &metadata_client] {
-                      return (multi_client && ipv4_client && ipv6_client && metadata_client)
+                  .and_then([&multi_client, &metadata_client] {
+                      return (multi_client && metadata_client)
                           ? std::expected<void, std::string> {}
                           : std::unexpected("Network client initialization failed");
                   })
-                  .and_then([&ipv4_client] { return ipv4_client->prepare_connectivity_check(config::kPingTargetIPv4); })
-                  .and_then([&ipv6_client] { return ipv6_client->prepare_connectivity_check(config::kPingTargetIPv6); })
                   .and_then([&metadata_client] { return metadata_client->prepare_get(config::kUrlCloudflareMeta); })
-                  .and_then([&multi_client, &ipv4_client] { return multi_client->add_handle(*ipv4_client); })
-                  .and_then([&multi_client, &ipv6_client] { return multi_client->add_handle(*ipv6_client); })
                   .and_then([&multi_client, &metadata_client] { return multi_client->add_handle(*metadata_client); })
                   .and_then([&multi_client, st] {
                       if (st.stop_requested()) { return std::expected<void, std::string> {}; }
@@ -164,12 +167,8 @@ struct NetworkMetadata {
                   });
 
         if (execution_status) {
-            v4_p.set_value(ipv4_client->get_result_void().has_value());
-            v6_p.set_value(ipv6_client->get_result_void().has_value());
             ip_p.set_value(metadata_client->get_result_string());
         } else {
-            v4_p.set_value(false);
-            v6_p.set_value(false);
             ip_p.set_value(std::unexpected(execution_status.error()));
         }
     });
@@ -345,15 +344,23 @@ void display_storage_memory() {
         return ec ? "." : current_path.string();
     }();
 
-    const auto dev_name = SystemInfo::get_device_name(current_dir);
-    const auto mem      = SystemInfo::get_memory_status();
-    const auto disk     = SystemInfo::get_disk_usage(current_dir);
+    const auto dev_name    = SystemInfo::get_device_name(current_dir);
+    const auto parent_disk = SystemInfo::get_parent_disk(current_dir);
+    const auto mem         = SystemInfo::get_memory_status();
+    const auto disk        = SystemInfo::get_disk_usage(current_dir);
 
     std::println("\n -> {}", color::colorize("Storage & Memory", color::kBold));
     std::println(" {:<{}} : {} ({})", "Test Path", config::kAppInfoLabelWidth,
         color::colorize(current_dir, color::kCyan), color::colorize(dev_name, color::kYellow));
 
     print_size_usage("Size Partition", disk.total, disk.used);
+
+    if (parent_disk.total_bytes > 0 && !parent_disk.device_path.empty()) {
+        std::println(" {:<{}} : {} ({})", "Disk Capacity", config::kAppInfoLabelWidth,
+            color::colorize(format_bytes(parent_disk.total_bytes), color::kYellow),
+            color::colorize(parent_disk.device_path, color::kCyan));
+    }
+
     print_size_usage("Total Mem", mem.total, mem.used);
 
     auto swaps = SystemInfo::get_swaps();
@@ -393,8 +400,7 @@ void display_storage_memory() {
         .label             = label,
     };
 
-    const auto result
-        = DiskBenchmark::run_io_test(io_config, progress_cb, {}, []() noexcept { return check_interrupted(); });
+    const auto result = DiskBenchmark::run_io_test(io_config, progress_cb, {}, check_interrupted);
 
     if (!result) { return std::unexpected(DiskBenchmark::format_error(result.error())); }
 
@@ -405,7 +411,7 @@ std::expected<void, std::string> run_disk_benchmarks() {
     std::vector<DiskIORunResult> disk_runs;
     disk_runs.reserve(config::kDiskIoRuns);
 
-    const std::uint64_t total_bytes = safe_mul(toULong(config::kDiskTestSizeMb), 1024ULL * 1024ULL).value_or(0ULL);
+    const std::uint64_t total_bytes = safe_mul(config::kDiskTestSizeMb, 1024ULL * 1024ULL).value_or(0ULL);
     const auto bs_str               = format_bytes(config::kIoWriteBlockSize)
         | std::views::filter([](char c) { return c != ' ' && c != 'B'; }) | std::ranges::to<std::string>();
 
@@ -469,7 +475,6 @@ void Application::show_version() const {
 }
 
 std::expected<void, std::string> Application::run(int argc, char* argv[]) {
-    SignalGuard signal_guard;
     auto http_context = HttpContext::create();
     if (!http_context) {
         return std::unexpected(std::format("\n[!] HttpContext create failed: {}", http_context.error()));

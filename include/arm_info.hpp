@@ -39,9 +39,12 @@ namespace arm {
  * - [15:4]  PartNum
  * - [3:0]   Revision
  *
- * Lookup data sourced from: Linux kernel source code (arch/arm64/kernel/cpuinfo.c),
- * util-linux lscpu-arm.c, pytorch/cpuinfo, Apple XNU (osfmk/arm/cpuid.h),
- * Asahi Linux (M-series RE), LLVM AArch64 backend, and Microsoft Azure Cobalt technical documentation.
+ * Lookup data sourced from:
+ * 1. Linux kernel source code (arch/arm64/include/asm/cputype.h, arch/arm64/kernel/cpuinfo.c,
+ *    arch/arm64/kernel/cpufeature.c, errata.c, drivers/perf/arm_pmuv3.c).
+ * 2. User-space tools & libraries: util-linux (sys-utils/lscpu-arm.c), pytorch/cpuinfo (src/arm/linux/cpuinfo.c).
+ * 3. Vendor XNU & RE sources: Apple XNU (osfmk/arm/cpuid.h), Asahi Linux (M-series RE), LLVM AArch64 backend.
+ * 4. Microsoft Azure Cobalt technical documentation.
  */
 
 /**
@@ -284,11 +287,13 @@ static constexpr ArmPartEntry kAppleParts[] = {
     { 0x055, "M4-Pro-Performance" },
     { 0x058, "M4-Max-Efficiency" },
     { 0x059, "M4-Max-Performance" },
-    // --- ARMv9.2-A Latest generation (2024-2025 architectures) ---
+    // --- ARMv9.2-A Latest generation (2024-2026 architectures) ---
     { 0x060, "A18-Efficiency" },
     { 0x061, "A18-Performance" },
-    { 0x062, "M5-Hidra (P-Core)" },
-    { 0x063, "M5-Sotra (E-Core)" },
+    { 0x062, "M5-Efficiency" },
+    { 0x063, "M5-Performance" },
+    { 0x064, "A18-Pro-Efficiency" },
+    { 0x065, "A18-Pro-Performance" },
 };
 
 static constexpr ArmPartEntry kFaradayParts[] = {
@@ -362,7 +367,7 @@ static constexpr ArmPartEntry kMsParts[] = {
     { 0xd84, "Azure-Cobalt-200" },
 };
 
-inline constexpr ArmImplEntry kArmImplementers[] = {
+static constexpr auto kArmImplementers = std::to_array<ArmImplEntry>({
     { 0x41, "ARM", kArmParts },
     { 0x42, "Broadcom", kBrcmParts },
     { 0x43, "Cavium", kCaviumParts },
@@ -383,7 +388,7 @@ inline constexpr ArmImplEntry kArmImplementers[] = {
     { 0x6d, "Microsoft", kMsParts },
     { 0x70, "Phytium", kPhytiumParts },
     { 0xc0, "Ampere", kAmpereParts },
-};
+});
 
 /**
  * @brief Maps an ARM implementer ID and part ID to a human-readable name.

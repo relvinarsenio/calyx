@@ -109,9 +109,9 @@ void fill_pattern_fast(std::span<std::byte> buffer) noexcept {
 [[nodiscard]] std::expected<std::size_t, BenchmarkError> calculate_final_mask(
     std::uint64_t write_block_size, std::uint64_t read_block_size) noexcept {
     if (write_block_size == 0 || read_block_size == 0) { return 0; }
-    const std::size_t gcd_val     = std::gcd(write_block_size, read_block_size);
-    const std::size_t lcm_partial = toSize(write_block_size / gcd_val);
-    const auto lcm_val            = safe_arith<overflow_op::mul>(lcm_partial, toSize(read_block_size));
+    const std::uint64_t gcd_val     = std::gcd(write_block_size, read_block_size);
+    const std::uint64_t lcm_partial = write_block_size / gcd_val;
+    const auto lcm_val              = safe_mul(lcm_partial, read_block_size);
     if (!lcm_val) {
         return std::unexpected(BenchmarkError {
             BenchmarkError::Phase::Configuration, uring::UringError { uring::ConfigError::AlignmentOverflow } });
@@ -187,8 +187,7 @@ struct IoParams {
  */
 [[nodiscard]] std::expected<Buffers, BenchmarkError> allocate_io_buffers(std::uint64_t write_mem_stride,
     std::size_t alignment, const DiskBenchmark::BenchmarkConfig& config, std::uint64_t read_block_size) {
-    const auto write_buf_total
-        = safe_arith<overflow_op::mul>(toSize(write_mem_stride), toSize(config.write_queue_depth));
+    const auto write_buf_total = safe_mul(write_mem_stride, config.write_queue_depth);
     if (!write_buf_total) {
         return std::unexpected(BenchmarkError { BenchmarkError::Phase::BufferAllocation,
             uring::UringError { uring::AllocationError::WriteBufSizeOverflow } });
@@ -237,79 +236,6 @@ struct IoParams {
 
     if (!read_buffers_res) { return std::unexpected(read_buffers_res.error()); }
     return Buffers { std::move(write_buf_local), std::move(*read_buffers_res) };
-}
-
-/**
- * @brief Helper function to initialize the io_uring engine instance and register worker affinity within an isolated CPU
- * context.
- */
-[[nodiscard]] std::expected<void, affinity::IsolationError> execute_engine_setup(std::optional<UringEngine>& engine,
-    std::uint16_t max_queue_depth, const cpu_set_t* mask, std::size_t size, std::int32_t target_cpu) noexcept {
-    /**
-     * @note Engine creation inside the affinity callback is intentional:
-     * the stabilized target_cpu is required for IORING_SETUP_SQ_AFF,
-     * which explicitly hard-pins the SQPOLL kernel thread to that core.
-     * SQPOLL threads do NOT inherit process CPU affinity.
-     *
-     * @note Guard against std::terminate(): uncaught exceptions escaping a
-     * noexcept lambda invoke terminate() rather than propagating to the caller.
-     * All construction failures are mapped to IsolationError so the caller can
-     * handle them gracefully instead of crashing the benchmark.
-     * IsolationError::context must be a static literal (see affinity.hpp).
-     */
-    try {
-        auto engine_res = UringEngine::create(max_queue_depth, target_cpu);
-        if (!engine_res) {
-            return std::unexpected(affinity::IsolationError {
-                .ec      = engine_res.error(),
-                .context = "UringEngine::create",
-            });
-        }
-        engine = std::move(engine_res).value();
-    } catch (const std::bad_alloc&) {
-        return std::unexpected(affinity::IsolationError {
-            .ec      = std::make_error_code(std::errc::not_enough_memory),
-            .context = "UringEngine construction",
-        });
-    } catch (const std::exception&) {
-        return std::unexpected(affinity::IsolationError {
-            .ec      = std::make_error_code(std::errc::io_error),
-            .context = "UringEngine construction",
-        });
-    } catch (...) {
-        return std::unexpected(affinity::IsolationError {
-            .ec      = std::make_error_code(std::errc::state_not_recoverable),
-            .context = "UringEngine construction",
-        });
-    }
-
-    /** @brief Register async IO worker affinity (io-wq). */
-    if (const auto res = engine->register_worker_affinity(mask, size); !res) {
-        return std::unexpected(affinity::IsolationError {
-            .ec      = std::holds_alternative<std::error_code>(res.error()) ? std::get<std::error_code>(res.error())
-                                                                            : posix::make_error(EIO),
-            .context = "io_uring_register_iowq_aff failed",
-        });
-    }
-    return {};
-}
-
-/**
- * @brief Orchestrates strict CPU core affinity isolation for the io_uring engine and its worker threads.
- */
-[[nodiscard]] std::expected<void, BenchmarkError> setup_engine_affinity(
-    std::optional<UringEngine>& engine, std::uint16_t max_queue_depth) {
-    const auto affinity_res = affinity::execute_strict_isolation(
-        [&engine, max_queue_depth](const cpu_set_t* mask, std::size_t size, std::uint32_t,
-            std::int32_t target_cpu) noexcept -> std::expected<void, affinity::IsolationError> {
-            return execute_engine_setup(engine, max_queue_depth, mask, size, target_cpu);
-        });
-
-    if (!affinity_res) {
-        return std::unexpected(BenchmarkError { BenchmarkError::Phase::EngineSetup, affinity_res.error() });
-    }
-
-    return {};
 }
 
 /**
@@ -577,13 +503,17 @@ std::string DiskBenchmark::format_error(const BenchmarkError& err) {
     auto&& [write_buf, read_buffers] = std::move(*buffers_res);
 
     const std::uint16_t max_queue_depth = std::max(config.write_queue_depth, config.read_queue_depth);
-    std::optional<UringEngine> engine {};
 
-    /** @brief Enforce strict single-core isolation with explicit SQPOLL and io-wq pinning. */
-    if (const auto res = setup_engine_affinity(engine, max_queue_depth); !res) { return std::unexpected(res.error()); }
+    /** @brief Enforce strict single-core thread affinity and io-wq worker pool isolation. */
+    auto engine_res { affinity::CoreAffinityGuard::make_isolated<UringEngine>(max_queue_depth)
+            .transform_error([](const affinity::IsolationError& err) noexcept {
+                return BenchmarkError { BenchmarkError::Phase::EngineSetup, err.ec };
+            }) };
+    if (!engine_res) { return std::unexpected(engine_res.error()); }
+    auto&& [affinity_guard, engine] = std::move(*engine_res);
 
     static std::atomic<bool> warned { false };
-    if (const auto res = engine->register_buffers(write_buf, read_buffers); !res && !warned.exchange(true)) {
+    if (const auto res = engine.register_buffers(write_buf, read_buffers); !res && !warned.exchange(true)) {
         const bool is_enomem = std::holds_alternative<std::error_code>(res.error())
             && std::get<std::error_code>(res.error()).value() == ENOMEM;
         print_warning(std::format("Performance Hint: io_uring fixed buffers disabled ({}), using fallback.",
@@ -622,9 +552,9 @@ std::string DiskBenchmark::format_error(const BenchmarkError& err) {
         .read_queue_depth  = config.read_queue_depth,
     };
 
-    return execute_write_phase(filename, *engine, params)
+    return execute_write_phase(filename, engine, params)
         .and_then([&filename, &engine, &params, &config](const PhaseRunStats& write_stats) {
-            return execute_read_phase(filename, *engine, params)
+            return execute_read_phase(filename, engine, params)
                 .transform([write_stats, &config](const PhaseRunStats& read_stats) {
                     const auto write_metrics = make_disk_metrics(write_stats);
                     const auto read_metrics  = make_disk_metrics(read_stats);

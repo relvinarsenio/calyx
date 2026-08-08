@@ -350,7 +350,7 @@ public:
     }
 
     [[nodiscard]] std::expected<void, std::error_code> write(std::span<const std::byte> data) {
-        return fd_.write(data);
+        return write_bytes(fd_, data).transform([](auto) {}).transform_error([](auto fail) { return fail.error; });
     }
 
     [[nodiscard]] std::expected<void, std::error_code> commit() {

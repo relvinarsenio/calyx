@@ -7,6 +7,7 @@
  */
 #include "application.hpp"
 #include "cli_renderer.hpp"
+#include "interrupts.hpp"
 #include "utils.hpp"
 
 #include <clocale>
@@ -14,14 +15,15 @@
 #include <string>
 
 int main(int argc, char* argv[]) {
+    PosixSignalController signal_controller {};
     std::setlocale(LC_ALL, "");
     ui::TerminalGuard terminal_guard {};
     Application app {};
     return app.run(argc, argv)
-        .transform([]() { return 0; })
-        .or_else([](const std::string& err) -> std::expected<int, std::string> {
+        .or_else([](const std::string& err) -> std::expected<void, std::string> {
             print_error(err);
-            return 1;
+            return std::unexpected(err);
         })
-        .value();
+        .transform([]() { return 0; })
+        .value_or(1);
 }

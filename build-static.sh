@@ -6,7 +6,7 @@
 # persistent build/ccache volumes. Source is bind-mounted directly
 # from the host for zero-overhead, real-time file access.
 # =============================================================================
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -56,11 +56,26 @@ cleanup_on_interrupt() {
 
 trap cleanup_on_interrupt SIGINT SIGTERM
 
+clean_docker_assets() {
+    # Graceful stop
+    docker ps -a --format '{{.Names}}' | grep "^${PROJECT_NAME}-" | xargs -r docker stop -t 5 >/dev/null 2>&1 || true
+    # Remove containers
+    docker ps -a --format '{{.Names}}' | grep "^${PROJECT_NAME}-" | xargs -r docker rm -f >/dev/null 2>&1 || true
+    # Remove volumes
+    docker volume ls --format '{{.Name}}' | grep "^${PROJECT_NAME}-" | xargs -r docker volume rm >/dev/null 2>&1 || true
+    # Remove images
+    docker image ls --format '{{.Repository}}:{{.Tag}}' | grep -E "(/|^)${PROJECT_NAME}-" | xargs -r docker image rm -f >/dev/null 2>&1 || true
+    # Prune any dangling images left behind
+    docker image prune -f >/dev/null 2>&1 || true
+}
+
 # =============================================================================
 # 2. Parse Arguments
 # =============================================================================
 FRESH_BUILD=false
 REBUILD_IMAGE=false
+UPDATE_IMAGE=false
+CLEAN_ALL=false
 
 show_help() {
     echo "Usage: $0 [OPTIONS]"
@@ -68,23 +83,37 @@ show_help() {
     echo "Build a fully static musl binary using Docker."
     echo ""
     echo "Options:"
-    echo "  --fresh-build          Clear build cache only (forces CMake re-config)"
-    echo "  --rebuild-image        Rebuild toolchain image and clear ALL caches"
-    echo "  --platform <platform>  Docker platform (e.g. linux/arm64, linux/amd64)"
+    echo "  -c, --clean            Deep clean all Docker assets related to this project"
+    echo "  -f, --fresh-build      Clear build cache only (forces CMake re-config)"
+    echo "  -r, --rebuild-image    Rebuild toolchain image and clear ALL caches"
+    echo "  -u, --update-image     Pull the latest builder image from registry before compiling"
+    echo "  -p, --platform <arch>  Docker platform (e.g. linux/arm64, linux/amd64)"
     echo "  -h, --help             Show this help message"
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --fresh-build)
+        -c|--clean)
+            CLEAN_ALL=true
+            shift
+            ;;
+        -f|--fresh-build)
             FRESH_BUILD=true
             shift
             ;;
-        --rebuild-image)
+        -r|--rebuild-image)
             REBUILD_IMAGE=true
             shift
             ;;
-        --platform)
+        -u|--update-image)
+            UPDATE_IMAGE=true
+            shift
+            ;;
+        -p|--platform)
+            if [[ -z "${2:-}" ]]; then
+                echo "❌ Error: -p or --platform requires an architecture argument (e.g., linux/amd64)."
+                exit 1
+            fi
             PLATFORM="$2"
             shift 2
             ;;
@@ -99,6 +128,13 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [ "$CLEAN_ALL" = "true" ]; then
+    echo "🧹 Deep cleaning all ${PROJECT_NAME}-related Docker assets..."
+    clean_docker_assets
+    echo "✨ Deep cleanup complete. No other Docker projects were affected."
+    exit 0
+fi
 
 # Suffix container/volume names with platform arch to avoid clashes
 if [[ -n "$PLATFORM" ]]; then
@@ -137,17 +173,42 @@ fi
 # 3. Build Toolchain Image (only if needed)
 # =============================================================================
 NEED_BUILD=false
+GHCR_IMAGE="${GHCR_IMAGE:-ghcr.io/relvinarsenio/calyx-builder}"
+
+case "$PLATFORM" in
+    *arm64*|*aarch64*) GHCR_TAG="arm64" ;;
+    *amd64*|*x86_64*)  GHCR_TAG="amd64" ;;
+    *) 
+        if [[ "$(uname -m)" == "aarch64" ]]; then GHCR_TAG="arm64"; else GHCR_TAG="amd64"; fi
+        ;;
+esac
 
 if [[ "$REBUILD_IMAGE" == "true" ]]; then
     echo "🗑️  Rebuild image requested — rebuilding toolchain and clearing everything..."
-    docker container rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
-    docker volume rm "$VOL_BUILD" "$VOL_CCACHE" >/dev/null 2>&1 || true
+    clean_docker_assets
     NEED_BUILD=true
-elif ! docker image inspect "$IMAGE_NAME" &>/dev/null; then
-    echo "📦 Toolchain image not found — building for the first time..."
-    NEED_BUILD=true
-elif [[ $(docker container inspect -f "{{ range .Mounts }}{{ if eq .Destination \"$C_SRC\" }}{{ .Source }}{{ break }}{{ end }}{{ end }}" "$CONTAINER_NAME" 2>/dev/null || true) != "$SCRIPT_DIR" ]]; then
-    NEED_BUILD=true
+elif [[ "$UPDATE_IMAGE" == "true" ]] || ! docker image inspect "$IMAGE_NAME" &>/dev/null; then
+    if [[ "$UPDATE_IMAGE" == "true" ]]; then
+        echo "🔄 Update image requested — pulling latest toolchain from GHCR ($GHCR_IMAGE:${GHCR_TAG})..."
+    else
+        echo "📦 Toolchain image not found locally."
+        echo "⬇️  Attempting to pull pre-built image from GHCR ($GHCR_IMAGE:${GHCR_TAG})..."
+    fi
+    if docker pull "$GHCR_IMAGE:${GHCR_TAG}"; then
+        echo "✅ Successfully pulled pre-built image!"
+        docker tag "$GHCR_IMAGE:${GHCR_TAG}" "$IMAGE_NAME"
+        docker rm -f "$CONTAINER_NAME" &>/dev/null || true
+        NEED_BUILD=false
+    else
+        echo "⚠️  Pull failed or image not available. Building toolchain from scratch..."
+        NEED_BUILD=true
+    fi
+else
+    if docker container inspect "$CONTAINER_NAME" &>/dev/null; then
+        if [[ $(docker container inspect -f "{{ range .Mounts }}{{ if eq .Destination \"$C_SRC\" }}{{ .Source }}{{ break }}{{ end }}{{ end }}" "$CONTAINER_NAME" 2>/dev/null || true) != "$SCRIPT_DIR" ]]; then
+            NEED_BUILD=true
+        fi
+    fi
 fi
 
 if [[ "$NEED_BUILD" == "true" ]]; then
@@ -247,21 +308,16 @@ docker container exec \
 echo ""
 echo "📦 Extracting binary..."
 
-docker container cp "$CONTAINER_NAME":$C_BUILD/${BINARY_NAME} "$SCRIPT_DIR/$DIST_DIR/${BINARY_NAME}"
-docker container stop -t 0 "$CONTAINER_NAME" >/dev/null 2>&1
+docker container cp "$CONTAINER_NAME":$C_BUILD/${BINARY_NAME} "$SCRIPT_DIR/$DIST_DIR/${BINARY_NAME}" || {
+    echo "❌ Failed to extract binary! Was it compiled successfully?"
+    docker container stop -t 0 "$CONTAINER_NAME" >/dev/null 2>&1 || true
+    exit 1
+}
+docker container stop -t 0 "$CONTAINER_NAME" >/dev/null 2>&1 || true
+
 
 # =============================================================================
-# 7. Auto-Prune Dangling Images
-# =============================================================================
-DANGLING=$(docker images -f "dangling=true" -q 2>/dev/null)
-if [[ -n "$DANGLING" ]]; then
-    echo ""
-    echo "🧹 Pruning dangling images..."
-    docker image prune -f >/dev/null 2>&1 || true
-fi
-
-# =============================================================================
-# 8. Results
+# 7. Results
 # =============================================================================
 echo ""
 echo "✅ Build complete!"
