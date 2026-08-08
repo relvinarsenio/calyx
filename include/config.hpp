@@ -142,7 +142,7 @@ inline constexpr std::size_t kTarPrefixLength   = 155z;
 
 /** @brief Application metadata. */
 inline constexpr std::string_view kAppName             = "calyx";
-inline constexpr std::string_view kAppVersion          = "1.1.0";
+inline constexpr std::string_view kAppVersion          = "1.2.0";
 inline constexpr std::string_view kSpeedtestCliVersion = "1.2.0";
 
 /** @brief Network URLs and targets. */

@@ -112,7 +112,7 @@ Once completed, your single portable binary will be generated at `./dist/calyx`.
 Here is what the terminal output looks like when Calyx finishes running:
 
 ```text
-──────────────────────── Calyx - Linux System Benchmarking Utility (v1.1.0) ────────────────────────
+──────────────────────── Calyx - Linux System Benchmarking Utility (v1.2.0) ────────────────────────
  Author             : Alfie Ardinata (https://calyx.pages.dev/)
  GitHub             : https://github.com/relvinarsenio/calyx
  Usage              : ./calyx

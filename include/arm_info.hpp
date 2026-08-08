@@ -290,8 +290,8 @@ static constexpr ArmPartEntry kAppleParts[] = {
     // --- ARMv9.2-A Latest generation (2024-2026 architectures) ---
     { 0x060, "A18-Efficiency" },
     { 0x061, "A18-Performance" },
-    { 0x062, "M5-Hidra (P-Core)" },
-    { 0x063, "M5-Sotra (E-Core)" },
+    { 0x062, "M5-Efficiency" },
+    { 0x063, "M5-Performance" },
     { 0x064, "A18-Pro-Efficiency" },
     { 0x065, "A18-Pro-Performance" },
 };
@@ -367,7 +367,7 @@ static constexpr ArmPartEntry kMsParts[] = {
     { 0xd84, "Azure-Cobalt-200" },
 };
 
-inline constexpr auto kArmImplementers = std::to_array<ArmImplEntry>({
+static constexpr auto kArmImplementers = std::to_array<ArmImplEntry>({
     { 0x41, "ARM", kArmParts },
     { 0x42, "Broadcom", kBrcmParts },
     { 0x43, "Cavium", kCaviumParts },
