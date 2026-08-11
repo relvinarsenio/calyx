@@ -225,7 +225,7 @@ struct MountMatch {
 }
 
 [[nodiscard]] std::filesystem::path resolve_slave_path(std::filesystem::path sys_path) noexcept {
-    constexpr std::size_t kMaxSlaveTraversalDepth { SYMLOOP_MAX };
+    constexpr std::size_t kMaxSlaveTraversalDepth { posix::kMaxSymloop };
     std::ranges::find_if(std::views::iota(0uz, kMaxSlaveTraversalDepth), [&sys_path](auto) noexcept {
         auto next { get_next_slave_path(sys_path) };
         const bool stop { !next || *next == sys_path };

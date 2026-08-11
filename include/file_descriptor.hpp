@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <climits>
 #include <concepts>
 #include <cstddef>
 #include <expected>
@@ -21,6 +22,7 @@
 #include <limits>
 #include <span>
 #include <sys/ioctl.h>
+#include <sys/param.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <system_error>
@@ -40,6 +42,27 @@ namespace posix {
 using native_ioctl_req_t = unsigned long;
 #else
 using native_ioctl_req_t = int;
+#endif
+
+/**
+ * @brief Maximum symbolic link traversal depth for pathname resolution.
+ *
+ * @c musl defines @c SYMLOOP_MAX in @c <limits.h> (typically 40).
+ * Standard Linux (@c glibc) does not define @c SYMLOOP_MAX as a compile-time
+ * macro constant in header files; fallback to BSD @c MAXSYMLINKS or POSIX minimum.
+ */
+#ifdef SYMLOOP_MAX
+inline constexpr std::size_t kMaxSymloop { SYMLOOP_MAX };
+#elif defined(__GLIBC__)
+#ifdef MAXSYMLINKS
+inline constexpr std::size_t kMaxSymloop { MAXSYMLINKS };
+#else
+inline constexpr std::size_t kMaxSymloop { 40 };
+#endif
+#elif defined(_POSIX_SYMLOOP_MAX)
+inline constexpr std::size_t kMaxSymloop { _POSIX_SYMLOOP_MAX };
+#else
+inline constexpr std::size_t kMaxSymloop { 8 };
 #endif
 
 /**
