@@ -155,20 +155,20 @@ private:
      * @brief Computes 16-bit Internet Checksum with ones' complement carry folding (RFC 1071 Sec 4.1).
      */
     [[nodiscard]] static std::uint16_t calculate_checksum(std::span<const std::byte> buffer) noexcept {
-        const std::uint32_t raw_sum { std::ranges::fold_left(
-            buffer | std::views::chunk(2uz), 0u, [](std::uint32_t acc, auto chunk) noexcept {
-                std::array<std::byte, 2> word_bytes {};
-                std::copy_n(chunk.data(), chunk.size(), word_bytes.data());
-                return safe_add(acc, std::bit_cast<std::uint16_t>(word_bytes)).value_or(acc);
-            }) };
+        constexpr auto accumulate = [](this auto self, auto it, auto end, std::uint32_t acc) noexcept -> std::uint32_t {
+            if (it == end) { return acc; }
+            if (it + 1 == end) { return acc + (toUInt(std::to_integer<std::uint8_t>(*it)) << 8u); }
+            const auto pair = std::array { *it, *(it + 1) };
+            return self(it + 2, end, acc + toUInt(std::bit_cast<std::uint16_t>(pair)));
+        };
 
-        const auto fold_carry { [](std::uint32_t sum_val) noexcept -> std::uint16_t {
-            const auto sum1 { safe_add(sum_val & 0xFFFFu, sum_val >> 16u).value_or(sum_val) };
-            const auto sum2 { safe_add(sum1 & 0xFFFFu, sum1 >> 16u).value_or(sum1) };
-            return toUShort((~sum2) & 0xFFFFu);
-        } };
+        constexpr auto fold_carry = [](this auto self, std::uint32_t sum) noexcept -> std::uint16_t {
+            const auto folded = (sum & 0xFFFFu) + (sum >> 16u);
+            if (folded >> 16u) { return self(folded); }
+            return toUShort((~folded) & 0xFFFFu);
+        };
 
-        return fold_carry(raw_sum);
+        return fold_carry(accumulate(buffer.begin(), buffer.end(), 0u));
     }
 
     [[nodiscard]] static echo_request_v4 build_echo_request_v4(pid_t pid) noexcept {
