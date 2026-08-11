@@ -152,19 +152,17 @@ struct NetworkMetadata {
         auto multi_client    = MultiHttpClient::create();
         auto metadata_client = HttpClient::create();
 
-        auto execution_status
-            = std::expected<void, std::string> {}
-                  .and_then([&multi_client, &metadata_client] {
-                      return (multi_client && metadata_client)
-                          ? std::expected<void, std::string> {}
-                          : std::unexpected("Network client initialization failed");
-                  })
-                  .and_then([&metadata_client] { return metadata_client->prepare_get(config::kUrlCloudflareMeta); })
+        if (!multi_client || !metadata_client) {
+            ip_p.set_value(std::unexpected("Network client initialization failed"));
+            return;
+        }
+
+        if (st.stop_requested()) { return; }
+
+        const auto execution_status
+            = metadata_client->prepare_get(config::kUrlCloudflareMeta)
                   .and_then([&multi_client, &metadata_client] { return multi_client->add_handle(*metadata_client); })
-                  .and_then([&multi_client, st] {
-                      if (st.stop_requested()) { return std::expected<void, std::string> {}; }
-                      return multi_client->perform();
-                  });
+                  .and_then([&multi_client] { return multi_client->perform(); });
 
         if (execution_status) {
             ip_p.set_value(metadata_client->get_result_string());
@@ -179,7 +177,7 @@ struct NetworkMetadata {
         .ip_future                            = std::move(ip_fut) };
 }
 
-[[nodiscard]] std::expected<NetworkMetadata, std::string> parse_network_metadata(std::string&& response) {
+[[nodiscard]] std::expected<NetworkMetadata, std::string> parse_network_metadata(std::string_view response) {
     NetworkMetadataRaw raw {};
     auto err = glz::read<glz::opts { .error_on_unknown_keys = false }>(raw, response);
     if (err) { return std::unexpected("Parse Error"); }
@@ -300,13 +298,13 @@ std::string build_zswap_secondary_info(const ZSwapStats& stats) {
         { { "Spilled", stats.written_back, color::kCyan }, { "Rejected", stats.reject_reclaim_fail, color::kRed },
               { "Capped", stats.pool_limit_hit, color::kRed } });
 
-    return metrics | std::views::filter([](const auto& item) {
-        return std::get<1>(item) > 0;
-    }) | std::views::transform([page_size](const auto& item) {
-        return std::format(" {}: {}", std::get<0>(item),
-            color::colorize(format_bytes(safe_mul(std::get<1>(item), page_size).value_or(0uz)), std::get<2>(item)));
-    }) | std::views::join_with(std::string_view(" "))
-        | std::ranges::to<std::string>();
+    return metrics | std::views::filter([](const auto& item) { return std::get<1>(item) > 0; })
+        | std::views::transform([page_size](const auto& item) {
+              const auto& [name, count, col] = item;
+              const auto bytes               = safe_mul(count, page_size).value_or(0uz);
+              return std::format(" {}: {}", name, color::colorize(format_bytes(bytes), col));
+          })
+        | std::views::join_with(std::string_view(" ")) | std::ranges::to<std::string>();
 }
 
 void print_regular_swap(std::string_view label, const SwapEntry& swap) {
@@ -412,8 +410,11 @@ std::expected<void, std::string> run_disk_benchmarks() {
     disk_runs.reserve(config::kDiskIoRuns);
 
     const std::uint64_t total_bytes = safe_mul(config::kDiskTestSizeMb, 1024ULL * 1024ULL).value_or(0ULL);
-    const auto bs_str               = format_bytes(config::kIoWriteBlockSize)
-        | std::views::filter([](char c) { return c != ' ' && c != 'B'; }) | std::ranges::to<std::string>();
+    const auto bs_str               = [] {
+        auto str = format_bytes(config::kIoWriteBlockSize);
+        std::erase_if(str, [](char c) { return c == ' ' || c == 'B'; });
+        return str;
+    }();
 
     std::println(
         "Running I/O Test ({} File, Seq {} Q{}T1)...", format_bytes(total_bytes), bs_str, config::kIoWriteQueueDepth);
@@ -449,8 +450,7 @@ std::expected<void, std::string> run_speed_test(HttpClient& http) {
         .transform([](SpeedTest st) {
             auto speed_result = st.run();
             ui::render_speed_results(speed_result);
-        })
-        .or_else([](const std::string& err) -> std::expected<void, std::string> { return std::unexpected(err); });
+        });
 }
 
 } // anonymous namespace
