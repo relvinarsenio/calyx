@@ -18,13 +18,10 @@ RUN --mount=type=cache,id=apk-${TARGETARCH},target=/var/cache/apk,sharing=locked
     gcc \
     libstdc++ \
     libstdc++-dev \
-    liburing-dev \
     linux-headers \
     lld \
     llvm \
     musl-dev \
-    nghttp2-dev \
-    nghttp2-static \
     ninja \
     perl \
     && mkdir -p /src /build /root/.ccache
