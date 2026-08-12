@@ -66,29 +66,27 @@ static_assert(ICMP6_ECHO_REPLY == 129, "ICMP6_ECHO_REPLY macro must match RFC 44
 class icmp_ping {
 public:
     /**
-     * @brief Pings IPv4 host availability via unprivileged ICMP Echo (RFC 792).
+     * @brief Pings IPv4 host availability via single-threaded multiplexed ICMP + TCP race probe.
      *
      * @param ip IPv4 target address string.
      * @param timeout Ping deadline budget.
-     * @return bool True if host replied with a valid ICMP Echo Reply; false otherwise.
+     * @return bool True if any probe succeeded; false otherwise.
      */
     [[nodiscard]] static bool ping_ipv4(std::string_view ip, std::chrono::milliseconds timeout) noexcept {
-        return ping_host<struct sockaddr_in>(ip, timeout, AF_INET, IPPROTO_ICMP, build_echo_request_v4,
-                   receive_echo_reply_v4, is_valid_echo_reply_v4)
-            || tcp_probe_v4(ip, 80, timeout) || tcp_probe_v4(ip, 443, timeout);
+        return ping_host_multiplexed<struct sockaddr_in>(
+            ip, timeout, AF_INET, IPPROTO_ICMP, build_echo_request_v4, receive_echo_reply_v4, is_valid_echo_reply_v4);
     }
 
     /**
-     * @brief Pings IPv6 host availability via unprivileged ICMPv6 Echo (RFC 4443).
+     * @brief Pings IPv6 host availability via single-threaded multiplexed ICMPv6 + TCP race probe.
      *
      * @param ip IPv6 target address string.
      * @param timeout Ping deadline budget.
-     * @return bool True if host replied with a valid ICMPv6 Echo Reply; false otherwise.
+     * @return bool True if any probe succeeded; false otherwise.
      */
     [[nodiscard]] static bool ping_ipv6(std::string_view ip, std::chrono::milliseconds timeout) noexcept {
-        return ping_host<struct sockaddr_in6>(ip, timeout, AF_INET6, IPPROTO_ICMPV6, build_echo_request_v6,
-                   receive_echo_reply_v6, is_valid_echo_reply_v6)
-            || tcp_probe_v6(ip, 80, timeout) || tcp_probe_v6(ip, 443, timeout);
+        return ping_host_multiplexed<struct sockaddr_in6>(ip, timeout, AF_INET6, IPPROTO_ICMPV6, build_echo_request_v6,
+            receive_echo_reply_v6, is_valid_echo_reply_v6);
     }
 
 private:
@@ -124,6 +122,32 @@ private:
         struct icmp6_hdr header {};
         echo_payload payload {};
     };
+
+    /**
+     * @brief Sets address family and port for IPv4/IPv6 socket address structures.
+     */
+    template <socket_address Addr>
+    static void set_sa_family_and_port(Addr& sa, std::int32_t af, std::uint16_t port) noexcept {
+        if constexpr (requires { sa.sin_family; }) {
+            sa.sin_family = toUShort(af);
+            sa.sin_port   = htons(port);
+        } else {
+            sa.sin6_family = toUShort(af);
+            sa.sin6_port   = htons(port);
+        }
+    }
+
+    /**
+     * @brief Sets IP address for IPv4/IPv6 socket address structures.
+     */
+    template <socket_address Addr>
+    [[nodiscard]] static bool set_sa_ip(Addr& sa, std::int32_t af, std::string_view ip) noexcept {
+        if constexpr (requires { sa.sin_addr; }) {
+            return posix::inet_pton(af, ip, sa.sin_addr).has_value();
+        } else {
+            return posix::inet_pton(af, ip, sa.sin6_addr).has_value();
+        }
+    }
 
     /**
      * @brief Validates ICMP Echo Reply (type, code, sequence, 64-bit transaction nonce; omits ID for SOCK_DGRAM).
@@ -165,7 +189,7 @@ private:
         };
 
         constexpr auto fold_carry = [](this auto self, std::uint32_t sum) noexcept -> std::uint16_t {
-            const auto folded = (sum & 0xFFFFu) + (sum >> 16u);
+            const auto folded { (sum & 0xFFFFu) + (sum >> 16u) };
             if (folded >> 16u) { return self(folded); }
             return toUShort((~folded) & 0xFFFFu);
         };
@@ -200,61 +224,6 @@ private:
         request.header.icmp6_seq  = htons(seq);
         request.payload.data      = std::bit_cast<std::array<std::byte, 8uz>>(nonce);
         return request;
-    }
-
-    /**
-     * @brief Polls file descriptor for I/O readiness up to deadline.
-     */
-    [[nodiscard]] static bool poll_fd(
-        posix::file_descriptor::native_handle_type fd, short events, std::chrono::milliseconds timeout) noexcept {
-        pollfd pfd { .fd = fd, .events = events, .revents = 0 };
-        return posix::poll(std::span { &pfd, 1uz }, timeout)
-            .transform([&pfd, events](std::int32_t count) noexcept { return count > 0 && (pfd.revents & events) != 0; })
-            .value_or(false);
-    }
-
-    [[nodiscard]] static bool tcp_probe_v4(
-        std::string_view ip, std::uint16_t port, std::chrono::milliseconds timeout) noexcept {
-        auto sock_res = posix::socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-        if (!sock_res) { return false; }
-
-        posix::file_descriptor fd = std::move(*sock_res);
-        struct sockaddr_in addr {};
-        addr.sin_family = toUShort(AF_INET);
-        addr.sin_port   = htons(port);
-        if (!posix::inet_pton(AF_INET, ip, addr.sin_addr)) { return false; }
-
-        const auto conn_res = posix::connect(fd, addr);
-        if (conn_res.has_value()) { return true; }
-        if (conn_res.error() != posix::make_error(EINPROGRESS)) { return false; }
-
-        if (!poll_fd(fd.native_handle(), POLLOUT, timeout)) { return false; }
-
-        return posix::getsockopt<std::int32_t>(fd, SOL_SOCKET, SO_ERROR)
-            .transform([](std::int32_t err) noexcept { return err == 0; })
-            .value_or(false);
-    }
-
-    [[nodiscard]] static bool tcp_probe_v6(
-        std::string_view ip, std::uint16_t port, std::chrono::milliseconds timeout) noexcept {
-        auto sock_res = posix::socket(AF_INET6, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-        if (!sock_res) { return false; }
-
-        posix::file_descriptor fd = std::move(*sock_res);
-        struct sockaddr_in6 addr {};
-        addr.sin6_family = toUShort(AF_INET6);
-        addr.sin6_port   = htons(port);
-        if (!posix::inet_pton(AF_INET6, ip, addr.sin6_addr)) { return false; }
-
-        const auto conn_res = posix::connect(fd, addr);
-        if (conn_res.has_value()) { return true; }
-        if (conn_res.error() != posix::make_error(EINPROGRESS)) { return false; }
-
-        if (!poll_fd(fd.native_handle(), POLLOUT, timeout)) { return false; }
-
-        return posix::getsockopt<std::int32_t>(fd, SOL_SOCKET, SO_ERROR)
-            .transform([](std::int32_t err) noexcept { return err == 0; })
-            .value_or(false);
     }
 
     /**
@@ -386,52 +355,84 @@ private:
     }
 
     /**
-     * @brief Unified ICMP ping sequence template for IPv4 and IPv6 targets.
+     * @brief Unified single-threaded ICMP + TCP multiplexed race probing engine.
      */
     template <socket_address Addr, typename RequestBuilder, typename ReplyReceiver, typename ReplyCheck>
-        requires std::invocable<RequestBuilder, pid_t>
-        && icmp_request_packet<std::invoke_result_t<RequestBuilder, pid_t>>
-    [[nodiscard]] static bool ping_host(std::string_view ip, std::chrono::milliseconds timeout, std::int32_t af,
-        std::int32_t proto, RequestBuilder&& build_req, ReplyReceiver&& recv_reply,
+    [[nodiscard]] static bool ping_host_multiplexed(std::string_view ip, std::chrono::milliseconds timeout,
+        std::int32_t af, std::int32_t icmp_proto, RequestBuilder&& build_req, ReplyReceiver&& recv_reply,
         ReplyCheck&& is_valid_reply) noexcept {
-        const auto dest_addr_opt { [ip, af]() -> std::optional<Addr> {
-            Addr sa {};
-            if constexpr (requires { sa.sin_family; }) {
-                sa.sin_family = toUShort(af);
-                sa.sin_port   = 0;
-                if (!posix::inet_pton(af, ip, sa.sin_addr)) { return std::nullopt; }
-            } else {
-                sa.sin6_family = toUShort(af);
-                sa.sin6_port   = 0;
-                if (!posix::inet_pton(af, ip, sa.sin6_addr)) { return std::nullopt; }
-            }
-            return sa;
-        }() };
+        Addr icmp_addr {};
+        set_sa_family_and_port(icmp_addr, af, 0);
+        if (!set_sa_ip(icmp_addr, af, ip)) { return false; }
 
-        if (!dest_addr_opt) { return false; }
-        const auto dest_addr { *dest_addr_opt };
-        const auto t0 { std::chrono::steady_clock::now() };
+        auto icmp_sock_res { posix::socket(af, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, icmp_proto)
+                .or_else([af, icmp_proto](auto) noexcept {
+                    return posix::socket(af, SOCK_RAW | SOCK_NONBLOCK | SOCK_CLOEXEC, icmp_proto);
+                }) };
 
-        auto sock_res {
-            posix::socket(af, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, proto).or_else([af, proto](auto) noexcept {
-                return posix::socket(af, SOCK_RAW | SOCK_NONBLOCK | SOCK_CLOEXEC, proto);
-            })
+        posix::file_descriptor icmp_fd;
+        const auto req { build_req(posix::getpid()) };
+        bool icmp_sent { false };
+        if (icmp_sock_res) {
+            icmp_fd   = std::move(*icmp_sock_res);
+            icmp_sent = posix::sendto(icmp_fd, std::as_bytes(std::span { &req, 1uz }), icmp_addr).has_value();
+        }
+
+        auto init_tcp { [ip, af](std::uint16_t port, posix::file_descriptor& fd) noexcept -> bool {
+            Addr addr {};
+            set_sa_family_and_port(addr, af, port);
+            if (!set_sa_ip(addr, af, ip)) { return false; }
+
+            auto res { posix::socket(af, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0) };
+            if (!res) { return false; }
+
+            fd = std::move(*res);
+            const auto conn { posix::connect(fd, addr) };
+            if (conn.has_value()) { return true; }
+            return conn.error() == posix::make_error(EINPROGRESS);
+        } };
+
+        posix::file_descriptor tcp80_fd;
+        posix::file_descriptor tcp443_fd;
+        const bool tcp80_active { init_tcp(80, tcp80_fd) };
+        const bool tcp443_active { init_tcp(443, tcp443_fd) };
+
+        std::array<pollfd, 3> pfds {
+            { { .fd = icmp_sent ? icmp_fd.native_handle() : -1, .events = POLLIN, .revents = 0 },
+                { .fd = tcp80_active ? tcp80_fd.native_handle() : -1, .events = POLLOUT, .revents = 0 },
+                { .fd = tcp443_active ? tcp443_fd.native_handle() : -1, .events = POLLOUT, .revents = 0 } }
         };
 
-        if (!sock_res) { return false; }
+        const auto t0 { std::chrono::steady_clock::now() };
+        while (true) {
+            const auto rem { get_remaining_timeout(t0, timeout) };
+            if (rem <= std::chrono::milliseconds(0)) { break; }
 
-        posix::file_descriptor fd { std::move(*sock_res) };
-        const auto request { build_req(posix::getpid()) };
+            const auto poll_res { posix::poll(std::span { pfds }, rem) };
+            if (!poll_res || *poll_res <= 0) { break; }
 
-        if (!posix::sendto(fd, std::as_bytes(std::span { &request, 1uz }), dest_addr)) { return false; }
+            if (pfds[0].revents & POLLIN) {
+                const auto reply { recv_reply(icmp_fd) };
+                if (reply && is_valid_reply(*reply, req)) { return true; }
+                pfds[0].fd = -1;
+            }
 
-        const auto rem_timeout { get_remaining_timeout(t0, timeout) };
-        if (rem_timeout <= std::chrono::milliseconds(0)) { return false; }
+            if (pfds[1].revents & (POLLOUT | POLLERR | POLLHUP)) {
+                const auto opt { posix::getsockopt<std::int32_t>(tcp80_fd, SOL_SOCKET, SO_ERROR) };
+                if (opt.has_value() && *opt == 0) { return true; }
+                pfds[1].fd = -1;
+            }
 
-        if (!poll_fd(fd.native_handle(), POLLIN, rem_timeout)) { return false; }
+            if (pfds[2].revents & (POLLOUT | POLLERR | POLLHUP)) {
+                const auto opt { posix::getsockopt<std::int32_t>(tcp443_fd, SOL_SOCKET, SO_ERROR) };
+                if (opt.has_value() && *opt == 0) { return true; }
+                pfds[2].fd = -1;
+            }
 
-        const auto reply { recv_reply(fd) };
-        return reply.has_value() && is_valid_reply(*reply, request);
+            if (pfds[0].fd == -1 && pfds[1].fd == -1 && pfds[2].fd == -1) { break; }
+        }
+
+        return false;
     }
 };
 
