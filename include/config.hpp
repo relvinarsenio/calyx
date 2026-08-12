@@ -95,10 +95,10 @@ inline constexpr auto kSpeedtestDlTimeout { std::chrono::seconds { 60 } };
 
 inline constexpr auto kDiskBenchmarkMaxDuration { std::chrono::seconds { 360 } };
 
-/** @brief Connection check overall timeout. */
-inline constexpr auto kCheckConnTimeout { std::chrono::seconds { 5 } };
+/** @brief Conservative fixed timeout for LAN/WAN ICMP round-trip. */
+inline constexpr auto kCheckConnTimeout { std::chrono::seconds { 2 } };
 /** @brief Connection check handshaking timeout. */
-inline constexpr auto kCheckConnConnectTimeout { std::chrono::seconds { 3 } };
+inline constexpr auto kCheckConnConnectTimeout { std::chrono::seconds { 1 } };
 
 inline constexpr auto kUiSpinnerDelay { std::chrono::milliseconds { 150 } };
 inline constexpr auto kUiUpdateInterval { std::chrono::milliseconds { 33 } };
