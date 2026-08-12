@@ -414,7 +414,7 @@ private:
             if (pfds[0].revents & POLLIN) {
                 const auto reply { recv_reply(icmp_fd) };
                 if (reply && is_valid_reply(*reply, req)) { return true; }
-                pfds[0].fd = -1;
+                if (!reply) { pfds[0].fd = -1; }
             }
 
             if (pfds[1].revents & (POLLOUT | POLLERR | POLLHUP)) {
