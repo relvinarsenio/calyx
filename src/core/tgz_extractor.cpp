@@ -91,8 +91,7 @@ std::optional<std::uint64_t> parse_numeric(std::span<const std::byte> data) {
     auto octal_view = content | std::views::take_while(is_digit);
     if (std::ranges::empty(octal_view)) { return std::nullopt; }
 
-    auto first_non_digit = content | std::views::drop_while(is_digit);
-    if (!std::ranges::empty(first_non_digit) && !is_padding(*std::ranges::begin(first_non_digit))) {
+    if (!std::ranges::all_of(content | std::views::drop_while(is_digit), is_padding)) {
         return std::nullopt;
     }
 
@@ -525,7 +524,7 @@ struct PaxRecordView {
     content.remove_suffix(1);
 
     const auto eq = content.find('=');
-    if (eq == std::string_view::npos) { return std::unexpected(ExtractError::InvalidHeader); }
+    if (eq == 0 || eq == std::string_view::npos) { return std::unexpected(ExtractError::InvalidHeader); }
 
     return PaxRecordView {
         .key       = content.substr(0, eq),
