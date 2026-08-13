@@ -256,6 +256,19 @@ template <FixedString Pattern> [[nodiscard]] constexpr bool equals_ic(std::strin
         .value_or(sv);
 }
 
+[[nodiscard]] constexpr std::string_view strip_brackets(std::string_view sv) noexcept {
+    return std::optional { sv }
+        .and_then([](auto str) {
+            return (str.starts_with('[') && str.ends_with(']')) ? std::optional { str } : std::nullopt;
+        })
+        .transform([](auto str) {
+            str.remove_prefix(1uz);
+            str.remove_suffix(1uz);
+            return str;
+        })
+        .value_or(sv);
+}
+
 } // namespace string_utils
 
 /**

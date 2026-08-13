@@ -1,13 +1,14 @@
 cmake_minimum_required(VERSION 3.24)
 
-# Fix FetchContent timestamp warning (CMP0135) & LTO Policy (CMP0069)
+# Fix FetchContent timestamp warning (CMP0135), LTO Policy (CMP0069), & return() argument check (CMP0140)
 cmake_policy(SET CMP0135 NEW)
+cmake_policy(SET CMP0140 NEW)
 set(CMAKE_POLICY_DEFAULT_CMP0069 NEW)
 
 # =============================================================================
 # Calyx - Rapid Linux Server Profiler
 # =============================================================================
-project(calyx VERSION 1.2.0 LANGUAGES CXX C)
+project(calyx VERSION 1.2.1 LANGUAGES CXX C)
 
 # Ensure all libraries and targets are built with -fPIC (Required for static-pie)
 # C++23 Required
@@ -19,36 +20,46 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_TLS_VERIFY ON CACHE BOOL "Strict TLS verification for FetchContent" FORCE)
 
 # Global Modern CMake settings (Forced for all dependencies)
-set(CMAKE_C_VISIBILITY_PRESET hidden CACHE STRING "" FORCE)
-set(CMAKE_CXX_VISIBILITY_PRESET hidden CACHE STRING "" FORCE)
-set(CMAKE_VISIBILITY_INLINES_HIDDEN ON CACHE BOOL "" FORCE)
-set(CMAKE_POSITION_INDEPENDENT_CODE ON CACHE BOOL "" FORCE)
-set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON CACHE BOOL "" FORCE)
+set(CMAKE_C_VISIBILITY_PRESET hidden CACHE STRING "Hide C symbols by default" FORCE)
+set(CMAKE_CXX_VISIBILITY_PRESET hidden CACHE STRING "Hide C++ symbols by default" FORCE)
+set(CMAKE_VISIBILITY_INLINES_HIDDEN ON CACHE BOOL "Hide inline functions by default" FORCE)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON CACHE BOOL "Enable PIC/PIE for static-pie binary" FORCE)
+set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON CACHE BOOL "Enable Link-Time Optimization (LTO)" FORCE)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON CACHE BOOL "Generate compile_commands.json for IDEs/clangd" FORCE)
+set(CMAKE_LINK_SEARCH_START_STATIC ON CACHE BOOL "Prefer static libraries for find_library" FORCE)
 
 # Force MinSizeRel build type globally for the project and all dependencies
 set(CMAKE_BUILD_TYPE "MinSizeRel" CACHE STRING "Forced MinSizeRel" FORCE)
 
 # =============================================================================
+# Clean Logging Helpers (No Emojis)
+# =============================================================================
+function(log_section TITLE)
+    message(STATUS "")
+    message(STATUS "-- [ ${TITLE} ] -----------------------------------------------")
+endfunction()
+
+function(log_property KEY VALUE)
+    string(SUBSTRING "${KEY}                            " 0 20 PADDED_KEY)
+    message(STATUS "  - ${PADDED_KEY}: ${VALUE}")
+endfunction()
+
+# =============================================================================
 # 1. Compiler Detection & CCACHE SETUP (CRITICAL: MUST BE TOP)
 # =============================================================================
 # Enable ccache if available (Global)
+message(CHECK_START "Checking for ccache compiler launcher")
 find_program(CCACHE_PROGRAM ccache)
 if(CCACHE_PROGRAM)
-    message(STATUS "🚀 Optimization: ccache found and enabled (Global)")
+    message(CHECK_PASS "found (${CCACHE_PROGRAM})")
     set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
     set(CMAKE_C_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
+else()
+    message(CHECK_FAIL "not found")
 endif()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(DetectCompiler)
-
-# =============================================================================
-# Pre-flight Check: Ensure 'xxd' is available
-# =============================================================================
-find_program(XXD_EXE xxd)
-if(NOT XXD_EXE)
-    message(FATAL_ERROR "Error: 'xxd' tool is required but not found.")
-endif()
 
 # =============================================================================
 # LLVM Full Stack Configuration
@@ -56,25 +67,33 @@ endif()
 find_program(LLVM_AR llvm-ar REQUIRED)
 find_program(LLVM_RANLIB llvm-ranlib REQUIRED)
 find_program(LLVM_NM llvm-nm)
+find_program(LLVM_STRIP llvm-strip)
+find_program(LLVM_OBJCOPY llvm-objcopy REQUIRED)
 find_program(LLD_LINKER ld.lld REQUIRED)
 
 set(CMAKE_AR "${LLVM_AR}" CACHE FILEPATH "Archiver" FORCE)
 set(CMAKE_RANLIB "${LLVM_RANLIB}" CACHE FILEPATH "Ranlib" FORCE)
+set(CMAKE_LINKER "${LLD_LINKER}" CACHE FILEPATH "Linker" FORCE)
+set(CMAKE_OBJCOPY "${LLVM_OBJCOPY}" CACHE FILEPATH "Objcopy" FORCE)
+
 if(LLVM_NM)
     set(CMAKE_NM "${LLVM_NM}" CACHE FILEPATH "NM" FORCE)
 endif()
 
-message(STATUS "🔧 LLVM Stack:")
-message(STATUS "   AR:     ${LLVM_AR}")
-message(STATUS "   RANLIB: ${LLVM_RANLIB}")
-message(STATUS "   LLD:    ${LLD_LINKER}")
+if(LLVM_STRIP)
+    set(CMAKE_STRIP "${LLVM_STRIP}" CACHE FILEPATH "Strip" FORCE)
+endif()
 
-# =============================================================================
-# Global Full LTO Configuration
-# =============================================================================
-# CMAKE_INTERPROCEDURAL_OPTIMIZATION is handled above as a Cache variable
+set(CMAKE_LINKER_TYPE LLD CACHE STRING "Force LLD linker globally" FORCE)
 
-message(STATUS "🚀 LTO: Full LTO enabled (Optimized)")
+log_section("LLVM Toolchain Stack")
+log_property("AR" "${LLVM_AR}")
+log_property("RANLIB" "${LLVM_RANLIB}")
+log_property("LINKER" "${LLD_LINKER}")
+log_property("OBJCOPY" "${LLVM_OBJCOPY}")
+if(LLVM_STRIP)
+    log_property("STRIP" "${LLVM_STRIP}")
+endif()
 
 # =============================================================================
 # Security Hardening Flags (ALWAYS ON)
@@ -100,9 +119,9 @@ add_link_options(
     -Wl,-z,now
     -Wl,-z,noexecstack
     -Wl,--exclude-libs,ALL
+    -Wl,--build-id=sha1
 )
 
-message(STATUS "🛡️  Security: FORTIFY_SOURCE + Stack Protector + CFI + Full RELRO + Static PIE")
 
 # =============================================================================
 # Optimization flags (Release)
@@ -116,7 +135,6 @@ if(CMAKE_BUILD_TYPE STREQUAL "MinSizeRel" OR CMAKE_BUILD_TYPE STREQUAL "Release"
         -Wl,--gc-sections
         -Wl,--as-needed
     )
-    message(STATUS "🚀 Optimization: ${CMAKE_BUILD_TYPE} + Full LTO + GC sections")
 endif()
 
 # =============================================================================
@@ -124,7 +142,7 @@ endif()
 # =============================================================================
 include(StaticDeps)
 
-# libcurl_static implicitly inherits Full LTO from global CMake settings
+# libcurl_static implicitly inherits LTO from global CMake settings
 # =============================================================================
 # 3. Compiler Configuration (Linking)
 # =============================================================================
@@ -166,7 +184,7 @@ endif()
 # =============================================================================
 set(CACERT_HASH "SHA256=86a1f3366afac7c6f8ae9f3c779ac221129328c43f0ab2b8817eb2f362a5025c")
 
-message(STATUS "📥 Downloading CA Certificate bundle...")
+message(CHECK_START "Downloading CA certificate bundle")
 
 file(DOWNLOAD 
     "https://curl.se/ca/cacert-2026-05-14.pem" 
@@ -180,10 +198,11 @@ list(GET DOWNLOAD_STATUS 0 STATUS_CODE)
 list(GET DOWNLOAD_STATUS 1 STATUS_MESSAGE)
 
 if(NOT STATUS_CODE EQUAL 0)
-    message(FATAL_ERROR "❌ Failed to download CA certificates: ${STATUS_MESSAGE}")
+    message(CHECK_FAIL "failed (${STATUS_MESSAGE})")
+    message(FATAL_ERROR "Failed to download CA certificates: ${STATUS_MESSAGE}")
 endif()
 
-message(STATUS "✅ CA Certificate downloaded and verified.")
+message(CHECK_PASS "downloaded and verified")
 
 set(EMBEDDED_CERT_OBJ "${CMAKE_BINARY_DIR}/cacert.o")
 
@@ -233,14 +252,6 @@ add_executable(calyx
     "${EMBEDDED_CERT_OBJ}"
 )
 
-# === OPTIMIZATION: ICF (Identical Code Folding) ===
-include(CheckLinkerFlag)
-check_linker_flag(CXX "-Wl,--icf=all" HAS_ICF)
-if(HAS_ICF)
-    set_target_properties(calyx PROPERTIES LINK_FLAGS "-Wl,--icf=all")
-endif()
-
-# === OPTIMIZATION: UNITY BUILD (Batch Mode) ===
 # Enable unity build to speed up compilation times
 set_target_properties(calyx PROPERTIES UNITY_BUILD ON)
 
@@ -264,21 +275,9 @@ target_link_libraries(calyx
     OpenSSL::SSL
     OpenSSL::Crypto
     ZLIB::ZLIB
+    liburing
     Threads::Threads
 )
-
-find_path(LIBURING_INCLUDE_DIR liburing.h)
-set(_OLD_SUFFIXES ${CMAKE_FIND_LIBRARY_SUFFIXES})
-set(CMAKE_FIND_LIBRARY_SUFFIXES ".a" ".so")
-find_library(LIBURING_LIBRARY uring)
-set(CMAKE_FIND_LIBRARY_SUFFIXES ${_OLD_SUFFIXES})
-if(LIBURING_INCLUDE_DIR AND LIBURING_LIBRARY)
-    message(STATUS "🌀 liburing found")
-    target_include_directories(calyx PRIVATE ${LIBURING_INCLUDE_DIR})
-    target_link_libraries(calyx PRIVATE ${LIBURING_LIBRARY})
-else()
-    message(FATAL_ERROR "❌ liburing not found! Calyx requires io_uring for high-performance disk benchmarking. Please install liburing-dev or use the provided build-static.sh toolchain.")
-endif()
 
 if(USE_LIBCXX AND STL_STATIC_LIBS)
     target_link_libraries(calyx PRIVATE ${STL_STATIC_LIBS})
@@ -343,12 +342,12 @@ target_precompile_headers(calyx PRIVATE
     <zlib.h>
 )
 
-message(STATUS "🚀 Optimization: Precompiled Headers (PCH) enabled for target 'calyx'")
+log_property("Precompiled Headers" "enabled for target 'calyx'")
 
 # =============================================================================
 # 9. Install & Packaging (CPack)
 # =============================================================================
-install(TARGETS calyx DESTINATION bin)
+install(TARGETS calyx DESTINATION bin COMPONENT bin)
 
 set(CPACK_PACKAGE_NAME "calyx")
 set(CPACK_PACKAGE_VENDOR "Alfie Ardinata")

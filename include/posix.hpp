@@ -1103,28 +1103,50 @@ template <network_address AddrIn>
 }
 
 /**
- * @brief Get options on socket.
+ * @brief Safety boundary for POSIX socket option values (POSIX.1-2024).
+ *
+ * Ensures data structures match raw kernel C-ABI memory layouts while preventing
+ * memory corruption from mispassed pointers or single-byte boolean traps.
  */
 template <typename T>
-    requires std::is_standard_layout_v<T> && std::is_trivially_copyable_v<T>
-[[nodiscard]] inline auto getsockopt(const file_descriptor& fd, std::int32_t level, std::int32_t optname,
+concept socket_option
+    = std::is_standard_layout_v<std::remove_cvref_t<T>> && std::is_trivially_copyable_v<std::remove_cvref_t<T>>
+    && (!std::is_pointer_v<std::remove_cvref_t<T>>) && (!std::is_same_v<std::remove_cvref_t<T>, bool>);
+
+/**
+ * @brief Get options on socket.
+ */
+template <socket_option T>
+[[nodiscard]] inline auto getsockopt(const file_descriptor& fd, const std::int32_t level, const std::int32_t optname,
     T& optval) noexcept -> std::expected<void, std::error_code> {
     socklen_t optlen { cast::static_converter<socklen_t> {}(sizeof(optval)) };
     return expect_result<error_style::posix>(::getsockopt(fd.native_handle(), level, optname, &optval, &optlen))
-        .transform([](auto) noexcept {});
+        .transform([](const auto&) noexcept {});
+}
+
+/**
+ * @brief Get options on socket by value.
+ */
+template <socket_option T>
+    requires std::default_initializable<T>
+[[nodiscard]] inline auto getsockopt(const file_descriptor& fd, const std::int32_t level,
+    const std::int32_t optname) noexcept -> std::expected<T, std::error_code> {
+    T optval {};
+    socklen_t optlen { cast::static_converter<socklen_t> {}(sizeof(optval)) };
+    return expect_result<error_style::posix>(::getsockopt(fd.native_handle(), level, optname, &optval, &optlen))
+        .and_then([optval](const auto&) noexcept { return expect_result<error_style::pthreads>(optval); });
 }
 
 /**
  * @brief Set options on socket.
  */
-template <typename T>
-    requires std::is_standard_layout_v<T> && std::is_trivially_copyable_v<T>
-[[nodiscard]] inline auto setsockopt(const file_descriptor& fd, std::int32_t level, std::int32_t optname,
+template <socket_option T>
+[[nodiscard]] inline auto setsockopt(const file_descriptor& fd, const std::int32_t level, const std::int32_t optname,
     const T& optval) noexcept -> std::expected<void, std::error_code> {
     const auto optlen { cast::static_converter<socklen_t> {}(sizeof(optval)) };
     const auto* ptr { static_cast<const void*>(std::addressof(optval)) };
     return expect_result<error_style::posix>(::setsockopt(fd.native_handle(), level, optname, ptr, optlen))
-        .transform([](auto) noexcept {});
+        .transform([](const auto&) noexcept {});
 }
 
 } // namespace posix

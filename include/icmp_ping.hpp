@@ -66,26 +66,26 @@ static_assert(ICMP6_ECHO_REPLY == 129, "ICMP6_ECHO_REPLY macro must match RFC 44
 class icmp_ping {
 public:
     /**
-     * @brief Pings IPv4 host availability via unprivileged ICMP Echo (RFC 792).
+     * @brief Pings IPv4 host availability via single-threaded multiplexed ICMP + TCP race probe.
      *
      * @param ip IPv4 target address string.
      * @param timeout Ping deadline budget.
-     * @return bool True if host replied with a valid ICMP Echo Reply; false otherwise.
+     * @return bool True if any probe succeeded; false otherwise.
      */
     [[nodiscard]] static bool ping_ipv4(std::string_view ip, std::chrono::milliseconds timeout) noexcept {
-        return ping_host<struct sockaddr_in>(
+        return ping_host_multiplexed<struct sockaddr_in>(
             ip, timeout, AF_INET, IPPROTO_ICMP, build_echo_request_v4, receive_echo_reply_v4, is_valid_echo_reply_v4);
     }
 
     /**
-     * @brief Pings IPv6 host availability via unprivileged ICMPv6 Echo (RFC 4443).
+     * @brief Pings IPv6 host availability via single-threaded multiplexed ICMPv6 + TCP race probe.
      *
      * @param ip IPv6 target address string.
      * @param timeout Ping deadline budget.
-     * @return bool True if host replied with a valid ICMPv6 Echo Reply; false otherwise.
+     * @return bool True if any probe succeeded; false otherwise.
      */
     [[nodiscard]] static bool ping_ipv6(std::string_view ip, std::chrono::milliseconds timeout) noexcept {
-        return ping_host<struct sockaddr_in6>(ip, timeout, AF_INET6, IPPROTO_ICMPV6, build_echo_request_v6,
+        return ping_host_multiplexed<struct sockaddr_in6>(ip, timeout, AF_INET6, IPPROTO_ICMPV6, build_echo_request_v6,
             receive_echo_reply_v6, is_valid_echo_reply_v6);
     }
 
@@ -124,6 +124,33 @@ private:
     };
 
     /**
+     * @brief Sets address family and port for IPv4/IPv6 socket address structures.
+     */
+    template <socket_address Addr>
+    static void set_sa_family_and_port(Addr& sa, const std::int32_t af, const std::uint16_t port) noexcept {
+        if constexpr (requires { sa.sin_family; }) {
+            sa.sin_family = toUShort(af);
+            sa.sin_port   = htons(port);
+        } else {
+            sa.sin6_family = toUShort(af);
+            sa.sin6_port   = htons(port);
+        }
+    }
+
+    /**
+     * @brief Sets IP address for IPv4/IPv6 socket address structures.
+     */
+    template <socket_address Addr>
+    [[nodiscard]] static bool set_sa_ip(Addr& sa, const std::int32_t af, const std::string_view ip) noexcept {
+        const auto target_ip { string_utils::strip_brackets(ip) };
+        if constexpr (requires { sa.sin_addr; }) {
+            return posix::inet_pton(af, target_ip, sa.sin_addr).has_value();
+        } else {
+            return posix::inet_pton(af, target_ip, sa.sin6_addr).has_value();
+        }
+    }
+
+    /**
      * @brief Validates ICMP Echo Reply (type, code, sequence, 64-bit transaction nonce; omits ID for SOCK_DGRAM).
      */
     [[nodiscard]] static bool is_valid_echo_reply_v4(const echo_reply_v4& reply, const echo_request_v4& req) noexcept {
@@ -155,20 +182,20 @@ private:
      * @brief Computes 16-bit Internet Checksum with ones' complement carry folding (RFC 1071 Sec 4.1).
      */
     [[nodiscard]] static std::uint16_t calculate_checksum(std::span<const std::byte> buffer) noexcept {
-        const std::uint32_t raw_sum { std::ranges::fold_left(
-            buffer | std::views::chunk(2uz), 0u, [](std::uint32_t acc, auto chunk) noexcept {
-                std::array<std::byte, 2> word_bytes {};
-                std::copy_n(chunk.data(), chunk.size(), word_bytes.data());
-                return safe_add(acc, std::bit_cast<std::uint16_t>(word_bytes)).value_or(acc);
-            }) };
+        constexpr auto accumulate = [](this auto self, auto it, auto end, std::uint32_t acc) noexcept -> std::uint32_t {
+            if (it == end) { return acc; }
+            if (it + 1 == end) { return acc + (toUInt(std::to_integer<std::uint8_t>(*it)) << 8u); }
+            const auto pair = std::array { *it, *(it + 1) };
+            return self(it + 2, end, acc + toUInt(std::bit_cast<std::uint16_t>(pair)));
+        };
 
-        const auto fold_carry { [](std::uint32_t sum_val) noexcept -> std::uint16_t {
-            const auto sum1 { safe_add(sum_val & 0xFFFFu, sum_val >> 16u).value_or(sum_val) };
-            const auto sum2 { safe_add(sum1 & 0xFFFFu, sum1 >> 16u).value_or(sum1) };
-            return toUShort((~sum2) & 0xFFFFu);
-        } };
+        constexpr auto fold_carry = [](this auto self, std::uint32_t sum) noexcept -> std::uint16_t {
+            const auto folded { (sum & 0xFFFFu) + (sum >> 16u) };
+            if (folded >> 16u) { return self(folded); }
+            return toUShort((~folded) & 0xFFFFu);
+        };
 
-        return fold_carry(raw_sum);
+        return fold_carry(accumulate(buffer.begin(), buffer.end(), 0u));
     }
 
     [[nodiscard]] static echo_request_v4 build_echo_request_v4(pid_t pid) noexcept {
@@ -198,17 +225,6 @@ private:
         request.header.icmp6_seq  = htons(seq);
         request.payload.data      = std::bit_cast<std::array<std::byte, 8uz>>(nonce);
         return request;
-    }
-
-    /**
-     * @brief Polls file descriptor for I/O readiness up to deadline.
-     */
-    [[nodiscard]] static bool poll_fd(
-        posix::file_descriptor::native_handle_type fd, short events, std::chrono::milliseconds timeout) noexcept {
-        pollfd pfd { .fd = fd, .events = events, .revents = 0 };
-        return posix::poll(std::span { &pfd, 1uz }, timeout)
-            .transform([&pfd, events](std::int32_t count) noexcept { return count > 0 && (pfd.revents & events) != 0; })
-            .value_or(false);
     }
 
     /**
@@ -340,52 +356,109 @@ private:
     }
 
     /**
-     * @brief Unified ICMP ping sequence template for IPv4 and IPv6 targets.
+     * @brief Performs a zero-packet UDP kernel routing lookup to verify destination reachability.
+     */
+    template <socket_address Addr>
+    [[nodiscard]] static bool has_valid_route(const std::int32_t af, const std::string_view ip) noexcept {
+        const auto sock { posix::socket(af, SOCK_DGRAM | SOCK_CLOEXEC, 0) };
+        if (!sock) { return false; }
+
+        Addr addr {};
+        set_sa_family_and_port(addr, af, 80);
+        if (!set_sa_ip(addr, af, ip)) { return false; }
+
+        return posix::connect(*sock, addr).has_value();
+    }
+
+    /**
+     * @brief Unified single-threaded ICMP + TCP multiplexed race probing engine.
      */
     template <socket_address Addr, typename RequestBuilder, typename ReplyReceiver, typename ReplyCheck>
-        requires std::invocable<RequestBuilder, pid_t>
-        && icmp_request_packet<std::invoke_result_t<RequestBuilder, pid_t>>
-    [[nodiscard]] static bool ping_host(std::string_view ip, std::chrono::milliseconds timeout, std::int32_t af,
-        std::int32_t proto, RequestBuilder&& build_req, ReplyReceiver&& recv_reply,
+    [[nodiscard]] static bool ping_host_multiplexed(const std::string_view ip, const std::chrono::milliseconds timeout,
+        const std::int32_t af, const std::int32_t icmp_proto, RequestBuilder&& build_req, ReplyReceiver&& recv_reply,
         ReplyCheck&& is_valid_reply) noexcept {
-        const auto dest_addr_opt { [ip, af]() -> std::optional<Addr> {
-            Addr sa {};
-            if constexpr (requires { sa.sin_family; }) {
-                sa.sin_family = toUShort(af);
-                sa.sin_port   = 0;
-                if (!posix::inet_pton(af, ip, sa.sin_addr)) { return std::nullopt; }
-            } else {
-                sa.sin6_family = toUShort(af);
-                sa.sin6_port   = 0;
-                if (!posix::inet_pton(af, ip, sa.sin6_addr)) { return std::nullopt; }
-            }
-            return sa;
-        }() };
+        if (!has_valid_route<Addr>(af, ip)) { return false; }
 
-        if (!dest_addr_opt) { return false; }
-        const auto dest_addr { *dest_addr_opt };
-        const auto t0 { std::chrono::steady_clock::now() };
+        Addr icmp_addr {};
+        set_sa_family_and_port(icmp_addr, af, 0);
+        if (!set_sa_ip(icmp_addr, af, ip)) { return false; }
 
-        auto sock_res {
-            posix::socket(af, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, proto).or_else([af, proto](auto) noexcept {
-                return posix::socket(af, SOCK_RAW | SOCK_NONBLOCK | SOCK_CLOEXEC, proto);
-            })
+        auto icmp_sock_res { posix::socket(af, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, icmp_proto)
+                .or_else([af, icmp_proto](auto) noexcept {
+                    return posix::socket(af, SOCK_RAW | SOCK_NONBLOCK | SOCK_CLOEXEC, icmp_proto);
+                }) };
+
+        posix::file_descriptor icmp_fd;
+        const auto req { build_req(posix::getpid()) };
+        bool icmp_sent { false };
+        if (icmp_sock_res) {
+            icmp_fd   = std::move(*icmp_sock_res);
+            icmp_sent = posix::sendto(icmp_fd, std::as_bytes(std::span { &req, 1uz }), icmp_addr).has_value();
+        }
+
+        const auto init_tcp { [ip, af](const std::uint16_t port, posix::file_descriptor& fd) noexcept -> bool {
+            Addr addr {};
+            set_sa_family_and_port(addr, af, port);
+            if (!set_sa_ip(addr, af, ip)) { return false; }
+
+            auto res { posix::socket(af, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0) };
+            if (!res) { return false; }
+
+            fd = std::move(*res);
+            const auto conn { posix::connect(fd, addr) };
+            if (conn.has_value()) { return true; }
+            return conn.error() == posix::make_error(EINPROGRESS);
+        } };
+
+        posix::file_descriptor tcp80_fd;
+        posix::file_descriptor tcp443_fd;
+        const bool tcp80_active { init_tcp(80, tcp80_fd) };
+        const bool tcp443_active { init_tcp(443, tcp443_fd) };
+
+        const pollfd icmp_pfd {
+            .fd = icmp_sent ? icmp_fd.native_handle() : -1, .events = POLLIN | POLLERR | POLLHUP, .revents = 0
+        };
+        const pollfd tcp80_pfd {
+            .fd = tcp80_active ? tcp80_fd.native_handle() : -1, .events = POLLOUT | POLLERR | POLLHUP, .revents = 0
+        };
+        const pollfd tcp443_pfd {
+            .fd = tcp443_active ? tcp443_fd.native_handle() : -1, .events = POLLOUT | POLLERR | POLLHUP, .revents = 0
         };
 
-        if (!sock_res) { return false; }
+        std::array<pollfd, 3> pfds { icmp_pfd, tcp80_pfd, tcp443_pfd };
 
-        posix::file_descriptor fd { std::move(*sock_res) };
-        const auto request { build_req(posix::getpid()) };
+        const auto t0 { std::chrono::steady_clock::now() };
+        while (true) {
+            const auto rem { get_remaining_timeout(t0, timeout) };
+            if (rem <= std::chrono::milliseconds(0)) { break; }
 
-        if (!posix::sendto(fd, std::as_bytes(std::span { &request, 1uz }), dest_addr)) { return false; }
+            const auto poll_res { posix::poll(std::span { pfds }, rem) };
+            if (!poll_res || *poll_res <= 0) { break; }
 
-        const auto rem_timeout { get_remaining_timeout(t0, timeout) };
-        if (rem_timeout <= std::chrono::milliseconds(0)) { return false; }
+            if (pfds[0].revents & POLLIN) {
+                const auto reply { recv_reply(icmp_fd) };
+                if (reply && is_valid_reply(*reply, req)) { return true; }
+                if (!reply) { pfds[0].fd = -1; }
+            } else if (pfds[0].revents & (POLLERR | POLLHUP)) {
+                pfds[0].fd = -1;
+            }
 
-        if (!poll_fd(fd.native_handle(), POLLIN, rem_timeout)) { return false; }
+            if (pfds[1].revents & (POLLOUT | POLLERR | POLLHUP)) {
+                const auto opt { posix::getsockopt<std::int32_t>(tcp80_fd, SOL_SOCKET, SO_ERROR) };
+                if (opt.has_value() && *opt == 0) { return true; }
+                pfds[1].fd = -1;
+            }
 
-        const auto reply { recv_reply(fd) };
-        return reply.has_value() && is_valid_reply(*reply, request);
+            if (pfds[2].revents & (POLLOUT | POLLERR | POLLHUP)) {
+                const auto opt { posix::getsockopt<std::int32_t>(tcp443_fd, SOL_SOCKET, SO_ERROR) };
+                if (opt.has_value() && *opt == 0) { return true; }
+                pfds[2].fd = -1;
+            }
+
+            if (pfds[0].fd == -1 && pfds[1].fd == -1 && pfds[2].fd == -1) { break; }
+        }
+
+        return false;
     }
 };
 

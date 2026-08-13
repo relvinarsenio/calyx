@@ -162,7 +162,16 @@ std::expected<void, std::error_code> CurlHeaders::add(const std::string& header)
 
 std::expected<void, std::string> HttpClient::setup_browser_impersonation(
     CurlHeaders& headers, std::string_view url) noexcept {
-    return extract_origin(url).and_then([this, &headers](
+    constexpr auto add_all
+        = [](this auto self, auto it, auto end, CurlHeaders& hdrs) -> std::expected<void, std::string> {
+        if (it == end) { return {}; }
+        if (auto res = hdrs.add(std::string { *it }); !res) {
+            return std::unexpected(format_sys_error(res.error().value(), "Failed to add browser header"));
+        }
+        return self(it + 1, end, hdrs);
+    };
+
+    return extract_origin(url).and_then([this, &headers, &add_all](
                                             const std::string& origin) -> std::expected<void, std::string> {
         const std::string referer_url = std::format("{}/", origin);
 
@@ -183,16 +192,7 @@ std::expected<void, std::string> HttpClient::setup_browser_impersonation(
                     .transform_error(
                         [](auto ec) { return format_sys_error(ec.value(), "Failed to add dynamic headers"); });
             })
-            .and_then([&headers] {
-                return std::ranges::fold_left(kBrowserHeaders, std::expected<void, std::string> {},
-                    [&headers](std::expected<void, std::string> acc, std::string_view hdr) {
-                        return acc.and_then([&headers, hdr] {
-                            return headers.add(std::string { hdr }).transform_error([](std::error_code ec) {
-                                return format_sys_error(ec.value(), "Failed to add browser header");
-                            });
-                        });
-                    });
-            })
+            .and_then([&headers, &add_all] { return add_all(kBrowserHeaders.begin(), kBrowserHeaders.end(), headers); })
             .and_then([this, &referer_url] { return this->set_option(CURLOPT_REFERER, referer_url.c_str()); })
             .and_then([this] { return this->set_option(CURLOPT_ACCEPT_ENCODING, "gzip, deflate, br"); })
             .and_then([this] {
