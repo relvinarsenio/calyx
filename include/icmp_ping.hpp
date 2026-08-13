@@ -356,12 +356,29 @@ private:
     }
 
     /**
+     * @brief Performs a zero-packet UDP kernel routing lookup to verify destination reachability.
+     */
+    template <socket_address Addr>
+    [[nodiscard]] static bool has_valid_route(const std::int32_t af, const std::string_view ip) noexcept {
+        const auto sock { posix::socket(af, SOCK_DGRAM | SOCK_CLOEXEC, 0) };
+        if (!sock) { return false; }
+
+        Addr addr {};
+        set_sa_family_and_port(addr, af, 80);
+        if (!set_sa_ip(addr, af, ip)) { return false; }
+
+        return posix::connect(*sock, addr).has_value();
+    }
+
+    /**
      * @brief Unified single-threaded ICMP + TCP multiplexed race probing engine.
      */
     template <socket_address Addr, typename RequestBuilder, typename ReplyReceiver, typename ReplyCheck>
     [[nodiscard]] static bool ping_host_multiplexed(const std::string_view ip, const std::chrono::milliseconds timeout,
         const std::int32_t af, const std::int32_t icmp_proto, RequestBuilder&& build_req, ReplyReceiver&& recv_reply,
         ReplyCheck&& is_valid_reply) noexcept {
+        if (!has_valid_route<Addr>(af, ip)) { return false; }
+
         Addr icmp_addr {};
         set_sa_family_and_port(icmp_addr, af, 0);
         if (!set_sa_ip(icmp_addr, af, ip)) { return false; }
@@ -398,11 +415,17 @@ private:
         const bool tcp80_active { init_tcp(80, tcp80_fd) };
         const bool tcp443_active { init_tcp(443, tcp443_fd) };
 
-        std::array<pollfd, 3> pfds {
-            { { .fd = icmp_sent ? icmp_fd.native_handle() : -1, .events = POLLIN, .revents = 0 },
-                { .fd = tcp80_active ? tcp80_fd.native_handle() : -1, .events = POLLOUT, .revents = 0 },
-                { .fd = tcp443_active ? tcp443_fd.native_handle() : -1, .events = POLLOUT, .revents = 0 } }
+        const pollfd icmp_pfd {
+            .fd = icmp_sent ? icmp_fd.native_handle() : -1, .events = POLLIN | POLLERR | POLLHUP, .revents = 0
         };
+        const pollfd tcp80_pfd {
+            .fd = tcp80_active ? tcp80_fd.native_handle() : -1, .events = POLLOUT | POLLERR | POLLHUP, .revents = 0
+        };
+        const pollfd tcp443_pfd {
+            .fd = tcp443_active ? tcp443_fd.native_handle() : -1, .events = POLLOUT | POLLERR | POLLHUP, .revents = 0
+        };
+
+        std::array<pollfd, 3> pfds { icmp_pfd, tcp80_pfd, tcp443_pfd };
 
         const auto t0 { std::chrono::steady_clock::now() };
         while (true) {
@@ -416,6 +439,8 @@ private:
                 const auto reply { recv_reply(icmp_fd) };
                 if (reply && is_valid_reply(*reply, req)) { return true; }
                 if (!reply) { pfds[0].fd = -1; }
+            } else if (pfds[0].revents & (POLLERR | POLLHUP)) {
+                pfds[0].fd = -1;
             }
 
             if (pfds[1].revents & (POLLOUT | POLLERR | POLLHUP)) {
