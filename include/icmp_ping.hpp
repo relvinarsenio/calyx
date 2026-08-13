@@ -127,7 +127,7 @@ private:
      * @brief Sets address family and port for IPv4/IPv6 socket address structures.
      */
     template <socket_address Addr>
-    static void set_sa_family_and_port(Addr& sa, std::int32_t af, std::uint16_t port) noexcept {
+    static void set_sa_family_and_port(Addr& sa, const std::int32_t af, const std::uint16_t port) noexcept {
         if constexpr (requires { sa.sin_family; }) {
             sa.sin_family = toUShort(af);
             sa.sin_port   = htons(port);
@@ -141,11 +141,12 @@ private:
      * @brief Sets IP address for IPv4/IPv6 socket address structures.
      */
     template <socket_address Addr>
-    [[nodiscard]] static bool set_sa_ip(Addr& sa, std::int32_t af, std::string_view ip) noexcept {
+    [[nodiscard]] static bool set_sa_ip(Addr& sa, const std::int32_t af, const std::string_view ip) noexcept {
+        const auto target_ip { string_utils::strip_brackets(ip) };
         if constexpr (requires { sa.sin_addr; }) {
-            return posix::inet_pton(af, ip, sa.sin_addr).has_value();
+            return posix::inet_pton(af, target_ip, sa.sin_addr).has_value();
         } else {
-            return posix::inet_pton(af, ip, sa.sin6_addr).has_value();
+            return posix::inet_pton(af, target_ip, sa.sin6_addr).has_value();
         }
     }
 
@@ -358,8 +359,8 @@ private:
      * @brief Unified single-threaded ICMP + TCP multiplexed race probing engine.
      */
     template <socket_address Addr, typename RequestBuilder, typename ReplyReceiver, typename ReplyCheck>
-    [[nodiscard]] static bool ping_host_multiplexed(std::string_view ip, std::chrono::milliseconds timeout,
-        std::int32_t af, std::int32_t icmp_proto, RequestBuilder&& build_req, ReplyReceiver&& recv_reply,
+    [[nodiscard]] static bool ping_host_multiplexed(const std::string_view ip, const std::chrono::milliseconds timeout,
+        const std::int32_t af, const std::int32_t icmp_proto, RequestBuilder&& build_req, ReplyReceiver&& recv_reply,
         ReplyCheck&& is_valid_reply) noexcept {
         Addr icmp_addr {};
         set_sa_family_and_port(icmp_addr, af, 0);
@@ -378,7 +379,7 @@ private:
             icmp_sent = posix::sendto(icmp_fd, std::as_bytes(std::span { &req, 1uz }), icmp_addr).has_value();
         }
 
-        auto init_tcp { [ip, af](std::uint16_t port, posix::file_descriptor& fd) noexcept -> bool {
+        const auto init_tcp { [ip, af](const std::uint16_t port, posix::file_descriptor& fd) noexcept -> bool {
             Addr addr {};
             set_sa_family_and_port(addr, af, port);
             if (!set_sa_ip(addr, af, ip)) { return false; }

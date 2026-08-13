@@ -34,6 +34,9 @@ block(SCOPE_FOR VARIABLES PROPAGATE HAS_STD_PRINT HAS_STD_EXPECTED HAS_STD_FORMA
 
     # Fallback to LLVM libc++ when system libstdc++ lacks C++23 std::print/std::format implementation
     if((NOT HAS_STD_PRINT OR NOT HAS_STD_EXPECTED OR NOT HAS_STD_FORMAT) AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        unset(HAS_STD_PRINT CACHE)
+        unset(HAS_STD_EXPECTED CACHE)
+        unset(HAS_STD_FORMAT CACHE)
         set(CMAKE_REQUIRED_FLAGS "-std=c++23 -stdlib=libc++")
         check_cxx_symbol_exists("__cpp_lib_print" "print;version" HAS_STD_PRINT)
         check_cxx_symbol_exists("__cpp_lib_expected" "expected;version" HAS_STD_EXPECTED)

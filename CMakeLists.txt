@@ -119,6 +119,7 @@ add_link_options(
     -Wl,-z,now
     -Wl,-z,noexecstack
     -Wl,--exclude-libs,ALL
+    -Wl,--build-id=sha1
 )
 
 

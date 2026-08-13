@@ -525,7 +525,7 @@ struct PaxRecordView {
     content.remove_suffix(1);
 
     const auto eq = content.find('=');
-    if (eq == std::string_view::npos) { return PaxRecordView { .key = {}, .value = {}, .total_len = len }; }
+    if (eq == std::string_view::npos) { return std::unexpected(ExtractError::InvalidHeader); }
 
     return PaxRecordView {
         .key       = content.substr(0, eq),
