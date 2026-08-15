@@ -291,9 +291,16 @@ void IoTracker::push_free_slot(std::uint16_t idx) noexcept {
     ++state_.free_count;
 }
 
+NextBlock SubmissionQueue::next_block(const IoLayout& layout, IoTrackerState& state) noexcept {
+    return std::visit(overloaded { [&state](const SequentialLayout& l) noexcept { return l.next(state); },
+                          [this](const RandomLayout& l) noexcept { return l.next(prng_); } },
+        layout.variant());
+}
+
 SubmissionQueue::SubmissionQueue(UringSharedState shared_state, IoTracker& tracker) noexcept
     : shared_state_(shared_state)
-    , tracker_(tracker) {}
+    , tracker_(tracker)
+    , prng_(tsc::rdtsc()) {}
 
 template <IoContext Context> std::expected<void, UringError> SubmissionQueue::submit_batch(const Context& ctx) {
     /**
@@ -320,9 +327,9 @@ template <IoContext Context> std::expected<void, UringError> SubmissionQueue::su
 
     const std::size_t queue_in_flight = safe_sub(state.submitted, state.completed).value_or(0uz);
     const std::size_t queue_limit
-        = ctx.layout.queue_depth > queue_in_flight ? ctx.layout.queue_depth - queue_in_flight : 0uz;
+        = ctx.layout.queue_depth() > queue_in_flight ? ctx.layout.queue_depth() - queue_in_flight : 0uz;
     const std::size_t blocks_remaining
-        = ctx.layout.total_blocks > state.submitted ? ctx.layout.total_blocks - state.submitted : 0uz;
+        = ctx.layout.total_blocks() > state.submitted ? ctx.layout.total_blocks() - state.submitted : 0uz;
     const std::size_t limit = std::min({ blocks_remaining, queue_limit, toSize(state.free_count) });
 
     const auto free_slots_view     = tracker_.get_free_slots(limit) | std::views::reverse;
@@ -340,13 +347,11 @@ template <IoContext Context> std::expected<void, UringError> SubmissionQueue::su
         if (!sqe_res) { break; }
         io_uring_sqe* sqe = *sqe_res;
 
-        const std::uint64_t remaining_bytes = ctx.layout.total_bytes - state.offset;
-        const std::size_t len               = toSize(std::ranges::min(ctx.layout.block_size, remaining_bytes));
-        tracker_.request(idx)               = { {}, state.offset, len, len, 0 };
+        const auto [op_offset, len] = next_block(ctx.layout, state);
+        tracker_.request(idx)       = { {}, op_offset, len, len, 0 };
 
         prepare_io_sqe(sqe, ctx, tracker_.request(idx), idx);
 
-        state.offset += len;
         submitted_in_batch += 1;
     }
     tracker_.consume_free_slots(submitted_in_batch);
@@ -467,7 +472,7 @@ template <IoContext Context> std::expected<void, UringError> CompletionQueue::pr
         processed += 1;
     }
 
-    ctx.observer.progress_cb.get()(tracker_.state().completed, ctx.layout.total_blocks, ctx.observer.label);
+    ctx.observer.progress_cb.get()(tracker_.state().completed, ctx.layout.total_blocks(), ctx.observer.label);
     return {};
 }
 
@@ -592,7 +597,7 @@ template <IoContext Context> std::expected<PhaseRunStats, UringError> UringEvent
         shared_state_.file_registrar.unregister_file(shared_state_.ring.get_ring());
     } };
 
-    tracker_.reset(ctx.layout.queue_depth);
+    tracker_.reset(ctx.layout.queue_depth());
 
     if (const auto arm = shared_state_.timeout_controller.arm_timeout_timer(shared_state_.ring.get_ring()); !arm) {
         return std::unexpected(arm.error());
@@ -635,11 +640,11 @@ template <IoContext Context> std::expected<PhaseRunStats, UringError> UringEvent
      * the storage controller saturated while reducing syscalls.
      */
     const std::uint32_t batch_size
-        = std::max<std::uint32_t>(1, (toUInt(ctx.layout.queue_depth) * ::config::kIoBatchPercent) / 100);
+        = std::max<std::uint32_t>(1, (toUInt(ctx.layout.queue_depth()) * ::config::kIoBatchPercent) / 100);
 
     auto& state = tracker_.state();
 
-    while (state.completed < ctx.layout.total_blocks) {
+    while (state.completed < ctx.layout.total_blocks()) {
         if (const auto res = sq_.submit_batch(ctx); !res) { return std::unexpected(res.error()); }
 
         const auto active_requests_opt = safe_sub(state.submitted, state.completed);
@@ -658,7 +663,7 @@ template <IoContext Context> std::expected<PhaseRunStats, UringError> UringEvent
          * Blocking wait is enforced when the queue capacity is exhausted or all blocks have been submitted,
          * avoiding CPU spinning while preserving device pipeline saturation.
          */
-        const std::uint32_t wait_nr = (state.free_count == 0 || state.submitted == ctx.layout.total_blocks)
+        const std::uint32_t wait_nr = (state.free_count == 0 || state.submitted == ctx.layout.total_blocks())
             ? std::min<std::uint32_t>(toUInt(in_kernel), batch_size)
             : 0u;
 

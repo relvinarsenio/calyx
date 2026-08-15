@@ -252,23 +252,18 @@ struct IoParams {
             BenchmarkError::Phase::WritePhase, posix::SysCallError { alloc.error(), "posix_fallocate" } });
     }
 
-    const std::string label_write = std::format("{} Write", params.label);
-    const auto ctx                = uring::WriteContext { {
-                       .buffers      = params.write_buffer,
-                       .fd           = wf.descriptor(),
-                       .layout       = {
-                           .total_blocks = params.total_bytes / params.write_block_size,
-                           .block_size   = params.write_block_size,
-                           .mem_stride   = params.write_mem_stride,
-                           .total_bytes  = params.total_bytes,
-                           .queue_depth  = params.write_queue_depth,
-                       },
-                       .observer     = {
-                           .label        = label_write,
-                           .stop         = params.stop,
-                           .progress_cb  = params.progress_cb,
-                           .interrupt_cb = params.interrupt_cb,
-                       }
+    const std::string label_write { std::format("{} Write", params.label) };
+    const uring::WriteContext ctx { {
+        .buffers { params.write_buffer },
+        .fd { wf.descriptor() },
+        .layout { uring::IoLayout::sequential(
+            params.total_bytes, params.write_block_size, params.write_mem_stride, params.write_queue_depth) },
+        .observer {
+            .label { label_write },
+            .stop { params.stop },
+            .progress_cb { params.progress_cb },
+            .interrupt_cb { params.interrupt_cb },
+        },
     } };
 
     return engine.execute_write(ctx)
@@ -328,23 +323,18 @@ struct IoParams {
 
 [[nodiscard]] std::expected<PhaseRunStats, BenchmarkError> run_read_operations(
     IoFile rf, UringEngine& engine, const IoParams& params) {
-    const std::string label_read = std::format("{} Read", params.label);
-    const auto ctx               = uring::ReadContext { {
-                      .buffers      = params.read_buffers,
-                      .fd           = rf.descriptor(),
-                      .layout       = {
-                          .total_blocks = params.total_bytes / params.read_block_size,
-                          .block_size   = params.read_block_size,
-                          .mem_stride   = params.read_mem_stride,
-                          .total_bytes  = params.total_bytes,
-                          .queue_depth  = params.read_queue_depth,
-                      },
-                      .observer     = {
-                          .label        = label_read,
-                          .stop         = params.stop,
-                          .progress_cb  = params.progress_cb,
-                          .interrupt_cb = params.interrupt_cb,
-                      }
+    const std::string label_read { std::format("{} Read", params.label) };
+    const uring::ReadContext ctx { {
+        .buffers { params.read_buffers },
+        .fd { rf.descriptor() },
+        .layout { uring::IoLayout::sequential(
+            params.total_bytes, params.read_block_size, params.read_mem_stride, params.read_queue_depth) },
+        .observer {
+            .label { label_read },
+            .stop { params.stop },
+            .progress_cb { params.progress_cb },
+            .interrupt_cb { params.interrupt_cb },
+        },
     } };
 
     return engine.execute_read(ctx)

@@ -12,6 +12,7 @@
 #include "latency_histogram.hpp"
 #include "posix.hpp"
 #include "posix_error.hpp"
+#include "random_engine.hpp"
 #include "scope.hpp"
 #include "utils.hpp"
 
@@ -20,6 +21,7 @@
 #include <cstdint>
 #include <expected>
 #include <optional>
+#include <random>
 #include <ranges>
 #include <span>
 #include <stop_token>
@@ -193,12 +195,126 @@ struct ProbedIoPaths {
     IoPath read_path  = IoPath::Plain;
 };
 
-struct IoLayout {
-    std::uint64_t total_blocks {};
+/**
+ * @brief Dynamic execution state maintained across submission and completion queues.
+ */
+struct IoTrackerState {
+    std::uint64_t submitted {};
+    std::uint64_t completed {};
+    std::uint64_t bytes_completed {};
+    std::uint64_t io_completed {};
+    /** @brief Linear byte cursor used exclusively for sequential stream progression. */
+    std::uint64_t offset {};
+    std::uint16_t free_count {};
+    std::uint16_t delta_count {};
+    bool interrupt {};
+};
+
+struct NextBlock {
+    std::uint64_t offset {};
+    std::size_t len {};
+};
+
+/**
+ * @brief Layout geometry and block progression for sequential linear-scan I/O.
+ */
+struct SequentialLayout {
+    std::uint64_t file_bytes {};
     std::uint64_t block_size {};
     std::uint64_t mem_stride {};
-    std::uint64_t total_bytes {};
     std::uint16_t queue_depth {};
+
+    [[nodiscard]] constexpr std::uint64_t total_bytes() const noexcept { return file_bytes; }
+
+    [[nodiscard]] constexpr std::uint64_t total_blocks() const noexcept {
+        return block_size > 0uz ? (file_bytes / block_size) : 0uz;
+    }
+
+    [[nodiscard]] constexpr NextBlock next(IoTrackerState& state) const noexcept {
+        const auto len = toSize(std::ranges::min(block_size, file_bytes - state.offset));
+        return { .offset = std::exchange(state.offset, state.offset + len), .len = len };
+    }
+};
+
+/**
+ * @brief Layout geometry and pseudo-random block selection for Random 4K / IOPS.
+ */
+struct RandomLayout {
+    std::uint64_t file_size {};
+    std::uint64_t block_size {};
+    std::uint64_t mem_stride {};
+    std::uint64_t total_ops {};
+    std::uint16_t queue_depth {};
+
+    [[nodiscard]] constexpr std::uint64_t addressable_blocks() const noexcept {
+        return block_size > 0uz ? (file_size / block_size) : 0uz;
+    }
+
+    [[nodiscard]] constexpr std::uint64_t total_bytes() const noexcept { return total_ops * block_size; }
+
+    [[nodiscard]] constexpr std::uint64_t total_blocks() const noexcept { return total_ops; }
+
+    template <std::uniform_random_bit_generator Prng>
+    [[nodiscard]] constexpr NextBlock next(Prng& prng) const noexcept {
+        const auto blocks    = addressable_blocks();
+        const auto block_idx = (blocks > 0uz) ? (prng() % blocks) : 0uz;
+        return { .offset = block_idx * block_size, .len = toSize(block_size) };
+    }
+};
+
+/**
+ * @brief Unified Type-Driven IoLayout with ergonomic named factories.
+ */
+class IoLayout {
+public:
+    using LayoutVariant = std::variant<SequentialLayout, RandomLayout>;
+
+    constexpr explicit IoLayout(SequentialLayout seq) noexcept
+        : variant_(seq) {}
+    constexpr explicit IoLayout(RandomLayout rnd) noexcept
+        : variant_(rnd) {}
+
+    [[nodiscard]] static constexpr IoLayout sequential(
+        std::uint64_t total_bytes, std::uint64_t block_size, std::uint64_t mem_stride, std::uint16_t qd) noexcept {
+        return IoLayout(SequentialLayout {
+            .file_bytes  = total_bytes,
+            .block_size  = block_size,
+            .mem_stride  = mem_stride,
+            .queue_depth = qd,
+        });
+    }
+
+    [[nodiscard]] static constexpr IoLayout random(std::uint64_t file_size, std::uint64_t block_size,
+        std::uint64_t mem_stride, std::uint64_t total_ops, std::uint16_t qd) noexcept {
+        return IoLayout(RandomLayout {
+            .file_size   = file_size,
+            .block_size  = block_size,
+            .mem_stride  = mem_stride,
+            .total_ops   = total_ops,
+            .queue_depth = qd,
+        });
+    }
+
+    [[nodiscard]] constexpr std::uint64_t block_size() const noexcept {
+        return std::visit([](const auto& l) noexcept { return l.block_size; }, variant_);
+    }
+    [[nodiscard]] constexpr std::uint64_t mem_stride() const noexcept {
+        return std::visit([](const auto& l) noexcept { return l.mem_stride; }, variant_);
+    }
+    [[nodiscard]] constexpr std::uint64_t total_bytes() const noexcept {
+        return std::visit([](const auto& l) noexcept { return l.total_bytes(); }, variant_);
+    }
+    [[nodiscard]] constexpr std::uint64_t total_blocks() const noexcept {
+        return std::visit([](const auto& l) noexcept { return l.total_blocks(); }, variant_);
+    }
+    [[nodiscard]] constexpr std::uint16_t queue_depth() const noexcept {
+        return std::visit([](const auto& l) noexcept { return l.queue_depth; }, variant_);
+    }
+
+    [[nodiscard]] constexpr const LayoutVariant& variant() const noexcept { return variant_; }
+
+private:
+    LayoutVariant variant_;
 };
 
 struct IoObserver {
@@ -220,7 +336,7 @@ struct WriteContext final : IoContextBase<std::span<const std::byte>> {
     static constexpr bool is_write_op = true;
 
     [[nodiscard]] constexpr auto get_slice(std::uint16_t idx, std::size_t done, std::size_t remaining) const noexcept {
-        const auto subspan_offset = toSize(idx) * layout.mem_stride + done;
+        const auto subspan_offset = toSize(idx) * layout.mem_stride() + done;
         return buffers.subspan(subspan_offset, remaining);
     }
 };
@@ -435,17 +551,6 @@ public:
     void drain_pending_timer(io_uring* ring, std::chrono::nanoseconds timeout) noexcept;
 };
 
-struct IoTrackerState {
-    std::uint64_t submitted       = 0;
-    std::uint64_t completed       = 0;
-    std::uint64_t bytes_completed = 0;
-    std::uint64_t io_completed    = 0;
-    std::uint64_t offset          = 0;
-    std::uint16_t free_count      = 0;
-    std::uint16_t delta_count     = 0;
-    bool interrupt                = false;
-};
-
 class IoTracker {
     std::vector<IoRequest> requests_ {};
     std::vector<std::uint16_t> retry_slots_ {};
@@ -495,6 +600,9 @@ struct UringSharedState {
 class SubmissionQueue {
     UringSharedState shared_state_;
     IoTracker& tracker_;
+    prng::Xoshiro256PlusPlus prng_ {};
+
+    [[nodiscard]] NextBlock next_block(const IoLayout& layout, IoTrackerState& state) noexcept;
 
     template <IoContext Context>
     void prepare_io_sqe(io_uring_sqe* sqe, const Context& ctx, IoRequest& req, std::uint16_t idx) noexcept;
@@ -644,7 +752,11 @@ public:
 } // namespace uring
 
 using uring::IoContextBase;
+using uring::IoLayout;
+using uring::NextBlock;
 using uring::PhaseRunStats;
+using uring::RandomLayout;
 using uring::ReadContext;
+using uring::SequentialLayout;
 using uring::UringEngine;
 using uring::WriteContext;
