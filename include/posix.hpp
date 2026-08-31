@@ -9,10 +9,12 @@
 
 #include "file_descriptor.hpp"
 #include "numeric_cast.hpp"
+#include "random_engine.hpp"
 #include "scope.hpp"
 
 #include <algorithm>
 #include <arpa/inet.h>
+#include <bit>
 #include <cerrno>
 #include <chrono>
 #include <concepts>
@@ -34,6 +36,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <sys/auxv.h>
 #include <sys/ioctl.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
@@ -418,10 +421,16 @@ namespace sys_helpers {
         return std::unexpected(std::make_error_code(std::errc::file_too_large));
     }
     const std::size_t size = toSize(st.st_size);
-    std::string content(size, '\0');
-    auto bytes_read = f.read_exact(std::as_writable_bytes(std::span { content }));
-    if (!bytes_read) { return std::unexpected(bytes_read.error()); }
-    content.resize(*bytes_read);
+    std::string content {};
+    std::error_code read_ec {};
+
+    content.resize_and_overwrite(size, [&f, &read_ec](char* buf, std::size_t n) noexcept -> std::size_t {
+        return f.read_exact(std::as_writable_bytes(std::span { buf, n }))
+            .transform_error([&read_ec](std::error_code ec) noexcept { return read_ec = ec; })
+            .value_or(0uz);
+    });
+
+    if (read_ec) { return std::unexpected(read_ec); }
     return content;
 }
 
@@ -551,6 +560,25 @@ namespace sys_helpers {
  */
 [[nodiscard]] inline auto getpid() noexcept -> pid_t {
     return ::getpid();
+}
+
+/**
+ * @brief Generates an initial random seed pair using kernel random bytes and system time.
+ * @return Pair of 64-bit seed values.
+ */
+[[nodiscard]] inline auto get_system_entropy() noexcept -> std::pair<std::uint64_t, std::uint64_t> {
+    const auto raw_addr { ::getauxval(AT_RANDOM) };
+    const auto* ptr { std::bit_cast<const std::uint64_t*>(raw_addr) };
+    const auto [aux_low, aux_high] { (raw_addr != 0) ? std::make_pair(ptr[0], ptr[1]) : std::make_pair(0UL, 0UL) };
+    using u_nanoseconds = std::chrono::duration<std::uint64_t, std::nano>;
+    const auto time_ns {
+        std::chrono::duration_cast<u_nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count()
+    };
+
+    const std::uint64_t seed1 { prng::SplitMix64 { aux_low ^ time_ns }() };
+    const std::uint64_t seed2 { prng::SplitMix64 { aux_high ^ (time_ns + 0x9e3779b97f4a7c15ULL) }() };
+
+    return { seed1, seed2 };
 }
 
 /**
@@ -1086,6 +1114,20 @@ template <socket_address Addr>
     return expect_result<error_style::posix>(
         ::recvfrom(fd.native_handle(), buffer.data(), buffer.size(), flags, to_sockaddr(src_addr), &len))
         .transform([](auto bytes) noexcept { return toSize(bytes); });
+}
+
+/**
+ * @brief Converts host integer to network byte order (Big-Endian) in constexpr time.
+ * @details Utilizes C++23 std::byteswap on little-endian architectures for zero-cost conversion.
+ */
+template <cast::standard_integer_type T>
+    requires std::has_unique_object_representations_v<T>
+[[nodiscard]] constexpr T netorder(T val) noexcept {
+    if constexpr (std::endian::native == std::endian::little) {
+        return std::byteswap(val);
+    } else {
+        return val;
+    }
 }
 
 /**

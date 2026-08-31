@@ -10,10 +10,9 @@
 #include "file_descriptor.hpp"
 #include "numeric_cast.hpp"
 #include "posix.hpp"
-#include "random_engine.hpp"
-#include "tsc.hpp"
 #include "utils.hpp"
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <chrono>
@@ -90,7 +89,6 @@ public:
     }
 
 private:
-    static constexpr std::uint64_t kGoldenRatio64 { 0x9e3779b97f4a7c15ULL };
     static constexpr std::uint32_t kMaxIpPacketSize { IP_MAXPACKET };
     static constexpr std::uint32_t kIpIhlMask { 0x0Fu };
     static constexpr std::uint8_t kIpVersionMask { 0xF0u };
@@ -130,10 +128,10 @@ private:
     static void set_sa_family_and_port(Addr& sa, const std::int32_t af, const std::uint16_t port) noexcept {
         if constexpr (requires { sa.sin_family; }) {
             sa.sin_family = toUShort(af);
-            sa.sin_port   = htons(port);
+            sa.sin_port   = posix::netorder(port);
         } else {
             sa.sin6_family = toUShort(af);
-            sa.sin6_port   = htons(port);
+            sa.sin6_port   = posix::netorder(port);
         }
     }
 
@@ -167,15 +165,10 @@ private:
     }
 
     /**
-     * @brief Generates unique 64-bit transaction nonce for echo request correlation and stale reply filtering.
+     * @brief Generates a 64-bit transaction nonce for echo request correlation and stale reply filtering.
      */
     [[nodiscard]] static std::uint64_t generate_nonce() noexcept {
-        static thread_local const std::uint8_t tl_marker {};
-        const auto thread_addr { std::bit_cast<std::uint64_t>(&tl_marker) };
-        const auto tsc { stx::tsc::rdtsc() };
-        const auto pid { toULong(posix::getpid()) };
-        const auto seed { safe_mul(pid ^ tsc ^ thread_addr, kGoldenRatio64).value_or(tsc) };
-        return prng::SplitMix64 { seed }();
+        return generate_seed();
     }
 
     /**
@@ -206,8 +199,8 @@ private:
         echo_request_v4 request {};
         request.header.type             = ICMP_ECHO;
         request.header.code             = 0;
-        request.header.un.echo.id       = htons(ident);
-        request.header.un.echo.sequence = htons(seq);
+        request.header.un.echo.id       = posix::netorder(ident);
+        request.header.un.echo.sequence = posix::netorder(seq);
         request.payload.data            = std::bit_cast<std::array<std::byte, 8uz>>(nonce);
         request.header.checksum         = calculate_checksum(std::as_bytes(std::span { &request, 1uz }));
         return request;
@@ -221,8 +214,8 @@ private:
         echo_request_v6 request {};
         request.header.icmp6_type = ICMP6_ECHO_REQUEST;
         request.header.icmp6_code = 0;
-        request.header.icmp6_id   = htons(ident);
-        request.header.icmp6_seq  = htons(seq);
+        request.header.icmp6_id   = posix::netorder(ident);
+        request.header.icmp6_seq  = posix::netorder(seq);
         request.payload.data      = std::bit_cast<std::array<std::byte, 8uz>>(nonce);
         return request;
     }
