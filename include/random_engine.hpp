@@ -162,13 +162,23 @@ class Xoshiro256PlusPlus {
     constexpr void jump_apply(const Poly& poly) noexcept {
         std::array<result_type, GF2::kWords> accumulator {};
 
-        for (auto [word, bit] :
-            std::views::cartesian_product(std::views::iota(0uz, GF2::kWords), std::views::iota(0uz, 64uz))) {
-            if (poly[word] & (result_type { 1 } << bit)) {
-                std::ranges::transform(accumulator, state_, accumulator.begin(), std::bit_xor<> {});
-            }
-            operator()();
-        }
+        const auto apply_word = [&accumulator, this](const result_type word) constexpr noexcept {
+            [&accumulator, this, word]<std::size_t... Bits>(std::index_sequence<Bits...>) {
+                const auto step_bit = [&accumulator, this, word]<std::size_t Bit>() constexpr noexcept {
+                    if (word & (result_type { 1 } << Bit)) {
+                        [&accumulator, this]<std::size_t... Ws>(std::index_sequence<Ws...>) {
+                            ((accumulator[Ws] ^= state_[Ws]), ...);
+                        }(std::make_index_sequence<GF2::kWords> {});
+                    }
+                    operator()();
+                };
+                (step_bit.template operator()<Bits>(), ...);
+            }(std::make_index_sequence<64> {});
+        };
+
+        [&apply_word, &poly]<std::size_t... Is>(std::index_sequence<Is...>) { (apply_word(poly[Is]), ...); }(
+            std::make_index_sequence<GF2::kWords> {});
+
         state_ = accumulator;
     }
 

@@ -12,6 +12,7 @@
 
 #include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <format>
 #include <ranges>
@@ -98,17 +99,17 @@ std::string SystemInfo::get_uptime() noexcept {
 std::string SystemInfo::get_load_avg() noexcept {
     std::array<double, 3uz> loads {};
     return posix::expect_result<posix::error_style::posix>(::getloadavg(loads.data(), 3))
-        .and_then([](int n_samples) noexcept -> std::expected<int, std::error_code> {
-            return n_samples > 0 ? std::expected<int, std::error_code> { n_samples }
+        .and_then([](int n_samples) noexcept -> std::expected<std::ptrdiff_t, std::error_code> {
+            return n_samples > 0 ? std::expected<std::ptrdiff_t, std::error_code> { n_samples }
                                  : std::unexpected(std::make_error_code(std::errc::invalid_argument));
         })
-        .transform([&loads](int n_samples) {
+        .transform([&loads](std::ptrdiff_t n_samples) {
             constexpr std::string_view kDelimiter = ", ";
-            return std::views::iota(0uz, 3uz)
-                | std::views::transform([&loads, limit = toSize(n_samples)](std::size_t idx) {
-                      return idx < limit ? std::format("{:.2f}", loads[idx]) : std::string("N/A");
-                  })
-                | std::views::join_with(kDelimiter) | std::ranges::to<std::string>();
+            return std::views::enumerate(loads) | std::views::transform([n_samples](auto pair) {
+                const auto [idx, val] = pair;
+                return idx < n_samples ? std::format("{:.2f}", val) : std::string("N/A");
+            }) | std::views::join_with(kDelimiter)
+                | std::ranges::to<std::string>();
         })
         .value_or("N/A");
 }

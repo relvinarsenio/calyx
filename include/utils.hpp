@@ -13,11 +13,13 @@
 #include "numeric_cast.hpp"
 #include "posix.hpp"
 #include "posix_error.hpp"
+#include "random_engine.hpp"
 #include "scope.hpp"
 #include "tsc.hpp"
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cctype>
 #include <charconv>
@@ -550,4 +552,22 @@ inline std::optional<std::string_view> lookup_info_field(std::string_view conten
 
     auto it = lines.begin();
     return (it != lines.end()) ? std::optional<std::string_view> { *it } : std::nullopt;
+}
+
+/**
+ * @brief Generates a unique 64-bit seed or transaction identifier.
+ */
+[[nodiscard]] inline std::uint64_t generate_seed() noexcept {
+    static const std::uint64_t kProcessSalt { []() noexcept {
+        const auto [lo, hi] { posix::get_system_entropy() };
+        return lo ^ hi;
+    }() };
+    static std::atomic<std::uint64_t> sequence { 0 };
+
+    const auto seq { sequence.fetch_add(1, std::memory_order_relaxed) };
+    const auto raw_tsc { stx::tsc::rdtsc() };
+    const auto tsc { (raw_tsc ^ std::rotr(raw_tsc, 31u)) * 0xbf58476d1ce4e5b9ULL };
+    const auto seed { (kProcessSalt ^ tsc) + seq };
+
+    return prng::SplitMix64 { seed }();
 }

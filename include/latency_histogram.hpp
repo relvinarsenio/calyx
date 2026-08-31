@@ -20,6 +20,7 @@
 #include <functional>
 #include <limits>
 #include <new>
+#include <numeric>
 #include <ranges>
 #include <span>
 #include <type_traits>
@@ -259,14 +260,14 @@ class LatencyAnalyzer final {
     const double cycles_to_ns_;
 
     /**
-     * @brief Safely converts CPU cycles to std::chrono::nanoseconds without signed overflow.
+     * @brief Safely converts CPU cycles to sub-nanosecond floating-point duration.
      */
-    [[nodiscard]] static std::chrono::nanoseconds to_nanoseconds(double cycles, double cycles_to_ns) noexcept {
-        if (!std::isfinite(cycles_to_ns) || cycles_to_ns <= 0.0) [[unlikely]] { return std::chrono::nanoseconds { 0 }; }
-        const double ns         = cycles / cycles_to_ns;
-        constexpr double max_ns = toDouble(std::chrono::nanoseconds::max().count());
-        if (ns >= max_ns) [[unlikely]] { return std::chrono::nanoseconds::max(); }
-        return std::chrono::nanoseconds { static_cast<std::chrono::nanoseconds::rep>(ns) };
+    [[nodiscard]] static std::chrono::duration<double, std::nano> to_nanoseconds(
+        double cycles, double cycles_to_ns) noexcept {
+        if (!std::isfinite(cycles_to_ns) || cycles_to_ns <= 0.0) [[unlikely]] {
+            return std::chrono::duration<double, std::nano> { 0.0 };
+        }
+        return std::chrono::duration<double, std::nano> { cycles / cycles_to_ns };
     }
 
 public:
@@ -278,8 +279,8 @@ public:
      * @brief Retrieves the minimum observed latency.
      * @return The shortest duration recorded.
      */
-    [[nodiscard]] std::chrono::nanoseconds min() const noexcept {
-        if (hist_.count() == 0) { return std::chrono::nanoseconds { 0 }; }
+    [[nodiscard]] std::chrono::duration<double, std::nano> min() const noexcept {
+        if (hist_.count() == 0) { return std::chrono::duration<double, std::nano> { 0.0 }; }
         return to_nanoseconds(toDouble(hist_.min_cycles()), cycles_to_ns_);
     }
 
@@ -287,8 +288,8 @@ public:
      * @brief Retrieves the maximum observed latency.
      * @return The longest duration recorded.
      */
-    [[nodiscard]] std::chrono::nanoseconds max() const noexcept {
-        if (hist_.count() == 0) { return std::chrono::nanoseconds { 0 }; }
+    [[nodiscard]] std::chrono::duration<double, std::nano> max() const noexcept {
+        if (hist_.count() == 0) { return std::chrono::duration<double, std::nano> { 0.0 }; }
         return to_nanoseconds(toDouble(hist_.max_cycles()), cycles_to_ns_);
     }
 
@@ -314,8 +315,8 @@ public:
      * @param target_percentile The target percentile (0.0 - 100.0).
      * @return The estimated latency duration for the requested percentile.
      */
-    [[nodiscard]] std::chrono::nanoseconds percentile(double target_percentile) const noexcept {
-        if (hist_.count() == 0) { return std::chrono::nanoseconds { 0 }; }
+    [[nodiscard]] std::chrono::duration<double, std::nano> percentile(double target_percentile) const noexcept {
+        if (hist_.count() == 0) { return std::chrono::duration<double, std::nano> { 0.0 }; }
 
         const double requested = std::clamp(target_percentile, 0.0, 100.0);
         if (requested <= 0.0) { return min(); }
@@ -336,9 +337,11 @@ public:
             if (step == 1) [[likely]] {
                 result = to_nanoseconds(toDouble(lower_bound), cycles_to_ns);
             } else {
-                const auto fraction     = (target - toDouble(cumulative)) / toDouble(freq);
-                const auto interpolated = toDouble(lower_bound) + (fraction * toDouble(step - 1));
-                result                  = to_nanoseconds(interpolated, cycles_to_ns);
+                const auto min_val { toDouble(lower_bound) };
+                const auto max_val { toDouble(lower_bound + step - 1) };
+                const auto fraction { (target - toDouble(cumulative)) / toDouble(freq) };
+                const auto interpolated { std::lerp(min_val, max_val, fraction) };
+                result = to_nanoseconds(interpolated, cycles_to_ns);
             }
             return false; // break iteration
         });
@@ -365,7 +368,9 @@ public:
         /** @note Pass 1: compute mean from bucket midpoints (consistent grouped-data mean). */
         double weighted_sum {};
         hist_.for_each_active_bucket([&weighted_sum](const auto lower_bound, const auto step, const auto freq) {
-            const auto midpoint = toDouble(lower_bound) + toDouble(step - 1) * 0.5;
+            const auto min_val { toDouble(lower_bound) };
+            const auto max_val { toDouble(lower_bound + step - 1) };
+            const auto midpoint { std::midpoint(min_val, max_val) };
             weighted_sum += toDouble(freq) * midpoint;
         });
 
@@ -375,8 +380,10 @@ public:
         /** @note Pass 2: compute variance using midpoints to determine the stability of measured latencies. */
         double sum_sq_diff {};
         hist_.for_each_active_bucket([mean, &sum_sq_diff](const auto lower_bound, const auto step, const auto freq) {
-            const auto midpoint = toDouble(lower_bound) + toDouble(step - 1) * 0.5;
-            const auto diff     = midpoint - mean;
+            const auto min_val { toDouble(lower_bound) };
+            const auto max_val { toDouble(lower_bound + step - 1) };
+            const auto midpoint { std::midpoint(min_val, max_val) };
+            const auto diff { midpoint - mean };
             sum_sq_diff += toDouble(freq) * diff * diff;
         });
 

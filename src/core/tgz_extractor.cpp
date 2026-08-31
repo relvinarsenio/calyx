@@ -10,12 +10,12 @@
 #include "config.hpp"
 #include "file_descriptor.hpp"
 #include "numeric_cast.hpp"
-#include "random_engine.hpp"
 #include "utils.hpp"
 
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <filesystem>
@@ -91,9 +91,7 @@ std::optional<std::uint64_t> parse_numeric(std::span<const std::byte> data) {
     auto octal_view = content | std::views::take_while(is_digit);
     if (std::ranges::empty(octal_view)) { return std::nullopt; }
 
-    if (!std::ranges::all_of(content | std::views::drop_while(is_digit), is_padding)) {
-        return std::nullopt;
-    }
+    if (!std::ranges::all_of(content | std::views::drop_while(is_digit), is_padding)) { return std::nullopt; }
 
     auto digits_view = octal_view | std::views::transform([](char c) { return toULong(c - '0'); });
     return parse_base(digits_view.begin(), digits_view.end(), 0ULL, 8ULL);
@@ -139,10 +137,12 @@ std::optional<std::uint64_t> parse_numeric(std::span<const std::byte> data) {
     std::uint64_t unsigned_sum {};
     std::int64_t signed_sum {};
 
-    for (auto index : std::views::iota(0uz, header.size())) {
-        const bool is_chk_field = (index >= config::kTarChecksumOffset)
-            && (index < config::kTarChecksumOffset + config::kTarChecksumLength);
-        const auto byte_val = is_chk_field ? std::byte { ' ' } : header[index];
+    constexpr auto kChkStart { std::ptrdiff_t { config::kTarChecksumOffset } };
+    constexpr auto kChkEnd { kChkStart + std::ptrdiff_t { config::kTarChecksumLength } };
+
+    for (auto [index, raw_byte] : std::views::enumerate(header)) {
+        const bool is_chk_field { (index >= kChkStart) && (index < kChkEnd) };
+        const auto byte_val { is_chk_field ? std::byte { ' ' } : raw_byte };
 
         unsigned_sum += std::to_integer<std::uint8_t>(byte_val);
         signed_sum += std::to_integer<std::int8_t>(byte_val);
@@ -322,14 +322,13 @@ public:
             return std::unexpected(lstat_result.error());
         }
 
-        const auto dir      = path.has_parent_path() ? path.parent_path() : std::filesystem::path { "." };
-        const auto filename = path.filename().string();
-        const auto pid      = posix::getpid();
-        prng::Xoshiro256PlusPlus rng(toULong(std::random_device {}()));
+        const auto dir { path.has_parent_path() ? path.parent_path() : std::filesystem::path { "." } };
+        const auto filename { path.filename().string() };
+        const auto pid { posix::getpid() };
 
-        for (auto _ : std::views::iota(0u, kMaxTempCreateAttempts)) {
-            auto temp_path = dir / std::format(".{}.tmp.{}.{:016x}", filename, pid, rng());
-            auto opened    = posix::file::open(temp_path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, S_IRUSR | S_IWUSR);
+        for (const auto _ : std::views::iota(0u, kMaxTempCreateAttempts)) {
+            auto temp_path { dir / std::format(".{}.tmp.{}.{:016x}", filename, pid, generate_seed()) };
+            auto opened { posix::file::open(temp_path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, S_IRUSR | S_IWUSR) };
 
             if (opened) {
                 return SecureFileHandle(opened->release(), std::move(temp_path), path);

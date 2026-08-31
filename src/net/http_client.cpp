@@ -34,6 +34,7 @@
 #include <expected>
 #include <filesystem>
 #include <format>
+#include <memory>
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <netinet/ip6.h>
@@ -46,8 +47,6 @@
 
 namespace {
 
-using prng::Xoshiro256PlusPlus;
-
 std::expected<std::string, std::string> extract_origin(std::string_view url) noexcept {
     curl::unique_url_handle handle { curl_url() };
     if (!handle) { return std::unexpected("Failed to create CURLU handle"); }
@@ -59,10 +58,9 @@ std::expected<std::string, std::string> extract_origin(std::string_view url) noe
     }
 
     const auto get_part = [&handle](CURLUPart part, unsigned int flags = 0) -> std::optional<std::string> {
-        char* buf = nullptr;
-        if (curl_url_get(handle.get(), part, &buf, flags) == CURLUE_OK && buf) {
-            curl::unique_char_ptr ptr { buf };
-            return std::string { buf };
+        curl::unique_char_ptr ptr {};
+        if (curl_url_get(handle.get(), part, std::out_ptr(ptr), flags) == CURLUE_OK && ptr) {
+            return std::string { ptr.get() };
         }
         return std::nullopt;
     };
@@ -229,14 +227,13 @@ std::expected<posix::file, std::string> open_download_directory(const std::files
 
 std::expected<std::pair<std::filesystem::path, posix::file>, std::string> open_temp_download_file(
     const std::filesystem::path& filepath) {
-    thread_local Xoshiro256PlusPlus engine { std::random_device {}() };
-    for (auto attempt : std::views::iota(0u, 256u)) {
-        const std::uint64_t nonce = engine();
-        auto temp_path            = filepath;
+    for (const auto attempt : std::views::iota(0u, 256u)) {
+        const std::uint64_t nonce { generate_seed() };
+        auto temp_path { filepath };
         temp_path += std::format(".tmp.{}.{}.{}", posix::getpid(), nonce, attempt);
 
-        auto opened = posix::file::open(
-            temp_path, O_WRONLY | O_CREAT | O_TRUNC | O_EXCL | O_NOFOLLOW, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+        auto opened { posix::file::open(
+            temp_path, O_WRONLY | O_CREAT | O_TRUNC | O_EXCL | O_NOFOLLOW, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH) };
         if (opened) { return std::pair { std::move(temp_path), std::move(*opened) }; }
 
         if (opened.error() != std::errc::file_exists) {
@@ -536,7 +533,7 @@ std::expected<void, std::string> MultiHttpClient::add_handle(const HttpClient& c
     }
 
     auto* easy = client.handle_.get();
-    if (std::ranges::any_of(attached_requests_, [easy](const auto& pair) { return pair.first.get() == easy; })) {
+    if (std::ranges::contains(attached_requests_, easy, [](const auto& pair) { return pair.first.get(); })) {
         return std::unexpected("HttpClient handle is already attached to this MultiHttpClient");
     }
 

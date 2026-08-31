@@ -311,7 +311,7 @@ static constexpr auto kUnits = std::to_array<UnitMultiplier>(
     const auto init_environ = read_file("/proc/1/environ");
     if (!init_environ) { return std::nullopt; }
     auto parts = *init_environ | split_to_sv('\0');
-    if (std::ranges::any_of(parts, [](const auto part) { return part == "container=lxc"; })) { return "LXC"; }
+    if (std::ranges::contains(parts, "container=lxc")) { return "LXC"; }
     if (std::ranges::any_of(parts,
             [](const auto part) { return starts_with_any<"WSL_DISTRO_NAME=", "WSL_INTEROP=", "WSLENV=">(part); })) {
         return "WSL";
@@ -619,7 +619,7 @@ bool cpu_has_flag(std::string_view flag) noexcept {
     if (!field_opt) { return false; }
 
     auto flag_words = *field_opt | tokenize_sv();
-    return std::ranges::any_of(flag_words, [flag](auto word) { return !word.empty() && word == flag; });
+    return std::ranges::contains(flag_words, flag);
 }
 
 } // namespace probe

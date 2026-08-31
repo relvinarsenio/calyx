@@ -298,9 +298,9 @@ NextBlock SubmissionQueue::next_block(const IoLayout& layout, IoTrackerState& st
 }
 
 SubmissionQueue::SubmissionQueue(UringSharedState shared_state, IoTracker& tracker) noexcept
-    : shared_state_(shared_state)
-    , tracker_(tracker)
-    , prng_(tsc::rdtsc()) {}
+    : shared_state_ { shared_state }
+    , tracker_ { tracker }
+    , prng_ { generate_seed() } {}
 
 template <IoContext Context> std::expected<void, UringError> SubmissionQueue::submit_batch(const Context& ctx) {
     /**
