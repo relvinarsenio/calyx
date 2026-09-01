@@ -1,117 +1,107 @@
-# 🧬 Calyx: Simple & Precise Linux System Benchmarking
+# Calyx: Linux System Benchmark
 
-[![License: MPL 2.0](https://img.shields.io/badge/License-MPL%202.0-brightgreen.svg)](https://opensource.org/licenses/MPL-2.0)
-[![C++23 Standard](https://img.shields.io/badge/C%2B%2B-23-blue.svg)](https://en.cppreference.com/w/cpp/compiler_support/23)
-![Static Binary](https://img.shields.io/badge/Build-Static--PIE-orange.svg)
-![Architecture](https://img.shields.io/badge/Arch-x86__64%20%7C%20ARM64-lightgrey.svg)
+[![C++23](https://img.shields.io/badge/C%2B%2B-23-00599C?logo=c%2B%2B&logoColor=white)](https://en.cppreference.com/w/cpp/compiler_support/23)
+[![Linux](https://img.shields.io/badge/Linux-x86_64%20|%20ARM64-1f6feb?logo=linux&logoColor=white)](https://github.com/relvinarsenio/calyx/releases/latest)
+[![CI/CD](https://github.com/relvinarsenio/calyx/actions/workflows/build.yml/badge.svg)](https://github.com/relvinarsenio/calyx/actions/workflows/build.yml)
+[![Latest_release](https://img.shields.io/github/v/tag/relvinarsenio/calyx?label=release)](https://github.com/relvinarsenio/calyx/releases/latest)
 
-**Calyx** is a lightweight, all-in-one system benchmarking and diagnostic tool for Linux. It is designed as a high-performance, fully native C++23 alternative to classic scripts like `bench.sh` or `yabs.sh`.
+**Calyx** is a lightweight Linux system benchmark written in modern C++. No installation or configuration needed.
 
-If you've ever wondered *"What are my server's specs?"*, *"How much RAM is currently used?"*, *"How fast is my disk?"*, or *"What is my actual internet speed?"*, Calyx gives you the answers instantly. It runs directly in your terminal and produces a beautiful, easy-to-read hardware and network performance report.
-
----
-
-## 🌟 What makes Calyx different?
-
-Many benchmarking tools are either too complicated for beginners or too inaccurate because of system cache "cheats". Calyx solves both:
-
-*   **Beginner-Friendly**: No installation, no complex arguments. Just run one command, and it shows you everything you need to know.
-*   **Bypasses Cache "Cheating"**: When testing disk speeds, Linux normally caches files in RAM, making slow disks look artificially fast. Calyx uses modern Linux `io_uring` and `O_DIRECT` to bypass this, measuring your **real** hardware capability.
-*   **Intelligent & Adaptive**: Calyx automatically tunes itself to your Linux kernel. It probes your system limits and configures the fastest possible path automatically.
-*   **Ultra-Portable**: It compiles down to a single tiny file (~3 MB) that has no dependencies. You can copy it to any Linux machine and run it instantly.
 
 ---
 
-## 📊 What does it measure?
+## Why Calyx?
 
-When you run Calyx, it tests four main areas of your system:
+It prints your hardware specs, disk speeds, and network stats in one run.
 
-### 1. 🧠 CPU & Hardware
-*   Detects your CPU model name, active cores, and max clock frequency.
-*   Checks if security hardware acceleration (**AES-NI**) is enabled.
-*   Checks if Hardware Virtualization is supported.
-
-### 2. 🐧 OS & System Information
-*   Identifies your Linux distribution, kernel version, and virtualization type (e.g., Docker, KVM, Hyper-V).
-*   Monitors uptime and system load averages.
-*   Displays your current TCP Congestion Control algorithm (e.g., `bbr`, `cubic`).
-
-### 3. 💾 Storage, Memory & ZSwap
-*   Lists partition sizes, used space, and filesystem type.
-*   Measures real RAM and Swap usage.
-*   **Disk I/O Performance**: Measures sequential read and write speeds using Linux-native `io_uring` and `O_DIRECT` to ensure cache-bypass accuracy.
-*   **ZSwap Metrics**: Shows compression ratio, and helps you identify memory pressure:
-    *   *Spilled*: Data pushed to disk because compressed memory was full (high values mean you need more RAM!).
-    *   *Rejected*: Data that failed to compress because the CPU was too busy.
-    *   *Capped*: Data rejected because the ZSwap pool size limit was hit.
-
-### 4. 🌐 Internet & Network Speed
-*   Performs an instant online check and ISP auto-lookup.
-*   Tests download speed, upload speed, latency (ping), and packet loss to multiple regional and international nodes.
+*   **Zero Install**: One command, one binary. No package managers, no dependencies.
+*   **Real Disk Speeds**: Calyx uses `io_uring` and `O_DIRECT` to measure actual disk throughput.
+*   **Self-Tuning**: It checks your kernel capabilities and system limits, then picks the most suitable setup automatically.
+*   **Just a File**: The static binary is ~3 MB. Copy it to any Linux box and run it.
 
 ---
 
-## 🚀 Quick Start (No Install Required)
+## What it measures
 
-You don't need to install or compile anything to use Calyx. Just copy and paste this command into your Linux terminal:
+### 1. CPU & Hardware
+*   CPU model, core count, and max clock speed.
+*   AES-NI and hardware virtualization support.
+
+### 2. OS & System Info
+*   Distro, kernel version, and virtualization type (Docker, KVM, etc.).
+*   Uptime and load averages.
+*   Current TCP congestion control algorithm.
+
+### 3. Storage, Memory & ZSwap
+*   Partition sizes, usage, and filesystem type.
+*   RAM and swap usage.
+*   **Disk I/O**: Sequential read/write speeds.
+*   **ZSwap**: Compression ratio and pressure stats:
+    *   *Spilled*: Compressed data that was later written back to disk. High numbers mean memory pressure is pushing data out of zswap.
+    *   *Rejected*: Data that zswap refused to compress because a reclaim attempt failed, usually under heavy memory pressure.
+    *   *Capped*: Data that never entered zswap because the pool was already at its size limit.
+
+### 4. Internet & Network
+*   Online status and ISP lookup.
+*   Download, upload, latency, and packet loss to multiple global nodes.
+
+---
+
+## Quick Start
+
+No install needed. Paste this into your terminal:
 
 ```bash
 bash <(curl -fsL https://calyx.pages.dev/run)
 ```
 
-> [!NOTE]
-> This command automatically detects your system architecture, downloads the secure static binary, runs the benchmark, displays your report, and cleans up afterwards leaving your system clean.
+### Troubleshooting: "io_uring fixed buffers disabled"
 
-### 💡 Troubleshooting: "io_uring fixed buffers disabled"
+> [!IMPORTANT]
+> If you see a message about `io_uring fixed buffers disabled` in your output, Calyx tried to allocate locked memory for zero-copy I/O, but your `ulimit -l` is too low. The benchmark still runs fine, just not at maximum speed.
 
-If you see `Performance Hint: io_uring fixed buffers disabled (Memory limit), using fallback.` in your storage test:
-
-This is a very common hint on VPS servers or non-root accounts. It means Calyx wanted to use locked memory buffers for zero-copy high-performance I/O, but your system's locked memory limit (`ulimit -l`) was too low. 
-
-**How to get maximum performance:**
-*   **Run as root** (using `sudo` or as root user), which automatically bypasses the memory lock limits.
-*   **Increase the limit manually** by running `ulimit -l unlimited` in your terminal session before running the benchmark.
+**To run at full speed:**
+*   Run as root (`sudo`), which ignores the memory lock limit.
+*   Or run `ulimit -l unlimited` before the benchmark.
 
 ---
 
-## 🛠️ Building from Source
+## Building from Source
 
-If you prefer to compile Calyx yourself, you can build a fully static, portable binary using Docker.
+You can build a fully static binary with Docker.
 
 > [!IMPORTANT]
-> Using the provided `build-static.sh` script is highly recommended, as it builds Calyx using a Docker environment for consistent results.
+> The `build-static.sh` script uses Docker for a consistent build.
 > Manual host builds may fail or behave differently depending on the build environment.
 
 ### Requirements
-*   **Operating System**: Linux (any distribution)
-*   **Architecture**: `x86_64` (Intel/AMD) and `aarch64` (ARM64)
-*   **Kernel**: Version `5.10` or newer (required for modern disk benchmarks)
-*   **Docker**: Version `20.10` or newer (Version `23.0` or newer recommended)
+*   **OS**: Linux
+*   **Arch**: `x86_64` or `aarch64`
+*   **Kernel**: 5.10 or newer
+*   **Docker**: 20.10+ (23.0+ recommended)
 
-### Build Steps
-1.  Clone the repository:
+### Steps
+1.  Clone:
     ```bash
     git clone https://github.com/relvinarsenio/calyx.git
     cd calyx
     ```
-2.  Run the static build script:
+2.  Build:
     ```bash
     chmod +x build-static.sh
     ./build-static.sh
     ```
 
-Once completed, your single portable binary will be generated at `./dist/calyx`. You can run it locally:
+The binary lands at `./dist/calyx`. Run it:
 ```bash
 ./dist/calyx
 ```
 
 ---
 
-## 📊 Example Output
+## Example Output
 
-Here is what the terminal output looks like when Calyx finishes running:
-
-```text
+```
 ──────────────────────── Calyx - Linux System Benchmarking Utility (v1.2.0) ────────────────────────
  Author             : Alfie Ardinata (https://calyx.pages.dev/)
  GitHub             : https://github.com/relvinarsenio/calyx
@@ -179,15 +169,15 @@ Running I/O Test (1 GB File, Seq 1M Q16T1)...
 
 ---
 
-## 🤝 Contributing & Support
+## Contributing & Support
 
-We welcome contributions! Whether it's adding new features, fixing bugs, or improving documentation, check out our [Contributing Guidelines](CONTRIBUTING.md) to get started.
+We welcome contributions! Check out our [Contributing Guidelines](CONTRIBUTING.md) to get started.
 
 Found a bug or have a feature request? Please [open an issue](https://github.com/relvinarsenio/calyx/issues) on our GitHub repository.
 
 ---
 
-## ⚖️ License & Code of Conduct
+## License & Code of Conduct
 
 *   This project is licensed under the **Mozilla Public License 2.0**.
 *   Please note that this project is released with a [Code of Conduct](CODE_OF_CONDUCT.md). By participating, you agree to abide by its terms.
