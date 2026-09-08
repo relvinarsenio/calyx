@@ -233,6 +233,14 @@ IoTracker::IoTracker(std::uint16_t queue_depth) {
     reset(queue_depth);
 }
 
+void IoTracker::resize(std::uint16_t queue_depth) {
+    requests_.resize(queue_depth);
+    retry_slots_.resize(queue_depth);
+    free_slots_.resize(queue_depth);
+    deltas_.resize(queue_depth);
+    reset(queue_depth);
+}
+
 void IoTracker::reset(std::uint16_t queue_depth) noexcept {
     state_       = IoTrackerState {};
     hist_        = {};
@@ -425,6 +433,10 @@ CompletionQueue::CompletionQueue(UringSharedState shared_state, IoTracker& track
     cqe_buffer_.resize(queue_depth);
 }
 
+void CompletionQueue::resize(std::uint16_t queue_depth) {
+    cqe_buffer_.resize(queue_depth);
+}
+
 bool CompletionQueue::is_retryable_wait_error(std::int32_t rc) noexcept {
     return is_one_of<ETIME, EINTR, EAGAIN, EBUSY>(rc);
 }
@@ -581,6 +593,11 @@ UringEventLoop::UringEventLoop(UringSharedState shared_state, std::uint16_t queu
     , sq_(shared_state_, tracker_)
     , cq_(shared_state_, tracker_, queue_depth) {}
 
+void UringEventLoop::resize(std::uint16_t queue_depth) {
+    tracker_.resize(queue_depth);
+    cq_.resize(queue_depth);
+}
+
 template <IoContext Context> std::expected<PhaseRunStats, UringError> UringEventLoop::execute(const Context& ctx) {
 
     /**
@@ -731,9 +748,9 @@ UringEngine& UringEngine::operator=(UringEngine&& other) {
         timeout_controller_ = std::move(other.timeout_controller_);
         path_state_         = other.path_state_;
 
-        std::destroy_at(&event_loop_);
-        std::construct_at(&event_loop_, UringSharedState { ring_, file_registrar_, timeout_controller_, path_state_ },
-            toUShort(ring_.get_ring()->sq.ring_entries));
+        const UringRing& new_ring = ring_;
+        const auto queue_depth    = toUShort(new_ring.get_ring()->sq.ring_entries);
+        event_loop_.resize(queue_depth);
 
         registered_iovecs_     = std::move(other.registered_iovecs_);
         buffer_register_error_ = other.buffer_register_error_;

@@ -569,6 +569,7 @@ public:
     [[nodiscard]] metrics::LatencyHistogram& histogram() noexcept { return hist_; }
     [[nodiscard]] const metrics::LatencyHistogram& histogram() const noexcept { return hist_; }
 
+    void resize(std::uint16_t queue_depth);
     void reset(std::uint16_t queue_depth) noexcept;
     void finalize_deltas() noexcept;
 
@@ -631,6 +632,8 @@ class CompletionQueue {
 public:
     CompletionQueue(UringSharedState shared_state, IoTracker& tracker, std::uint16_t queue_depth);
 
+    void resize(std::uint16_t queue_depth);
+
     template <IoContext Context>
     [[nodiscard]] std::expected<void, UringError> wait_for_submission(const Context& ctx, std::uint32_t wait_nr);
 
@@ -647,6 +650,8 @@ class UringEventLoop {
 
 public:
     UringEventLoop(UringSharedState shared_state, std::uint16_t queue_depth);
+
+    void resize(std::uint16_t queue_depth);
 
     template <IoContext Context> [[nodiscard]] std::expected<PhaseRunStats, UringError> execute(const Context& ctx);
 };
