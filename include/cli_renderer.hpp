@@ -8,7 +8,6 @@
 #pragma once
 
 #include "results.hpp"
-#include "speed_test.hpp"
 
 #include <cstdint>
 #include <functional>

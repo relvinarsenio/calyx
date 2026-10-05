@@ -8,16 +8,15 @@
 #pragma once
 
 #include "config.hpp"
-#include "file_descriptor.hpp"
 
 #include <chrono>
 #include <cstdint>
 #include <expected>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <stop_token>
 #include <string>
-#include <sys/types.h>
 #include <system_error>
 #include <vector>
 
@@ -63,66 +62,19 @@ struct ShellPipeResult {
 /**
  * @brief Facilitates execution of external processes and captures their output.
  *
- * Constructed via the static @ref create() factory method, which returns
- * @c std::expected to avoid exceptions for predictable failures like
- * missing executables.
+ * Construction and process lifetime details are kept private. Callers only
+ * provide command arguments and consume the resulting execution report.
  */
-namespace sp_impl {
-
-/**
- * @brief RAII wrapper for a child process ID.
- *
- * Automatically terminates and reaps the child process on destruction.
- * Move-only, non-copyable.
- */
-class child_process {
-    pid_t pid_ = -1;
-
-    void terminate() noexcept;
-
-public:
-    child_process() noexcept = default;
-    explicit child_process(pid_t pid) noexcept
-        : pid_(pid) {}
-    ~child_process() noexcept { reset(); }
-
-    child_process(const child_process&)            = delete;
-    child_process& operator=(const child_process&) = delete;
-
-    child_process(child_process&& other) noexcept
-        : pid_(std::exchange(other.pid_, -1)) {}
-
-    child_process& operator=(child_process&& other) noexcept {
-        if (this != &other) {
-            reset();
-            pid_ = std::exchange(other.pid_, -1);
-        }
-        return *this;
-    }
-
-    [[nodiscard]] auto native_handle() const noexcept -> pid_t { return pid_; }
-    auto release() noexcept -> pid_t { return std::exchange(pid_, -1); }
-    void reset(pid_t new_pid = -1) noexcept;
-
-    explicit operator bool() const noexcept {
-        return static_cast<bool>(posix::expect_result<posix::error_style::posix>(pid_));
-    }
-};
-
-} // namespace sp_impl
-
 class ShellPipe {
-    posix::file_descriptor read_fd_;
-    sp_impl::child_process pid_;
+    class Impl;
+    std::unique_ptr<Impl> impl_;
 
-    /** @brief Private constructor — use @ref create() instead. */
-    ShellPipe() = default;
+    explicit ShellPipe(std::unique_ptr<Impl> impl) noexcept;
 
 public:
     /**
-     * @brief Factory method: creates a ShellPipe for the given command.
+     * @brief Creates a ShellPipe for the given command.
      *
-     * Resolves the executable, creates a pipe, forks, and execs.
      * Returns an error_code on failure instead of throwing.
      *
      * @param args Command and arguments (args[0] = executable name).
@@ -130,16 +82,16 @@ public:
      */
     [[nodiscard]] static auto create(std::vector<std::string> args) -> std::expected<ShellPipe, std::error_code>;
 
-    ~ShellPipe() noexcept = default;
+    ~ShellPipe() noexcept;
 
     ShellPipe(const ShellPipe&)            = delete;
     ShellPipe& operator=(const ShellPipe&) = delete;
 
-    ShellPipe(ShellPipe&& other) noexcept            = default;
-    ShellPipe& operator=(ShellPipe&& other) noexcept = default;
+    ShellPipe(ShellPipe&&) noexcept;
+    ShellPipe& operator=(ShellPipe&&) noexcept;
 
     /**
-     * @brief Reads all output from the child process and waits for its termination.
+     * @brief Executes the command and returns its captured output and termination result.
      *
      * @param timeout         Maximum duration to wait for child output and termination.
      * @param stop            Stop token for cooperative cancellation.

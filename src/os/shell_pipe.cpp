@@ -9,6 +9,7 @@
 
 #include "config.hpp"
 #include "file_descriptor.hpp"
+#include "numeric_cast.hpp"
 #include "posix.hpp"
 #include "scope.hpp"
 #include "utils.hpp"
@@ -26,14 +27,15 @@
 #include <string_view>
 #include <system_error>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace chrono = std::chrono;
 
-namespace sp_impl {
+namespace {
 
 /**
- * @brief Helper to check readability of the pipe using poll.
+ * @brief Determines whether child output is readable before the deadline.
  */
 [[nodiscard]] auto poll_ready(const posix::file_descriptor& fd, chrono::steady_clock::time_point deadline) noexcept
     -> std::expected<bool, std::error_code> {
@@ -48,7 +50,7 @@ namespace sp_impl {
 }
 
 /**
- * @brief Reads output from the pipe until EOF, timeout, or interruption.
+ * @brief Captures child output until completion, timeout, or interruption.
  */
 [[nodiscard]] auto read_pipe_output(const posix::file_descriptor& read_fd, chrono::steady_clock::time_point deadline,
     const auto& is_stopped, ShellPipeResult& result) -> bool {
@@ -106,9 +108,10 @@ namespace sp_impl {
 }
 
 /**
- * @brief Polls waitpid for a specific process ID until it exits, deadline is reached, or stopped.
+ * @brief Observes child termination until completion, timeout, or interruption.
  *
- * Unifies the non-blocking waitpid polling loop to comply with DRY principles.
+ * Uses non-blocking status checks so cancellation and the deadline remain
+ * observable while the child is still running.
  */
 [[nodiscard]] auto poll_waitpid(pid_t pid, chrono::steady_clock::time_point deadline, const auto& is_stopped) noexcept
     -> std::expected<std::optional<posix::wait_status>, std::error_code> {
@@ -127,9 +130,72 @@ namespace sp_impl {
 }
 
 /**
- * @brief Waits for the child process to exit or handles timeout/interruption.
+ * @brief Ensures a child process does not outlive its owner.
  */
-[[nodiscard]] auto wait_for_child(child_process& process, chrono::steady_clock::time_point deadline,
+auto try_terminate(pid_t pid, posix::signal sig, chrono::milliseconds wait_time) noexcept
+    -> std::expected<void, std::error_code> {
+    const auto res = posix::kill(pid, sig);
+    if (!res && res.error() == std::errc::no_such_process) { return {}; }
+    if (!res) {
+        print_warning(format_sys_error(res.error(), "kill failed"));
+        return std::unexpected(res.error());
+    }
+
+    const auto deadline = chrono::steady_clock::now() + wait_time;
+    const auto wait_res = poll_waitpid(pid, deadline, []() noexcept { return false; });
+    if (wait_res && wait_res->has_value()) { return {}; }
+    if (!wait_res && wait_res.error() == std::errc::no_child_process) { return {}; }
+    return std::unexpected(wait_res ? std::make_error_code(std::errc::timed_out) : wait_res.error());
+}
+
+class ChildProcess {
+    pid_t pid_ = -1;
+
+    void terminate() noexcept {
+        try_terminate(pid_, posix::signal::Term, config::kShellPipeTermWait)
+            .or_else([this](std::error_code) noexcept {
+                return try_terminate(pid_, posix::signal::Kill, config::kShellPipeKillWait);
+            })
+            .transform([this]() noexcept { pid_ = -1; });
+    }
+
+public:
+    ChildProcess() noexcept = default;
+    explicit ChildProcess(pid_t pid) noexcept
+        : pid_(pid) {}
+    ~ChildProcess() noexcept { reset(); }
+
+    ChildProcess(const ChildProcess&)            = delete;
+    ChildProcess& operator=(const ChildProcess&) = delete;
+
+    ChildProcess(ChildProcess&& other) noexcept
+        : pid_(std::exchange(other.pid_, -1)) {}
+
+    ChildProcess& operator=(ChildProcess&& other) noexcept {
+        if (this != &other) {
+            reset();
+            pid_ = std::exchange(other.pid_, -1);
+        }
+        return *this;
+    }
+
+    [[nodiscard]] auto native_handle() const noexcept -> pid_t { return pid_; }
+    auto release() noexcept -> pid_t { return std::exchange(pid_, -1); }
+
+    void reset(pid_t new_pid = -1) noexcept {
+        if (posix::expect_result<posix::error_style::posix>(pid_)) { terminate(); }
+        pid_ = new_pid;
+    }
+
+    explicit operator bool() const noexcept {
+        return posix::expect_result<posix::error_style::posix>(pid_).has_value();
+    }
+};
+
+/**
+ * @brief Waits for child completion while preserving timeout and cancellation results.
+ */
+[[nodiscard]] auto wait_for_child(ChildProcess& process, chrono::steady_clock::time_point deadline,
     const auto& is_stopped, const auto& terminate_fn) -> std::expected<posix::wait_status, std::error_code> {
     scope_exit release_guard { [&process]() noexcept { process.release(); } };
 
@@ -149,28 +215,7 @@ namespace sp_impl {
     return **res;
 }
 
-/**
- * @brief Attempts to terminate a process using progressive signaling and reaping.
- */
-auto try_terminate(pid_t pid, posix::signal sig, chrono::milliseconds wait_time) noexcept
-    -> std::expected<void, std::error_code> {
-    const auto res = posix::kill(pid, sig);
-    if (!res && res.error() == std::errc::no_such_process) { return {}; }
-    if (!res) {
-        print_warning(format_sys_error(res.error(), "kill failed"));
-        return std::unexpected(res.error());
-    }
-
-    const auto deadline = chrono::steady_clock::now() + wait_time;
-    const auto wait_res = poll_waitpid(pid, deadline, []() noexcept { return false; });
-    if (wait_res && wait_res->has_value()) { return {}; }
-    if (!wait_res && wait_res.error() == std::errc::no_child_process) { return {}; }
-    return std::unexpected(wait_res ? std::make_error_code(std::errc::timed_out) : wait_res.error());
-}
-
-/**
- * @brief Parses child exit wait status and records exit codes or signals.
- */
+/** @brief Converts a child termination status into the public execution result. */
 void handle_child_exit(const posix::wait_status& ws, bool raise_on_error, ShellPipeResult& result) {
     if (ws.signaled()) {
         result.status = ShellPipeStatus::signaled;
@@ -187,9 +232,7 @@ void handle_child_exit(const posix::wait_status& ws, bool raise_on_error, ShellP
     }
 }
 
-/**
- * @brief Maps child wait errors to user-facing diagnostic messages.
- */
+/** @brief Converts child lifecycle errors into the public execution result. */
 void handle_wait_error(std::error_code ec, ShellPipeResult& result) {
     if (ec == std::errc::operation_canceled) {
         result.status = ShellPipeStatus::interrupted;
@@ -203,7 +246,9 @@ void handle_wait_error(std::error_code ec, ShellPipeResult& result) {
     }
 }
 
-/** @brief Inits file actions to redirect stdout and stderr to the pipe write end. */
+/**
+ * @brief Configures stdout and stderr capture for the spawned child.
+ */
 [[nodiscard]] auto configure_spawn_file_actions(posix_spawn_file_actions_t& actions,
     posix::file_descriptor::native_handle_type write_fd) noexcept -> std::expected<void, std::error_code> {
     auto res = posix::expect_success<posix::error_style::pthreads>(posix_spawn_file_actions_init(&actions));
@@ -223,7 +268,9 @@ void handle_wait_error(std::error_code ec, ShellPipeResult& result) {
     return {};
 }
 
-/** @brief Inits spawn attributes with an empty signal mask and SIG_DFL for all dispositions. */
+/**
+ * @brief Gives the spawned child an independent signal state.
+ */
 [[nodiscard]] auto configure_spawn_attr(posix_spawnattr_t& attr) noexcept -> std::expected<void, std::error_code> {
     auto res = posix::expect_success<posix::error_style::pthreads>(posix_spawnattr_init(&attr));
     if (!res) { return res; }
@@ -239,7 +286,7 @@ void handle_wait_error(std::error_code ec, ShellPipeResult& result) {
     res = posix::expect_success<posix::error_style::pthreads>(posix_spawnattr_setsigdefault(&attr, &all));
     if (!res) { return res; }
     res = posix::expect_success<posix::error_style::pthreads>(
-        posix_spawnattr_setflags(&attr, static_cast<short>(POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF)));
+        posix_spawnattr_setflags(&attr, toShort(POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF)));
     if (!res) { return res; }
 
     guard.release();
@@ -273,10 +320,11 @@ void handle_wait_error(std::error_code ec, ShellPipeResult& result) {
 }
 
 /**
- * @brief Prepares a null-terminated argument vector referencing strings in args.
+ * @brief Builds the argument vector required by the process launcher.
  *
- * This isolates the argv construction required by execv-family system calls to prevent
- * memory management issues and ensure lifetime compatibility.
+ * The launcher requires a null-terminated array of mutable string pointers.
+ * The returned pointers remain valid while the caller-owned argument strings
+ * remain alive.
  */
 [[nodiscard]] auto prepare_argv(std::vector<std::string>& args) -> std::vector<char*> {
     auto argv = args | std::views::transform([](std::string& s) noexcept { return s.data(); })
@@ -286,12 +334,12 @@ void handle_wait_error(std::error_code ec, ShellPipeResult& result) {
 }
 
 /**
- * @brief Reaps the child process, waiting for termination and parsing the exit status.
+ * @brief Finalizes child lifetime and records its termination result.
  *
- * This encapsulates the wait loop and diagnostic error mapping to ensure the parent
- * does not leak zombie processes or misreport execution failures.
+ * Centralizes reaping and status translation so every exit path leaves no
+ * zombie process behind and exposes only `ShellPipeResult` to callers.
  */
-void reap_child_process(child_process& process, chrono::steady_clock::time_point outer_deadline, const auto& is_stopped,
+void reap_child_process(ChildProcess& process, chrono::steady_clock::time_point outer_deadline, const auto& is_stopped,
     bool raise_on_error, ShellPipeResult& result) {
     if (!process) { return; }
 
@@ -305,24 +353,22 @@ void reap_child_process(child_process& process, chrono::steady_clock::time_point
     }
 }
 
-} // namespace sp_impl
+} // namespace
 
-void sp_impl::child_process::reset(pid_t new_pid) noexcept {
-    if (posix::expect_result<posix::error_style::posix>(pid_)) { terminate(); }
-    pid_ = new_pid;
-}
+class ShellPipe::Impl {
+public:
+    posix::file_descriptor read_fd;
+    ChildProcess child;
+};
 
-void sp_impl::child_process::terminate() noexcept {
-    /**
-     * @brief Progressively terminate the process, attempting SIGTERM and falling back to SIGKILL.
-     * @details If either signaling attempt successfully reaps the child, reset the PID to -1.
-     */
-    sp_impl::try_terminate(pid_, posix::signal::Term, config::kShellPipeTermWait)
-        .or_else([this](std::error_code) noexcept {
-            return sp_impl::try_terminate(pid_, posix::signal::Kill, config::kShellPipeKillWait);
-        })
-        .transform([this]() noexcept { pid_ = -1; });
-}
+ShellPipe::ShellPipe(std::unique_ptr<Impl> impl) noexcept
+    : impl_(std::move(impl)) {}
+
+ShellPipe::~ShellPipe() noexcept = default;
+
+ShellPipe::ShellPipe(ShellPipe&&) noexcept = default;
+
+ShellPipe& ShellPipe::operator=(ShellPipe&&) noexcept = default;
 
 auto ShellPipe::create(std::vector<std::string> args) -> std::expected<ShellPipe, std::error_code> {
     if (args.empty()) [[unlikely]] { return std::unexpected(std::make_error_code(std::errc::invalid_argument)); }
@@ -336,13 +382,13 @@ auto ShellPipe::create(std::vector<std::string> args) -> std::expected<ShellPipe
      */
     scope_exit close_exec { [&resolved_exec]() noexcept { resolved_exec->fd.reset(); } };
 
-    const auto argv = sp_impl::prepare_argv(args);
+    const auto argv = prepare_argv(args);
 
     auto pipe_result = posix::pipe::create();
     if (!pipe_result) { return std::unexpected(pipe_result.error()); }
 
-    ShellPipe self {};
-    self.read_fd_ = pipe_result->release_read();
+    auto impl     = std::make_unique<Impl>();
+    impl->read_fd = pipe_result->release_read();
     auto write_fd = pipe_result->release_write();
 
     /**
@@ -352,27 +398,33 @@ auto ShellPipe::create(std::vector<std::string> args) -> std::expected<ShellPipe
      */
     scope_exit close_write { [&write_fd]() noexcept { write_fd.reset(); } };
 
-    const auto spawn_res = sp_impl::spawn_child(resolved_exec->path, argv, write_fd.native_handle());
+    const auto spawn_res = spawn_child(resolved_exec->path, argv, write_fd.native_handle());
     if (!spawn_res) { return std::unexpected(spawn_res.error()); }
 
-    self.pid_.reset(*spawn_res);
-    return self;
+    impl->child.reset(*spawn_res);
+    return ShellPipe { std::move(impl) };
 }
 
 [[nodiscard]] ShellPipeResult ShellPipe::read_all(chrono::milliseconds timeout, std::stop_token stop,
     std::move_only_function<bool() const noexcept> interrupt_cb, bool raise_on_error) {
     ShellPipeResult result {};
+    if (!impl_) {
+        result.status = ShellPipeStatus::error;
+        result.error  = "ShellPipe has no active process";
+        return result;
+    }
+
     const auto is_stopped
         = [&stop, &interrupt_cb]() noexcept { return stop.stop_requested() || (interrupt_cb && interrupt_cb()); };
 
-    scope_exit reap_guard { [this]() noexcept { pid_.reset(); } };
-    scope_exit close_read { [this]() noexcept { read_fd_.reset(); } };
+    scope_exit reap_guard { [this]() noexcept { impl_->child.reset(); } };
+    scope_exit close_read { [this]() noexcept { impl_->read_fd.reset(); } };
 
     const auto read_deadline = chrono::steady_clock::now() + timeout;
-    if (!sp_impl::read_pipe_output(read_fd_, read_deadline, is_stopped, result)) { return result; }
+    if (!read_pipe_output(impl_->read_fd, read_deadline, is_stopped, result)) { return result; }
 
     const auto reap_deadline = chrono::steady_clock::now() + config::kShellPipeTermWait;
-    sp_impl::reap_child_process(pid_, reap_deadline, is_stopped, raise_on_error, result);
+    reap_child_process(impl_->child, reap_deadline, is_stopped, raise_on_error, result);
 
     return result;
 }

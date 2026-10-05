@@ -7,7 +7,6 @@
  */
 #pragma once
 
-#include "http_client.hpp"
 #include "posix_error.hpp"
 #include "results.hpp"
 #include "tgz_extractor.hpp"
@@ -18,6 +17,8 @@
 #include <string>
 #include <string_view>
 #include <variant>
+
+class HttpClient;
 
 struct HttpError {
     std::string message {};
