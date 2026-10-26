@@ -1134,8 +1134,13 @@ template <cast::standard_integer_type T>
  * @brief Convert network address string to binary format.
  */
 template <network_address AddrIn>
+    requires(std::same_as<std::remove_cvref_t<AddrIn>, struct in_addr>
+        || std::same_as<std::remove_cvref_t<AddrIn>, struct in6_addr>)
 [[nodiscard]] inline auto inet_pton(std::int32_t af, std::string_view ip, AddrIn& dst) noexcept
     -> std::expected<void, std::error_code> {
+    constexpr std::int32_t expected_af
+        = std::same_as<std::remove_cvref_t<AddrIn>, struct in_addr> ? AF_INET : AF_INET6;
+    if (af != expected_af) { return std::unexpected(make_error(EAFNOSUPPORT)); }
     if (ip.size() >= INET6_ADDRSTRLEN) { return std::unexpected(make_error(EINVAL)); }
     std::array<char, INET6_ADDRSTRLEN> buf {};
     std::copy_n(ip.data(), ip.size(), buf.data());
@@ -1176,7 +1181,7 @@ template <socket_option T>
     T optval {};
     socklen_t optlen { cast::static_converter<socklen_t> {}(sizeof(optval)) };
     return expect_result<error_style::posix>(::getsockopt(fd.native_handle(), level, optname, &optval, &optlen))
-        .and_then([optval](const auto&) noexcept { return expect_result<error_style::pthreads>(optval); });
+        .transform([optval](const auto&) noexcept { return optval; });
 }
 
 /**
