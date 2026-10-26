@@ -184,39 +184,41 @@ std::expected<void, UringError> UringTimeoutController::arm_timeout_timer(io_uri
 void UringTimeoutController::drain_pending_timer(io_uring* ring, std::chrono::nanoseconds timeout) noexcept {
     if (!timer_armed_) { return; }
 
-    io_uring_sqe* sqe = io_uring_get_sqe(ring);
+    io_uring_sqe* sqe { io_uring_get_sqe(ring) };
     if (!sqe) {
-        [[maybe_unused]] const int flushed = io_uring_submit(ring);
+        [[maybe_unused]] const int flushed { io_uring_submit(ring) };
         sqe = io_uring_get_sqe(ring);
     }
 
-    const bool cancel_queued = sqe != nullptr;
+    const bool cancel_queued { sqe != nullptr };
     if (cancel_queued) {
         io_uring_prep_cancel64(sqe, kTimerTag, 0);
         io_uring_sqe_set_data64(sqe, kCancelTag);
     }
 
-    io_uring_cqe* cqe = nullptr;
-    bool cancel_seen = !cancel_queued;
-    bool timer_seen = false;
-    __kernel_timespec drain_ts = to_kernel_timespec(timeout);
+    io_uring_cqe* cqe { nullptr };
+    bool cancel_seen { !cancel_queued };
+    bool timer_seen { false };
+    __kernel_timespec drain_ts { to_kernel_timespec(timeout) };
 
     while (!timer_seen || !cancel_seen) {
-        [[maybe_unused]] const int submitted = io_uring_submit(ring);
-        const int wait_rc = io_uring_wait_cqe_timeout(ring, &cqe, &drain_ts);
+        [[maybe_unused]] const int submitted { io_uring_submit(ring) };
+        const int wait_rc { io_uring_wait_cqe_timeout(ring, &cqe, &drain_ts) };
         if (wait_rc < 0) { continue; }
 
-        const auto tag = io_uring_cqe_get_data64(cqe);
-        const auto res = cqe->res;
+        const auto tag { io_uring_cqe_get_data64(cqe) };
+        const auto res { cqe->res };
         io_uring_cqe_seen(ring, cqe);
 
-        if (tag == kTimerTag) { timer_seen = true; }
+        if (tag == kTimerTag) {
+            timer_seen = true;
+            continue;
+        }
         if (tag != kCancelTag) { continue; }
 
         cancel_seen = true;
-        if (res < 0 && !is_one_of<-ENOENT, -EALREADY>(res)) {
-            print_warning(std::format("io_uring timer cancellation failed: {}", res));
-        }
+        if (res >= 0 || is_one_of<-ENOENT, -EALREADY>(res)) { continue; }
+        print_warning(std::format("io_uring timer cancellation failed: {}", res));
     }
 
     timer_armed_ = false;
@@ -580,15 +582,14 @@ template <IoContext Context> void CompletionQueue::drain_all_completions(const C
 
     if (!submit_prepared()) { print_warning("io_uring: failed to submit outstanding SQEs during shutdown"); }
 
-    for (std::size_t slot = 0; slot < tracker_.slot_count(); ++slot) {
-        const auto idx = toUShort(slot);
-        if (!tracker_.is_pending(idx)) { continue; }
+    for (const auto [slot, pending] : std::views::enumerate(tracker_.pending_slots())) {
+        if (pending == 0) { continue; }
 
         io_uring_sqe* sqe = io_uring_get_sqe(ring);
         if (!sqe && submit_prepared()) { sqe = io_uring_get_sqe(ring); }
         if (!sqe) { break; }
 
-        io_uring_prep_cancel64(sqe, idx, 0);
+        io_uring_prep_cancel64(sqe, toULong(slot), 0);
         io_uring_sqe_set_data64(sqe, UringTimeoutController::kTimerTag - 2);
         ++pending_cancels_;
     }
