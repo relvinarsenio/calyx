@@ -74,7 +74,8 @@ void test_quantile_invariants() {
         const auto expect_rank = (static_cast<std::size_t>(std::ceil(0.99 * raw.size())) - 1);
         const auto exact = raw[expect_rank];
         const auto approx = analyzer.percentile(99.0).count();
-        assert(approx >= static_cast<double>(exact));
+        const auto relative_error = std::abs(approx - static_cast<double>(exact)) / static_cast<double>(exact);
+        assert(relative_error < 0.02);
         check_close(analyzer.cv(), exact_cv(raw), 1e-6);
     }
 }
