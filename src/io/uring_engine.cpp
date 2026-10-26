@@ -183,46 +183,43 @@ std::expected<void, UringError> UringTimeoutController::arm_timeout_timer(io_uri
 
 void UringTimeoutController::drain_pending_timer(io_uring* ring, std::chrono::nanoseconds timeout) noexcept {
     if (!timer_armed_) { return; }
-    scope_exit reset_timer { [this]() noexcept { timer_armed_ = false; } };
 
-    const auto sqe_res
-        = posix::expect_result<posix::error_style::pointer>(io_uring_get_sqe(ring)).or_else([ring](auto) {
-              io_uring_submit(ring);
-              return posix::expect_result<posix::error_style::pointer>(io_uring_get_sqe(ring));
-          });
+    io_uring_sqe* sqe = io_uring_get_sqe(ring);
+    if (!sqe) {
+        [[maybe_unused]] const int flushed = io_uring_submit(ring);
+        sqe = io_uring_get_sqe(ring);
+    }
 
-    if (!sqe_res) { return; }
-    io_uring_sqe* sqe = *sqe_res;
+    const bool cancel_queued = sqe != nullptr;
+    if (cancel_queued) {
+        io_uring_prep_cancel64(sqe, kTimerTag, 0);
+        io_uring_sqe_set_data64(sqe, kCancelTag);
+    }
 
-    io_uring_prep_cancel64(sqe, kTimerTag, 0);
-    io_uring_sqe_set_data64(sqe, kCancelTag);
-
-    if (!posix::expect_success<posix::error_style::linux_internal>(io_uring_submit(ring))) { return; }
-
-    io_uring_cqe* cqe          = nullptr;
-    bool cancel_seen           = false;
-    bool timer_seen            = false;
+    io_uring_cqe* cqe = nullptr;
+    bool cancel_seen = !cancel_queued;
+    bool timer_seen = false;
     __kernel_timespec drain_ts = to_kernel_timespec(timeout);
 
-    while (!(timer_seen && cancel_seen)) {
-        if (!posix::expect_success<posix::error_style::linux_internal>(
-                io_uring_wait_cqe_timeout(ring, &cqe, &drain_ts))) {
-            break;
-        }
+    while (!timer_seen || !cancel_seen) {
+        [[maybe_unused]] const int submitted = io_uring_submit(ring);
+        const int wait_rc = io_uring_wait_cqe_timeout(ring, &cqe, &drain_ts);
+        if (wait_rc < 0) { continue; }
 
         const auto tag = io_uring_cqe_get_data64(cqe);
-        const auto res = cqe->res; ///< Save before cqe_seen releases the slot.
+        const auto res = cqe->res;
         io_uring_cqe_seen(ring, cqe);
+
         if (tag == kTimerTag) { timer_seen = true; }
         if (tag != kCancelTag) { continue; }
 
         cancel_seen = true;
-
-        /** @brief Distinguish genuine cancel failures from benign race outcomes. */
-        const auto is_cancel_error
-            = [](std::int32_t result) noexcept { return result < 0 && !is_one_of<-ENOENT, -EALREADY>(result); };
-        if (is_cancel_error(res)) { print_warning(std::format("io_uring cancel failed: {}", res)); }
+        if (res < 0 && !is_one_of<-ENOENT, -EALREADY>(res)) {
+            print_warning(std::format("io_uring timer cancellation failed: {}", res));
+        }
     }
+
+    timer_armed_ = false;
 }
 
 IoTracker::IoTracker(std::uint16_t queue_depth) {
