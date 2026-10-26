@@ -1,0 +1,60 @@
+name: PR 6 clang-format (one shot)
+
+on:
+  push:
+    branches:
+      - fix/benchmark-lifecycle-uring-mean-20261027
+    paths:
+      - .github/workflows/pr6-clang-format-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  format:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout pull request branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/benchmark-lifecycle-uring-mean-20261027
+          persist-credentials: true
+
+      - name: Run clang-format 21 inside Docker on changed PR files
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(
+            include/posix.hpp
+            include/uring_engine.hpp
+            include/utils.hpp
+            src/app/application.cpp
+            src/core/tgz_extractor.cpp
+            src/io/disk_benchmark.cpp
+            src/io/uring_engine.cpp
+            src/net/http_client.cpp
+          )
+          workdir="$(mktemp -d)"
+          trap 'rm -rf "$workdir"' EXIT
+          cp .clang-format "$workdir/.clang-format"
+          for file in "${files[@]}"; do
+            mkdir -p "$workdir/$(dirname "$file")"
+            cp "$file" "$workdir/$file"
+          done
+          docker run --rm --network none --user "$(id -u):$(id -g)" -v "$workdir:/work" -w /work ghcr.io/cpp-linter/clang-tools:21 clang-format --version
+          docker run --rm --network none --user "$(id -u):$(id -g)" -v "$workdir:/work" -w /work ghcr.io/cpp-linter/clang-tools:21 clang-format -i --style=file "${files[@]}"
+          docker run --rm --network none --user "$(id -u):$(id -g)" -v "$workdir:/work" -w /work ghcr.io/cpp-linter/clang-tools:21 clang-format --dry-run --Werror --style=file "${files[@]}"
+          for file in "${files[@]}"; do
+            cp "$workdir/$file" "$file"
+          done
+          git diff --check
+          git diff --stat
+          git add -- "${files[@]}"
+          if git diff --cached --quiet; then
+            echo "No formatting changes required."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -s -m "style: apply clang-format 21 to PR 6 changed sources"
+          git push origin HEAD:fix/benchmark-lifecycle-uring-mean-20261027
