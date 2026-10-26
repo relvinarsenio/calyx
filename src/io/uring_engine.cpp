@@ -576,8 +576,9 @@ std::expected<void, UringError> CompletionQueue::finalize_cqe(const io_uring_cqe
 
 template <IoContext Context> void CompletionQueue::drain_all_completions(const Context& ctx) noexcept {
     io_uring* ring = shared_state_.ring.get_ring();
-    const auto submit_prepared = [ring]() noexcept {
-        return io_uring_submit(ring) >= 0;
+    const auto submit_prepared = [ring]() noexcept -> bool {
+        const int res = io_uring_submit(ring);
+        return res >= 0;
     };
 
     if (!submit_prepared()) { print_warning("io_uring: failed to submit outstanding SQEs during shutdown"); }
@@ -598,6 +599,7 @@ template <IoContext Context> void CompletionQueue::drain_all_completions(const C
     if (!submit_prepared()) { print_warning("io_uring: unable to submit shutdown cancellation"); }
 
     while (tracker_.pending_count() != 0 || pending_cancels_ != 0) {
+        if (!submit_prepared()) { print_warning("io_uring: submission retry failed during shutdown"); }
         const auto wait_result = wait_one_cqe();
         if (!wait_result && wait_result.error() != std::errc::timed_out
             && wait_result.error() != std::errc::interrupted
