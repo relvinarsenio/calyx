@@ -31,10 +31,9 @@ namespace metrics {
  * @brief High-precision latency histogram using logarithmic bucketing.
  *
  * This implementation provides high-resolution latency tracking with a constant relative error
- * across the entire measurement range. By using a 2432-bin distribution (38 groups of 64 bins),
- * it covers a wide dynamic range (~1.5 minutes at 3GHz) while remaining compact enough to fit
- * within a typical 32KB L1 Data Cache. This helps keep the structure cache-friendly to minimize
- * cache overhead during hot-path execution.
+ * across its representable range. A fixed 2432-bin distribution across 38 logarithmic groups
+ * reuses previously unreachable low-group slots to refine higher-group resolution without
+ * increasing storage. The 19456-byte counter array fits within a typical 32KB L1 data cache.
  */
 class alignas(std::hardware_destructive_interference_size) LatencyHistogram final {
     static constexpr std::uint32_t kBinsPerGroup          = 64;
@@ -71,7 +70,7 @@ class alignas(std::hardware_destructive_interference_size) LatencyHistogram fina
     std::uint64_t total_cycles_ {};
     std::uint64_t min_cycles_ { std::numeric_limits<std::uint64_t>::max() };
     std::uint64_t max_cycles_ {};
-    std::uint64_t overflow_count_ {};
+    std::uint64_t overflow_count_ {}; ///< Samples beyond the representable range (mapped to the last bin).
     double mean_cycles_ {};
     double m2_cycles_ {};
 
@@ -328,9 +327,10 @@ public:
     /**
      * @brief Estimates the latency at a given percentile.
      *
-     * Uses weighted linear interpolation within the target bucket to provide a continuous
-     * estimation of the latency distribution. This approach minimizes quantization errors
-     * inherent in discrete bucketing.
+     * Uses Hyndman-Fan Type 1 nearest-rank selection of the containing histogram bucket.
+     * p50 is represented by its midpoint; upper-tail quantiles use the bucket upper bound.
+     * Results are bounded by the observed minimum and maximum, but cannot recover
+     * individual order statistics within a bucket.
      *
      * @param target_percentile The target percentile (0.0 - 100.0).
      * @return The estimated latency duration for the requested percentile.
@@ -363,9 +363,9 @@ public:
     /**
      * @brief Computes the Coefficient of Variation (CV = σ/μ) from bucket data.
      *
-     * Iterates the bucket array to compute variance using the grouped-data formula:
-     * σ² = Σ(fᵢ · (xᵢ - μ)²) / N, following HdrHistogram's getStdDeviation() pattern.
-     * The CV is dimensionless, so no cycles_to_ns conversion is needed.
+     * Uses raw-sample online central moments maintained in LatencyHistogram.
+     * Unlike midpoint-based grouped variance, samples in the same bucket contribute
+     * their original values. The CV is dimensionless and needs no time conversion.
      *
      * Lower CV → tighter latency distribution → more stable benchmark run.
      *
