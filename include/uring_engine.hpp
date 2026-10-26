@@ -557,8 +557,8 @@ class IoTracker {
     std::vector<std::uint16_t> free_slots_ {};
     std::vector<std::uint64_t> deltas_ {};
     std::vector<std::uint8_t> pending_slots_ {};
-    std::size_t pending_count_ = 0;
-    std::size_t retry_count_ = 0;
+    std::size_t pending_count_ {};
+    std::size_t retry_count_ {};
     IoTrackerState state_ {};
     metrics::LatencyHistogram hist_ {};
 
@@ -583,9 +583,8 @@ public:
 
     void mark_pending(std::uint16_t idx) noexcept;
     void complete_pending(std::uint16_t idx) noexcept;
-    [[nodiscard]] bool is_pending(std::uint16_t idx) const noexcept { return pending_slots_[idx] != 0; }
+    [[nodiscard]] std::span<const std::uint8_t> pending_slots() const noexcept { return pending_slots_; }
     [[nodiscard]] std::size_t pending_count() const noexcept { return pending_count_; }
-    [[nodiscard]] std::size_t slot_count() const noexcept { return pending_slots_.size(); }
 
     [[nodiscard]] std::expected<void, UringError> queue_retry_slot(std::uint16_t idx) noexcept;
     [[nodiscard]] std::expected<std::uint16_t, UringError> resolve_cqe_slot(std::uint64_t tag) const noexcept;
@@ -627,7 +626,7 @@ class CompletionQueue {
     UringSharedState shared_state_;
     IoTracker& tracker_;
     std::vector<io_uring_cqe*> cqe_buffer_ {};
-    std::size_t pending_cancels_ = 0;
+    std::size_t pending_cancels_ {};
 
     [[nodiscard]] static bool is_retryable_wait_error(std::int32_t rc) noexcept;
 
