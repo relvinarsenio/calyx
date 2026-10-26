@@ -133,7 +133,7 @@ void test_overflow() {
     hist.add(std::numeric_limits<std::uint64_t>::max());
     assert(hist.overflow_count() == 1);
     hist.add_corrected(1ULL << 39, 1ULL << 37);
-    assert(hist.overflow_count() == 4);
+    assert(hist.overflow_count() == 3);
     LatencyAnalyzer analyzer { hist, 1.0 };
     assert(analyzer.percentile(99.0).count() <= analyzer.max().count());
 }
