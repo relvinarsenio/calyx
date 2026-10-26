@@ -189,9 +189,9 @@ public:
             const double batch_m2 { interval * interval * n * (n * n - 1.0) / 12.0 };
             const auto endpoint_sum { safe_add(missing, last) };
             const auto half_sum { missing / 2ULL + last / 2ULL + ((missing & 1ULL) + (last & 1ULL)) / 2ULL };
-            const auto sum { count % 2ULL == 0ULL
-                ? (endpoint_sum ? safe_mul(count / 2ULL, *endpoint_sum) : std::nullopt)
-                : safe_mul(count, half_sum) };
+            const std::optional<std::uint64_t> sum { count % 2ULL == 0ULL
+                ? (endpoint_sum ? safe_mul<std::uint64_t, std::uint64_t>(count / 2ULL, *endpoint_sum) : std::nullopt)
+                : safe_mul<std::uint64_t, std::uint64_t>(count, half_sum) };
 
             bucket(location.group, location.sub_bin) += count;
             merge_moments(count, batch_mean, batch_m2);
