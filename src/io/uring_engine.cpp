@@ -346,8 +346,7 @@ template <IoContext Context> std::expected<void, UringError> SubmissionQueue::su
     for (const auto idx : free_slots_view) {
         if (state.interrupt || ctx.observer.stop.stop_requested()) {
             state.interrupt = true;
-            tracker_.consume_free_slots(submitted_in_batch);
-            return std::unexpected(UringError { InterruptError {} });
+            break;
         }
 
         const auto sqe_res
@@ -365,6 +364,7 @@ template <IoContext Context> std::expected<void, UringError> SubmissionQueue::su
     tracker_.consume_free_slots(submitted_in_batch);
     state.submitted += submitted_in_batch;
 
+    if (state.interrupt) { return std::unexpected(UringError { InterruptError {} }); }
     return {};
 }
 
