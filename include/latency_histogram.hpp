@@ -187,14 +187,15 @@ public:
             const double interval { toDouble(expected_interval_cycles) };
             const double batch_mean { std::midpoint(first, tail) };
             const double batch_m2 { interval * interval * n * (n * n - 1.0) / 12.0 };
-            const double sum_estimate { batch_mean * n };
-            const std::uint64_t sum { sum_estimate >= toDouble(std::numeric_limits<std::uint64_t>::max())
-                ? std::numeric_limits<std::uint64_t>::max()
-                : static_cast<std::uint64_t>(std::max(0.0, sum_estimate)) };
+            const auto endpoint_sum { safe_add(missing, last) };
+            const auto half_sum { missing / 2ULL + last / 2ULL + ((missing & 1ULL) + (last & 1ULL)) / 2ULL };
+            const auto sum { count % 2ULL == 0ULL
+                ? (endpoint_sum ? safe_mul(count / 2ULL, *endpoint_sum) : std::nullopt)
+                : safe_mul(count, half_sum) };
 
             bucket(location.group, location.sub_bin) += count;
             merge_moments(count, batch_mean, batch_m2);
-            total_cycles_ += sum;
+            total_cycles_ += sum.value_or(std::numeric_limits<std::uint64_t>::max());
             min_cycles_ = std::min(min_cycles_, last);
             if (missing > kMaxRepresentableValue) {
                 const auto overflow_samples = (missing - kMaxRepresentableValue - 1ULL) / expected_interval_cycles + 1ULL;
