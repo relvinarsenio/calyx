@@ -418,31 +418,17 @@ struct IoGeometry {
  * on failure via scope_exit to prevent stale test artifacts.
  */
 [[nodiscard]] std::expected<PhaseRunStats, BenchmarkError> execute_write_phase(
-    const std::string& filename, UringEngine& engine, const IoParams& params) {
-    std::error_code pre_ec {};
-    std::filesystem::remove(filename, pre_ec);
-
-    bool write_completed { false };
-    scope_exit remove_partial_file { [&filename, &write_completed]() noexcept {
-        if (write_completed) { return; }
-
-        std::error_code remove_ec {};
-        std::filesystem::remove(filename, remove_ec);
-    } };
-
-    const auto phase_result { IoFile::create(filename, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR)
-            .transform_error([](std::error_code ec) {
-                return BenchmarkError { BenchmarkError::Phase::WritePhase,
-                    posix::SysCallError { ec, "File Creation" } };
-            })
-            .and_then([&engine, &params](IoFile wf) {
-                wf.file().disable_cow();
-                return run_write_operations(std::move(wf), engine, params);
-            }) };
-
-    if (phase_result) { write_completed = true; }
-
-    return phase_result;
+    const std::string& filename, UringEngine& engine, const IoParams& params, bool& file_owned) {
+    return IoFile::create(filename, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR)
+        .transform_error([](std::error_code ec) {
+            return BenchmarkError { BenchmarkError::Phase::WritePhase,
+                posix::SysCallError { ec, "File Creation" } };
+        })
+        .and_then([&engine, &params, &file_owned](IoFile wf) {
+            file_owned = true;
+            wf.file().disable_cow();
+            return run_write_operations(std::move(wf), engine, params);
+        });
 }
 
 [[nodiscard]] std::expected<PhaseRunStats, BenchmarkError> run_read_operations(
@@ -521,7 +507,8 @@ std::string DiskBenchmark::format_error(const BenchmarkError& err) {
     std::stop_token stop, const std::move_only_function<bool() const noexcept>& interrupt_cb) {
     if (const auto val { validate_config(config) }; !val) { return std::unexpected { val.error() }; }
 
-    const std::string filename { get_test_filename() };
+    const std::string filename {
+        std::format("{}.{}.{}", config::kTestFilename, posix::getpid(), generate_seed()) };
     const auto dir_path { std::filesystem::path(filename).parent_path() };
     const posix::BlockSize hw { posix::get_block_size(dir_path.empty() ? "." : dir_path) };
 
@@ -529,7 +516,9 @@ std::string DiskBenchmark::format_error(const BenchmarkError& err) {
     if (!geom_res) { return std::unexpected { geom_res.error() }; }
     const auto& geom { *geom_res };
 
-    scope_exit file_cleaner { [&filename]() noexcept {
+    bool file_owned { false };
+    scope_exit file_cleaner { [&filename, &file_owned]() noexcept {
+        if (!file_owned) { return; }
         std::error_code ec {};
         std::filesystem::remove(filename, ec);
     } };
@@ -591,7 +580,7 @@ std::string DiskBenchmark::format_error(const BenchmarkError& err) {
         .read_queue_depth  = config.read_queue_depth,
     };
 
-    const auto write_stats { execute_write_phase(filename, engine, params) };
+    const auto write_stats { execute_write_phase(filename, engine, params, file_owned) };
     if (!write_stats) { return std::unexpected { write_stats.error() }; }
 
     const auto read_stats { execute_read_phase(filename, engine, params) };
