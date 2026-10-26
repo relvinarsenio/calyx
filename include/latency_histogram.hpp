@@ -181,14 +181,16 @@ public:
             const auto limit = std::max(location.lower, expected_interval_cycles);
             const std::uint64_t count { (missing - limit) / expected_interval_cycles + 1ULL };
             const std::uint64_t last { missing - (count - 1ULL) * expected_interval_cycles };
-            const long double n = static_cast<long double>(count);
-            const long double first = static_cast<long double>(missing);
-            const long double tail = static_cast<long double>(last);
-            const long double interval = static_cast<long double>(expected_interval_cycles);
-            const double batch_mean = static_cast<double>((first + tail) / 2.0L);
-            const double batch_m2 = static_cast<double>((interval * interval) * n * (n * n - 1.0L) / 12.0L);
-            const auto sum = static_cast<std::uint64_t>(std::min((first + tail) * n / 2.0L,
-                static_cast<long double>(std::numeric_limits<std::uint64_t>::max())));
+            const double n { toDouble(count) };
+            const double first { toDouble(missing) };
+            const double tail { toDouble(last) };
+            const double interval { toDouble(expected_interval_cycles) };
+            const double batch_mean { std::midpoint(first, tail) };
+            const double batch_m2 { interval * interval * n * (n * n - 1.0) / 12.0 };
+            const double sum_estimate { batch_mean * n };
+            const std::uint64_t sum { sum_estimate >= toDouble(std::numeric_limits<std::uint64_t>::max())
+                ? std::numeric_limits<std::uint64_t>::max()
+                : static_cast<std::uint64_t>(std::max(0.0, sum_estimate)) };
 
             bucket(location.group, location.sub_bin) += count;
             merge_moments(count, batch_mean, batch_m2);
