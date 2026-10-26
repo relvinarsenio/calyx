@@ -391,10 +391,13 @@ std::optional<std::filesystem::path> sanitize_path(const std::filesystem::path& 
     }
 
     const auto rel_path_res = [path_str]() -> std::optional<std::filesystem::path> {
-        const auto normalized_path = std::filesystem::path(path_str).lexically_normal();
-        if (normalized_path.empty() || normalized_path.is_absolute() || normalized_path.string().starts_with("..")) {
+        const std::filesystem::path raw_path { path_str };
+        if (raw_path.empty() || raw_path.is_absolute()
+            || std::ranges::any_of(raw_path, [](const auto& part) { return part == ".."; })) {
             return std::nullopt;
         }
+
+        const auto normalized_path = raw_path.lexically_normal();
 
         if (toSize(std::ranges::distance(normalized_path)) > config::kTgzMaxPathDepth) { return std::nullopt; }
 
