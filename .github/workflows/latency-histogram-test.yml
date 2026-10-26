@@ -20,7 +20,7 @@ jobs:
           sudo apt-get install -y g++-14
       - name: Compile C++23 tests with ASan and UBSan
         run: |
-          g++-14 -std=c++23 -O1 -g -Wall -Wextra -Wpedantic -Werror -fparam=destructive-interference-size=64 \
+          g++-14 -std=c++23 -O1 -g -Wall -Wextra -Wpedantic -Werror --param=destructive-interference-size=64 \
             -fsanitize=address,undefined -fno-omit-frame-pointer \
             -Iinclude tests/latency_histogram_test.cpp -o histogram_test
       - name: Run regressions
