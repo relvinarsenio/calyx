@@ -19,10 +19,10 @@
 #include <functional>
 #include <limits>
 #include <new>
-#include <utility>
 #include <numeric>
 #include <ranges>
 #include <span>
+#include <utility>
 #include <type_traits>
 
 namespace metrics {
@@ -43,22 +43,27 @@ class alignas(std::hardware_destructive_interference_size) LatencyHistogram fina
     static constexpr std::uint64_t kMaxRepresentableValue = (1ULL << kGroups) - 1;
 
     static_assert(std::has_single_bit(kBinsPerGroup));
+    static_assert(sizeof(double) == sizeof(std::uint64_t));
+    static_assert(std::numeric_limits<double>::is_iec559 && std::numeric_limits<double>::digits == 53);
+
+    static constexpr std::uint32_t kMaxBinsPerGroup = 75;
     static constexpr auto kWidths = [] {
         std::array<std::uint32_t, kGroups> widths {};
-        for (std::uint32_t group = 0; group < kGroups; ++group) {
-            widths[group] = group < kLog2BinsPerGroup ? (1u << group)
-                : group == kLog2BinsPerGroup         ? kBinsPerGroup
-                : group <= 17                       ? 75u
-                                                    : 74u;
+        for (auto&& [index, width] : std::views::enumerate(widths)) {
+            const std::uint32_t group { toUInt(index) };
+            width = group < kLog2BinsPerGroup ? (1u << group)
+                : group == kLog2BinsPerGroup  ? kBinsPerGroup
+                : group <= 17                ? 75u
+                                             : 74u;
         }
         return widths;
     }();
     static constexpr auto kOffsets = [] {
         std::array<std::uint32_t, kGroups> offsets {};
         std::uint32_t sum {};
-        for (std::uint32_t group = 0; group < kGroups; ++group) {
-            offsets[group] = sum;
-            sum += kWidths[group];
+        for (auto&& [index, offset] : std::views::enumerate(offsets)) {
+            offset = sum;
+            sum += kWidths[toUInt(index)];
         }
         return offsets;
     }();
@@ -250,19 +255,22 @@ public:
         constexpr bool kCanShortCircuit
             = std::convertible_to<std::invoke_result_t<F&, std::uint64_t, std::uint64_t, std::uint64_t>, bool>;
 
-        for (std::uint32_t group = 0; group < kGroups; ++group) {
-            const std::uint64_t base = 1ULL << group;
-            const auto width = kWidths[group];
-            for (std::uint32_t sub = 0; sub < width; ++sub) {
-                const auto freq = buckets_[kOffsets[group] + sub];
-                if (freq == 0) { continue; }
-                const auto lower = base + ((toULong(sub) * base + width - 1) / width);
-                const auto upper = base + ((toULong(sub + 1u) * base + width - 1) / width) - 1ULL;
-                if constexpr (kCanShortCircuit) {
-                    if (!std::invoke(func, lower, upper - lower + 1ULL, freq)) { return; }
-                } else {
-                    std::invoke(func, lower, upper - lower + 1ULL, freq);
-                }
+        for (const auto [group, sub] : std::views::cartesian_product(
+                 std::views::iota(0u, kGroups), std::views::iota(0u, kMaxBinsPerGroup))) {
+            if (sub >= kWidths[group]) { continue; }
+
+            const std::uint64_t freq { buckets_[kOffsets[group] + sub] };
+            if (freq == 0) { continue; }
+
+            const std::uint64_t base { 1ULL << group };
+            const std::uint32_t width { kWidths[group] };
+            const std::uint64_t lower { base + ((toULong(sub) * base + width - 1) / width) };
+            const std::uint64_t upper { base + ((toULong(sub + 1u) * base + width - 1) / width) - 1ULL };
+
+            if constexpr (kCanShortCircuit) {
+                if (!std::invoke(func, lower, upper - lower + 1ULL, freq)) { return; }
+            } else {
+                std::invoke(func, lower, upper - lower + 1ULL, freq);
             }
         }
     }
@@ -327,10 +335,10 @@ public:
     /**
      * @brief Estimates the latency at a given percentile.
      *
-     * Uses Hyndman-Fan Type 1 nearest-rank selection of the containing histogram bucket.
-     * p50 is represented by its midpoint; upper-tail quantiles use the bucket upper bound.
-     * Results are bounded by the observed minimum and maximum, but cannot recover
-     * individual order statistics within a bucket.
+     * Selects the containing bucket using the Hyndman-Fan Type 1 nearest rank.
+     * Estimates the order statistic inside that bucket with uniform order-statistic
+     * interpolation (local rank / (bucket frequency + 1)). Actual minimum and
+     * maximum bound the estimate; bucket interpolation is not an exact Type 1 quantile.
      *
      * @param target_percentile The target percentile (0.0 - 100.0).
      * @return The estimated latency duration for the requested percentile.
@@ -342,22 +350,31 @@ public:
         if (requested <= 0.0) { return min(); }
         if (requested >= 100.0) { return max(); }
 
-        const auto rank = std::max(1.0, std::ceil((requested / 100.0) * toDouble(hist_.count())));
+        const double target { std::ceil((requested / 100.0) * toDouble(hist_.count())) };
+        if (target <= 1.0) { return min(); }
+        if (target >= toDouble(hist_.count())) { return max(); }
+
+        const std::uint64_t rank { static_cast<std::uint64_t>(target) };
         std::uint64_t cumulative {};
-        double estimate = toDouble(hist_.max_cycles());
+        double estimate { toDouble(hist_.max_cycles()) };
 
         hist_.for_each_active_bucket([&](auto lower, auto step, auto freq) -> bool {
-            cumulative += freq;
-            if (toDouble(cumulative) < rank) { return true; }
-            const auto upper = lower + step - 1ULL;
-            estimate = requested <= 50.0
-                ? std::midpoint(toDouble(lower), toDouble(upper))
-                : toDouble(upper);
+            const auto next { safe_add(cumulative, freq).value_or(std::numeric_limits<std::uint64_t>::max()) };
+            if (next < rank) {
+                cumulative = next;
+                return true;
+            }
+
+            const double inside { toDouble(rank - cumulative) };
+            const double fraction { inside / (toDouble(freq) + 1.0) };
+            const double lo { toDouble(lower) };
+            const double hi { toDouble(lower + step - 1ULL) };
+            estimate = std::lerp(lo, hi, fraction);
             return false;
         });
 
-        return to_nanoseconds(std::clamp(estimate, toDouble(hist_.min_cycles()), toDouble(hist_.max_cycles())),
-            cycles_to_ns_);
+        const double bounded { std::clamp(estimate, toDouble(hist_.min_cycles()), toDouble(hist_.max_cycles())) };
+        return to_nanoseconds(bounded, cycles_to_ns_);
     }
 
     /**
