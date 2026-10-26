@@ -552,6 +552,12 @@ std::expected<void, UringError> CompletionQueue::finalize_cqe(const io_uring_cqe
 }
 
 template <IoContext Context> void CompletionQueue::drain_all_completions(const Context& ctx) noexcept {
+    // Flush SQEs prepared before an interrupted batch returned.
+    const int submitted = io_uring_submit(shared_state_.ring.get_ring());
+    if (submitted < 0) {
+        print_warning(std::format("io_uring: unable to flush pending SQEs during drain ({})", submitted));
+    }
+
     constexpr std::uint32_t kMaxDrainRetries = 3;
 
     auto& state           = tracker_.state();
