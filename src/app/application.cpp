@@ -505,7 +505,6 @@ std::expected<void, std::string> Application::run(int argc, char* argv[]) {
 
     if (cli_exit.has_value()) { return {}; }
 
-    scope_exit cleanup_guard { []() noexcept { cleanup_artifacts(); } };
 
     auto http = HttpClient::create();
     if (!http) { return std::unexpected(std::format("\n[!] HttpClient create failed: {}", http.error())); }
