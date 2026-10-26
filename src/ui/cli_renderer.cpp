@@ -167,32 +167,14 @@ void print_success_row(const SpeedEntryResult& entry) {
 }
 
 /**
- * @brief Computes stability-weighted average throughput across benchmark runs.
- *
- * Uses the Coefficient of Variation (σ/μ) from each run's latency histogram as a quality
- * signal. Runs with lower CV (tighter latency distribution) receive proportionally higher
- * weight, reducing the influence of runs contaminated by system interference.
- *
- * Weight is capped at kMaxWeight to prevent a single low-CV run from dominating the
- * average — a Winsorization strategy standard in meta-analysis (Cochran, 1954).
- *
- * @param runs   Collected benchmark run results.
- * @param phase  Pointer-to-member selecting write or read metrics from each run.
- * @return Weighted average throughput in bytes/second.
+ * @brief Computes the arithmetic mean of per-run throughput in bytes/second.
  */
-[[nodiscard]] double weighted_avg_throughput(
+[[nodiscard]] double average_throughput(
     std::span<const DiskIORunResult> runs, const DiskIOMetrics DiskIORunResult::* phase) {
-    const auto [weighted_bw, total_weight] = std::ranges::fold_left(
-        runs, std::pair { 0.0, 0.0 }, [phase](auto acc, const DiskIORunResult& run) {
-            static constexpr double kCvFloor    = 0.01;
-            static constexpr double kMaxWeight  = 10.0;
-            static constexpr double kUnitWeight = 1.0;
-            const auto& metrics                 = run.*phase;
-            const double stability_weight       = std::min(kUnitWeight / std::max(metrics.cv, kCvFloor), kMaxWeight);
-            return std::pair { acc.first + metrics.bw_bytes_per_sec * stability_weight, acc.second + stability_weight };
-        });
-
-    return (total_weight > 0.0) ? weighted_bw / total_weight : 0.0;
+    if (runs.empty()) { return 0.0; }
+    const double total = std::ranges::fold_left(runs, 0.0,
+        [phase](double sum, const DiskIORunResult& run) { return sum + (run.*phase).bw_bytes_per_sec; });
+    return total / static_cast<double>(runs.size());
 }
 
 [[nodiscard]] metrics::LatencyHistogram aggregate_histograms(
@@ -359,8 +341,8 @@ void print_disk_run_result(const DiskIORunResult& result) {
 }
 
 void render_disk_results_summary(std::span<const DiskIORunResult> disk_runs, double cycles_to_ns) {
-    const double avg_write_bps = weighted_avg_throughput(disk_runs, &DiskIORunResult::write);
-    const double avg_read_bps  = weighted_avg_throughput(disk_runs, &DiskIORunResult::read);
+    const double avg_write_bps = average_throughput(disk_runs, &DiskIORunResult::write);
+    const double avg_read_bps  = average_throughput(disk_runs, &DiskIORunResult::read);
     std::println("{:<{}} :  {}  \u2502  {}", "   I/O Speed (Average)", config::kIoLabelWidth,
         color::colorize(std::format("Write {:>10}/s", format_bytes(toULong(avg_write_bps))), color::kYellow),
         color::colorize(std::format("Read {:>10}/s", format_bytes(toULong(avg_read_bps))), color::kCyan));
