@@ -7,7 +7,6 @@
  */
 #pragma once
 
-#include "mdspan.hpp"
 #include "utils.hpp"
 
 #include <algorithm>
@@ -20,6 +19,7 @@
 #include <functional>
 #include <limits>
 #include <new>
+#include <utility>
 #include <numeric>
 #include <ranges>
 #include <span>
@@ -40,41 +40,79 @@ class alignas(std::hardware_destructive_interference_size) LatencyHistogram fina
     static constexpr std::uint32_t kBinsPerGroup          = 64;
     static constexpr std::uint32_t kLog2BinsPerGroup      = 6;
     static constexpr std::uint32_t kGroups                = 38;
+    static constexpr std::uint32_t kTotalBins             = kGroups * kBinsPerGroup;
     static constexpr std::uint64_t kMaxRepresentableValue = (1ULL << kGroups) - 1;
 
-    static_assert(std::has_single_bit(kBinsPerGroup), "kBinsPerGroup must be a power of two");
-    static_assert((1u << kLog2BinsPerGroup) == kBinsPerGroup);
+    static_assert(std::has_single_bit(kBinsPerGroup));
+    static constexpr auto kWidths = [] {
+        std::array<std::uint32_t, kGroups> widths {};
+        for (std::uint32_t group = 0; group < kGroups; ++group) {
+            widths[group] = group < kLog2BinsPerGroup ? (1u << group)
+                : group == kLog2BinsPerGroup         ? kBinsPerGroup
+                : group <= 17                       ? 75u
+                                                    : 74u;
+        }
+        return widths;
+    }();
+    static constexpr auto kOffsets = [] {
+        std::array<std::uint32_t, kGroups> offsets {};
+        std::uint32_t sum {};
+        for (std::uint32_t group = 0; group < kGroups; ++group) {
+            offsets[group] = sum;
+            sum += kWidths[group];
+        }
+        return offsets;
+    }();
+    static_assert(kOffsets.back() + kWidths.back() == kTotalBins);
 
-    /**
-     * @brief Frequency counts for each latency bin.
-     *
-     * Aligned to a cache line boundary to ensure buckets start at a deterministic offset.
-     */
-    alignas(std::hardware_destructive_interference_size) std::array<std::uint64_t, kGroups * kBinsPerGroup> buckets_ {};
+    alignas(std::hardware_destructive_interference_size) std::array<std::uint64_t, kTotalBins> buckets_ {};
 
-    /**
-     * @brief Summary metrics and counters.
-     *
-     * Separated from the bucket array by a cache line boundary to reduce accidental
-     * cache-line sharing when colocated instances are updated independently.
-     */
     alignas(std::hardware_destructive_interference_size) std::uint64_t count_ {};
     std::uint64_t total_cycles_ {};
     std::uint64_t min_cycles_ { std::numeric_limits<std::uint64_t>::max() };
     std::uint64_t max_cycles_ {};
+    std::uint64_t overflow_count_ {};
+    double mean_cycles_ {};
+    double m2_cycles_ {};
 
-    /**
-     * @brief Provides multidimensional access to the internal bucket distribution.
-     * @details Formalizes the (Groups x Bins) mapping into a first-class view to eliminate
-     * manual arithmetic errors and improve maintainability without runtime overhead.
-     * @return A 2D mdspan view (Groups x BinsPerGroup).
-     */
-    [[nodiscard]] constexpr auto view(this auto&& self) noexcept {
-        using ElementType = std::conditional_t<std::is_const_v<std::remove_reference_t<decltype(self)>>,
-            const std::uint64_t, std::uint64_t>;
-        return stx::mdspan<ElementType, stx::extents<std::uint32_t, kGroups, kBinsPerGroup>, stx::layout_right> {
-            self.buckets_.data()
-        };
+    struct Bucket {
+        std::uint32_t group {};
+        std::uint32_t sub_bin {};
+        std::uint64_t lower {};
+        std::uint64_t step {};
+    };
+
+    [[nodiscard]] static constexpr Bucket locate(std::uint64_t cycles) noexcept {
+        const auto val = std::clamp(cycles, 1ULL, kMaxRepresentableValue);
+        const auto group = toUInt(std::bit_width(val)) - 1u;
+        const std::uint64_t base = 1ULL << group;
+        const auto width = kWidths[group];
+        const auto sub = toUInt(((val - base) * width) / base);
+        const auto lower = base + ((toULong(sub) * base + width - 1) / width);
+        const auto upper = base + ((toULong(sub + 1u) * base + width - 1) / width) - 1ULL;
+        return { group, sub, lower, upper - lower + 1ULL };
+    }
+
+    [[nodiscard]] constexpr auto& bucket(std::uint32_t group, std::uint32_t sub) noexcept {
+        return buckets_[kOffsets[group] + sub];
+    }
+
+    void merge_moments(std::uint64_t additional_count, double additional_mean, double additional_m2) noexcept {
+        if (additional_count == 0) { return; }
+        if (count_ == 0) {
+            mean_cycles_ = additional_mean;
+            m2_cycles_ = additional_m2;
+            count_ = additional_count;
+            return;
+        }
+        const auto combined = safe_add(count_, additional_count).value_or(std::numeric_limits<std::uint64_t>::max());
+        const double n1 = toDouble(count_);
+        const double n2 = toDouble(additional_count);
+        const double n = n1 + n2;
+        const double delta = additional_mean - mean_cycles_;
+        mean_cycles_ += delta * (n2 / n);
+        m2_cycles_ += additional_m2 + delta * delta * (n1 / n) * n2;
+        count_ = combined;
     }
 
 public:
@@ -92,6 +130,9 @@ public:
         total_cycles_ = 0;
         min_cycles_   = std::numeric_limits<std::uint64_t>::max();
         max_cycles_   = 0;
+        overflow_count_ = 0;
+        mean_cycles_ = 0.0;
+        m2_cycles_ = 0.0;
     }
 
     /**
@@ -104,25 +145,15 @@ public:
      * @param cycles The measured latency duration in CPU cycles.
      */
     void add(std::uint64_t cycles) noexcept {
-        /**
-         * @note Normalize 0 cycles to 1 to accommodate low-resolution timers (e.g. ARM CNTVCT_EL0).
-         *       Otherwise, std::bit_width(0) - 1 will underflow.
-         */
         cycles = std::max<std::uint64_t>(cycles, 1);
-
         min_cycles_ = std::min(min_cycles_, cycles);
         max_cycles_ = std::max(max_cycles_, cycles);
         total_cycles_ += cycles;
-        count_++;
+        if (cycles > kMaxRepresentableValue) { ++overflow_count_; }
 
-        const std::uint64_t val      = std::min<std::uint64_t>(cycles, kMaxRepresentableValue);
-        const std::uint32_t msb      = toUInt(std::bit_width(val)) - 1;
-        const std::uint32_t group    = msb;
-        const std::int32_t raw_shift = toInt(group) - toInt(kLog2BinsPerGroup);
-        const std::uint32_t shift    = toUInt(raw_shift & ~(raw_shift >> 31));
-        const std::uint32_t sub_bin  = toUInt(((val ^ (1ULL << msb)) >> shift) & (kBinsPerGroup - 1));
-
-        view()[group, sub_bin]++;
+        const auto location = locate(cycles);
+        ++bucket(location.group, location.sub_bin);
+        merge_moments(1, toDouble(cycles), 0.0);
     }
 
     /**
@@ -142,43 +173,26 @@ public:
 
         std::uint64_t missing = cycles - expected_interval_cycles;
         while (missing >= expected_interval_cycles) {
-            struct BatchUpdate {
-                std::uint32_t group;
-                std::uint32_t sub_bin;
-                std::uint64_t count;
-                std::uint64_t last_val;
-                std::uint64_t cycles_sum;
-            };
+            const auto location = locate(missing);
+            const auto limit = std::max(location.lower, expected_interval_cycles);
+            const auto count = (missing - limit) / expected_interval_cycles + 1ULL;
+            const auto last = missing - (count - 1ULL) * expected_interval_cycles;
+            const long double n = static_cast<long double>(count);
+            const long double first = static_cast<long double>(missing);
+            const long double tail = static_cast<long double>(last);
+            const long double interval = static_cast<long double>(expected_interval_cycles);
+            const double batch_mean = static_cast<double>((first + tail) / 2.0L);
+            const double batch_m2 = static_cast<double>((interval * interval) * n * (n * n - 1.0L) / 12.0L);
+            const auto sum = static_cast<std::uint64_t>((first + tail) * n / 2.0L);
 
-            const auto batch = [missing, expected_interval_cycles]() -> BatchUpdate {
-                const std::uint64_t val      = std::min<std::uint64_t>(missing, kMaxRepresentableValue);
-                const std::uint32_t msb      = toUInt(std::bit_width(val)) - 1;
-                const std::uint32_t group    = msb;
-                const std::uint64_t base     = 1ULL << group;
-                const std::int32_t raw_shift = toInt(group) - toInt(kLog2BinsPerGroup);
-                const std::uint32_t shift    = toUInt(raw_shift & ~(raw_shift >> 31));
+            bucket(location.group, location.sub_bin) += count;
+            merge_moments(count, batch_mean, batch_m2);
+            total_cycles_ += sum;
+            min_cycles_ = std::min(min_cycles_, last);
+            if (last > kMaxRepresentableValue) { overflow_count_ += count; }
 
-                const std::uint32_t sub_bin = toUInt(((val ^ base) >> shift) & (kBinsPerGroup - 1));
-                const std::uint64_t step    = (group >= kLog2BinsPerGroup) ? (base >> kLog2BinsPerGroup) : 1;
-                const std::uint64_t lower   = base + (toULong(sub_bin) * step);
-
-                const std::uint64_t limit = std::max(lower, expected_interval_cycles);
-                const std::uint64_t count = (missing - limit) / expected_interval_cycles + 1;
-
-                const std::uint64_t last_val   = missing - (count - 1) * expected_interval_cycles;
-                const std::uint64_t sum_term   = missing + last_val;
-                const std::uint64_t cycles_sum = (count / 2) * sum_term + (count % 2) * (sum_term / 2);
-
-                return { group, sub_bin, count, last_val, cycles_sum };
-            }();
-
-            view()[batch.group, batch.sub_bin] += batch.count;
-            count_ = safe_add(count_, batch.count).value_or(std::numeric_limits<std::uint64_t>::max());
-            total_cycles_ += batch.cycles_sum;
-            min_cycles_ = std::min(min_cycles_, batch.last_val);
-
-            if (batch.last_val <= expected_interval_cycles) { break; }
-            missing = batch.last_val - expected_interval_cycles;
+            if (last <= expected_interval_cycles) { break; }
+            missing = last - expected_interval_cycles;
         }
     }
 
@@ -199,7 +213,8 @@ public:
         min_cycles_ = std::min(min_cycles_, other.min_cycles_);
         max_cycles_ = std::max(max_cycles_, other.max_cycles_);
         total_cycles_ += other.total_cycles_;
-        count_ = safe_add(count_, other.count_).value_or(std::numeric_limits<std::uint64_t>::max());
+        overflow_count_ += other.overflow_count_;
+        merge_moments(other.count_, other.mean_cycles_, other.m2_cycles_);
     }
 
     /**
@@ -216,6 +231,9 @@ public:
 
     /** @brief Retrieves the total sum of cycles recorded (for mean calculation). */
     [[nodiscard]] std::uint64_t total_cycles() const noexcept { return total_cycles_; }
+    [[nodiscard]] std::uint64_t overflow_count() const noexcept { return overflow_count_; }
+    [[nodiscard]] double mean_cycles() const noexcept { return mean_cycles_; }
+    [[nodiscard]] double m2_cycles() const noexcept { return m2_cycles_; }
 
     /**
      * @brief Visits all buckets containing at least one sample.
@@ -226,24 +244,22 @@ public:
     template <std::invocable<std::uint64_t, std::uint64_t, std::uint64_t> F>
     constexpr void for_each_active_bucket(F&& func) const
         noexcept(std::is_nothrow_invocable_v<F&, std::uint64_t, std::uint64_t, std::uint64_t>) {
-
         constexpr bool kCanShortCircuit
             = std::convertible_to<std::invoke_result_t<F&, std::uint64_t, std::uint64_t, std::uint64_t>, bool>;
 
-        for (auto [group, sub_bin] :
-            std::views::cartesian_product(std::views::iota(0u, kGroups), std::views::iota(0u, kBinsPerGroup))) {
-
-            const std::uint64_t freq = view()[group, sub_bin];
-            if (freq == 0) { continue; }
-
-            const std::uint64_t base        = 1ULL << group;
-            const std::uint64_t step        = (group >= kLog2BinsPerGroup) ? (base >> kLog2BinsPerGroup) : 1;
-            const std::uint64_t lower_bound = base + (toULong(sub_bin) * step);
-
-            if constexpr (kCanShortCircuit) {
-                if (!std::invoke(func, lower_bound, step, freq)) { break; }
-            } else {
-                std::invoke(func, lower_bound, step, freq);
+        for (std::uint32_t group = 0; group < kGroups; ++group) {
+            const std::uint64_t base = 1ULL << group;
+            const auto width = kWidths[group];
+            for (std::uint32_t sub = 0; sub < width; ++sub) {
+                const auto freq = buckets_[kOffsets[group] + sub];
+                if (freq == 0) { continue; }
+                const auto lower = base + ((toULong(sub) * base + width - 1) / width);
+                const auto upper = base + ((toULong(sub + 1u) * base + width - 1) / width) - 1ULL;
+                if constexpr (kCanShortCircuit) {
+                    if (!std::invoke(func, lower, upper - lower + 1ULL, freq)) { return; }
+                } else {
+                    std::invoke(func, lower, upper - lower + 1ULL, freq);
+                }
             }
         }
     }
@@ -301,7 +317,7 @@ public:
         if (hist_.count() == 0 || !std::isfinite(cycles_to_ns_) || cycles_to_ns_ <= 0.0) [[unlikely]] {
             return std::chrono::duration<double, std::nano> { 0.0 };
         }
-        const double avg_cycles = toDouble(hist_.total_cycles()) / toDouble(hist_.count());
+        const double avg_cycles = hist_.mean_cycles();
         return std::chrono::duration<double, std::nano> { avg_cycles / cycles_to_ns_ };
     }
 
@@ -318,35 +334,26 @@ public:
     [[nodiscard]] std::chrono::duration<double, std::nano> percentile(double target_percentile) const noexcept {
         if (hist_.count() == 0) { return std::chrono::duration<double, std::nano> { 0.0 }; }
 
-        const double requested = std::clamp(target_percentile, 0.0, 100.0);
+        const double requested = std::isnan(target_percentile) ? 0.0 : std::clamp(target_percentile, 0.0, 100.0);
         if (requested <= 0.0) { return min(); }
         if (requested >= 100.0) { return max(); }
 
-        const auto target = (requested / 100.0) * toDouble(hist_.count());
-
+        const auto rank = std::max(1.0, std::ceil((requested / 100.0) * toDouble(hist_.count())));
         std::uint64_t cumulative {};
-        auto result = max();
+        double estimate = toDouble(hist_.max_cycles());
 
-        hist_.for_each_active_bucket([target, cycles_to_ns = this->cycles_to_ns_, &cumulative, &result](
-                                         const auto lower_bound, const auto step, const auto freq) -> bool {
-            if (toDouble(cumulative + freq) < target) {
-                cumulative += freq;
-                return true; // continue iteration
-            }
-
-            if (step == 1) [[likely]] {
-                result = to_nanoseconds(toDouble(lower_bound), cycles_to_ns);
-            } else {
-                const auto min_val { toDouble(lower_bound) };
-                const auto max_val { toDouble(lower_bound + step - 1) };
-                const auto fraction { (target - toDouble(cumulative)) / toDouble(freq) };
-                const auto interpolated { std::lerp(min_val, max_val, fraction) };
-                result = to_nanoseconds(interpolated, cycles_to_ns);
-            }
-            return false; // break iteration
+        hist_.for_each_active_bucket([&](auto lower, auto step, auto freq) -> bool {
+            cumulative += freq;
+            if (toDouble(cumulative) < rank) { return true; }
+            const auto upper = lower + step - 1ULL;
+            estimate = requested <= 50.0
+                ? std::midpoint(toDouble(lower), toDouble(upper))
+                : toDouble(upper);
+            return false;
         });
 
-        return result;
+        return to_nanoseconds(std::clamp(estimate, toDouble(hist_.min_cycles()), toDouble(hist_.max_cycles())),
+            cycles_to_ns_);
     }
 
     /**
@@ -361,34 +368,9 @@ public:
      * @return CV as a non-negative double. Returns 0.0 when count < 2.
      */
     [[nodiscard]] double cv() const noexcept {
-        if (hist_.count() < 2) { return 0.0; }
-
-        const auto sample_count = toDouble(hist_.count());
-
-        /** @note Pass 1: compute mean from bucket midpoints (consistent grouped-data mean). */
-        double weighted_sum {};
-        hist_.for_each_active_bucket([&weighted_sum](const auto lower_bound, const auto step, const auto freq) {
-            const auto min_val { toDouble(lower_bound) };
-            const auto max_val { toDouble(lower_bound + step - 1) };
-            const auto midpoint { std::midpoint(min_val, max_val) };
-            weighted_sum += toDouble(freq) * midpoint;
-        });
-
-        const auto mean = weighted_sum / sample_count;
-        if (mean <= 0.0) [[unlikely]] { return 0.0; }
-
-        /** @note Pass 2: compute variance using midpoints to determine the stability of measured latencies. */
-        double sum_sq_diff {};
-        hist_.for_each_active_bucket([mean, &sum_sq_diff](const auto lower_bound, const auto step, const auto freq) {
-            const auto min_val { toDouble(lower_bound) };
-            const auto max_val { toDouble(lower_bound + step - 1) };
-            const auto midpoint { std::midpoint(min_val, max_val) };
-            const auto diff { midpoint - mean };
-            sum_sq_diff += toDouble(freq) * diff * diff;
-        });
-
-        const auto stddev = std::sqrt(sum_sq_diff / sample_count);
-        return stddev / mean;
+        if (hist_.count() < 2 || hist_.mean_cycles() <= 0.0) { return 0.0; }
+        const double variance = std::max(0.0, hist_.m2_cycles() / toDouble(hist_.count()));
+        return std::sqrt(variance) / hist_.mean_cycles();
     }
 };
 
