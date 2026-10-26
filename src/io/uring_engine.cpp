@@ -230,6 +230,7 @@ IoTracker::IoTracker(std::uint16_t queue_depth) {
     retry_slots_.resize(queue_depth);
     free_slots_.resize(queue_depth);
     deltas_.resize(queue_depth);
+    pending_slots_.resize(queue_depth);
     reset(queue_depth);
 }
 
@@ -238,6 +239,7 @@ void IoTracker::resize(std::uint16_t queue_depth) {
     retry_slots_.resize(queue_depth);
     free_slots_.resize(queue_depth);
     deltas_.resize(queue_depth);
+    pending_slots_.resize(queue_depth);
     reset(queue_depth);
 }
 
@@ -245,6 +247,8 @@ void IoTracker::reset(std::uint16_t queue_depth) noexcept {
     state_       = IoTrackerState {};
     hist_        = {};
     retry_count_ = 0;
+    pending_count_ = 0;
+    std::ranges::fill(pending_slots_, std::uint8_t { 0 });
     std::ranges::iota(free_slots_.begin(), free_slots_.begin() + queue_depth, std::uint16_t { 0 });
     state_.free_count = queue_depth;
 }
@@ -271,6 +275,20 @@ std::span<const std::uint16_t> IoTracker::get_free_slots(std::size_t limit) cons
 
 void IoTracker::consume_free_slots(std::size_t count) noexcept {
     state_.free_count -= count;
+}
+
+void IoTracker::mark_pending(std::uint16_t idx) noexcept {
+    if (pending_slots_[idx] == 0) {
+        pending_slots_[idx] = 1;
+        ++pending_count_;
+    }
+}
+
+void IoTracker::complete_pending(std::uint16_t idx) noexcept {
+    if (pending_slots_[idx] != 0) {
+        pending_slots_[idx] = 0;
+        --pending_count_;
+    }
 }
 
 std::expected<void, UringError> IoTracker::queue_retry_slot(std::uint16_t idx) noexcept {
@@ -355,7 +373,7 @@ template <IoContext Context> std::expected<void, UringError> SubmissionQueue::su
         io_uring_sqe* sqe = *sqe_res;
 
         const auto [op_offset, len] = next_block(ctx.layout, state);
-        tracker_.request(idx)       = { {}, op_offset, len, len, 0 };
+        tracker_.request(idx)       = { {}, op_offset, len, len, tsc::rdtsc_ordered() };
 
         prepare_io_sqe(sqe, ctx, tracker_.request(idx), idx);
 
@@ -419,7 +437,7 @@ void SubmissionQueue::prepare_io_sqe(
             break;
     }
 
-    req.start_cycles = tsc::rdtsc_ordered();
+    tracker_.mark_pending(idx);
     io_uring_sqe_set_data64(sqe, idx);
     /** @brief Mark as fixed file if we are using the registered table index. */
     if (shared_state_.file_registrar.registered_handle()) {
@@ -499,10 +517,15 @@ std::expected<void, UringError> CompletionQueue::handle_completion(const io_urin
     }
 
     if (tag == UringTimeoutController::kCancelTag) { return {}; }
+    if (tag == UringTimeoutController::kTimerTag - 2) {
+        if (pending_cancels_ > 0) { --pending_cancels_; }
+        return {};
+    }
 
     const auto idx_res = tracker_.resolve_cqe_slot(tag);
     if (!idx_res) { return std::unexpected(idx_res.error()); }
     const std::uint16_t idx = *idx_res;
+    tracker_.complete_pending(idx);
 
     if (is_one_of<-EAGAIN, -EINTR>(cqe->res)) { return tracker_.queue_retry_slot(idx); }
 
@@ -552,36 +575,36 @@ std::expected<void, UringError> CompletionQueue::finalize_cqe(const io_uring_cqe
 }
 
 template <IoContext Context> void CompletionQueue::drain_all_completions(const Context& ctx) noexcept {
-    const int submitted = io_uring_submit(shared_state_.ring.get_ring());
-    if (submitted < 0) {
-        print_warning(std::format("io_uring: unable to flush pending SQEs during drain ({})", submitted));
-    }
-
-    constexpr std::uint32_t kMaxDrainRetries = 3;
-
-    auto& state           = tracker_.state();
-    const auto drain_step = [this, &ctx, &state]() noexcept -> bool {
-        const auto initial = state.completed;
-        return wait_one_cqe()
-            /** @brief Error from wait_one_cqe is intentionally ignored during drain. */
-            .or_else([](auto) { return std::expected<void, UringError> {}; })
-            .and_then([this, &ctx]() -> std::expected<void, UringError> { return process_completions(ctx); })
-            .transform([&state, initial]() { return state.completed > initial || state.completed == state.submitted; })
-            .value_or(false);
+    io_uring* ring = shared_state_.ring.get_ring();
+    const auto submit_prepared = [ring]() noexcept {
+        return io_uring_submit(ring) >= 0;
     };
 
-    std::uint32_t consecutive_stalls = 0;
-    while (state.completed < state.submitted) {
-        if (drain_step()) [[likely]] {
-            consecutive_stalls = 0;
-            continue;
+    if (!submit_prepared()) { print_warning("io_uring: failed to submit outstanding SQEs during shutdown"); }
+
+    for (std::size_t slot = 0; slot < tracker_.slot_count(); ++slot) {
+        const auto idx = toUShort(slot);
+        if (!tracker_.is_pending(idx)) { continue; }
+
+        io_uring_sqe* sqe = io_uring_get_sqe(ring);
+        if (!sqe && submit_prepared()) { sqe = io_uring_get_sqe(ring); }
+        if (!sqe) { break; }
+
+        io_uring_prep_cancel64(sqe, idx, 0);
+        io_uring_sqe_set_data64(sqe, UringTimeoutController::kTimerTag - 2);
+        ++pending_cancels_;
+    }
+
+    if (!submit_prepared()) { print_warning("io_uring: unable to submit shutdown cancellation"); }
+
+    while (tracker_.pending_count() != 0 || pending_cancels_ != 0) {
+        const auto wait_result = wait_one_cqe();
+        if (!wait_result && wait_result.error() != std::errc::timed_out
+            && wait_result.error() != std::errc::interrupted
+            && wait_result.error() != std::errc::resource_unavailable_try_again) {
+            print_warning(std::format("io_uring: completion wait failed ({})", wait_result.error().message()));
         }
-        ++consecutive_stalls;
-        if (consecutive_stalls >= kMaxDrainRetries) {
-            print_warning(std::format("io_uring: drain stalled at {}/{} completions after {} retries", state.completed,
-                state.submitted, kMaxDrainRetries));
-            break;
-        }
+        [[maybe_unused]] const auto processed = process_completions(ctx);
     }
 }
 
@@ -651,7 +674,7 @@ template <IoContext Context> std::expected<PhaseRunStats, UringError> UringEvent
      * when the kernel eventually writes to the (freed) buffer memory.
      */
     scope_exit drain_all { [this, &ctx]() noexcept {
-        if (tracker_.state().completed < tracker_.state().submitted) { cq_.drain_all_completions(ctx); }
+        if (tracker_.pending_count() != 0) { cq_.drain_all_completions(ctx); }
     } };
 
     /**
