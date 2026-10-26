@@ -83,7 +83,7 @@ class alignas(std::hardware_destructive_interference_size) LatencyHistogram fina
     };
 
     [[nodiscard]] static constexpr Bucket locate(std::uint64_t cycles) noexcept {
-        const auto val = std::clamp(cycles, 1ULL, kMaxRepresentableValue);
+        const auto val = std::clamp<std::uint64_t>(cycles, 1, kMaxRepresentableValue);
         const auto group = toUInt(std::bit_width(val)) - 1u;
         const std::uint64_t base = 1ULL << group;
         const auto width = kWidths[group];
@@ -183,13 +183,17 @@ public:
             const long double interval = static_cast<long double>(expected_interval_cycles);
             const double batch_mean = static_cast<double>((first + tail) / 2.0L);
             const double batch_m2 = static_cast<double>((interval * interval) * n * (n * n - 1.0L) / 12.0L);
-            const auto sum = static_cast<std::uint64_t>((first + tail) * n / 2.0L);
+            const auto sum = static_cast<std::uint64_t>(std::min((first + tail) * n / 2.0L,
+                static_cast<long double>(std::numeric_limits<std::uint64_t>::max())));
 
             bucket(location.group, location.sub_bin) += count;
             merge_moments(count, batch_mean, batch_m2);
             total_cycles_ += sum;
             min_cycles_ = std::min(min_cycles_, last);
-            if (last > kMaxRepresentableValue) { overflow_count_ += count; }
+            if (missing > kMaxRepresentableValue) {
+                const auto overflow_samples = (missing - kMaxRepresentableValue - 1ULL) / expected_interval_cycles + 1ULL;
+                overflow_count_ += std::min(count, overflow_samples);
+            }
 
             if (last <= expected_interval_cycles) { break; }
             missing = last - expected_interval_cycles;
