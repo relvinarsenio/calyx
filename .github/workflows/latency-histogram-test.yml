@@ -1,0 +1,27 @@
+name: Latency Histogram Regression
+
+on:
+  pull_request:
+    branches: [development]
+    paths:
+      - 'include/latency_histogram.hpp'
+      - 'tests/latency_histogram_test.cpp'
+      - '.github/workflows/latency-histogram-test.yml'
+  workflow_dispatch:
+
+jobs:
+  regression:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install GCC 14
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++-14
+      - name: Compile C++23 tests with ASan and UBSan
+        run: |
+          g++-14 -std=c++23 -O1 -g -Wall -Wextra -Wpedantic -Werror \
+            -fsanitize=address,undefined -fno-omit-frame-pointer \
+            -Iinclude tests/latency_histogram_test.cpp -o histogram_test
+      - name: Run regressions
+        run: ./histogram_test
