@@ -174,8 +174,8 @@ public:
         while (missing >= expected_interval_cycles) {
             const auto location = locate(missing);
             const auto limit = std::max(location.lower, expected_interval_cycles);
-            const auto count = (missing - limit) / expected_interval_cycles + 1ULL;
-            const auto last = missing - (count - 1ULL) * expected_interval_cycles;
+            const std::uint64_t count { (missing - limit) / expected_interval_cycles + 1ULL };
+            const std::uint64_t last { missing - (count - 1ULL) * expected_interval_cycles };
             const long double n = static_cast<long double>(count);
             const long double first = static_cast<long double>(missing);
             const long double tail = static_cast<long double>(last);
