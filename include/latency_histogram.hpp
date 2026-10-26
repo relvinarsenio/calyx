@@ -191,7 +191,7 @@ public:
             min_cycles_ = std::min(min_cycles_, last);
             if (missing > kMaxRepresentableValue) {
                 const auto overflow_samples = (missing - kMaxRepresentableValue - 1ULL) / expected_interval_cycles + 1ULL;
-                overflow_count_ += std::min(count, overflow_samples);
+                overflow_count_ += std::min<std::uint64_t>(count, overflow_samples);
             }
 
             if (last <= expected_interval_cycles) { break; }
