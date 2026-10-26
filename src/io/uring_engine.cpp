@@ -243,9 +243,9 @@ void IoTracker::resize(std::uint16_t queue_depth) {
 }
 
 void IoTracker::reset(std::uint16_t queue_depth) noexcept {
-    state_       = IoTrackerState {};
-    hist_        = {};
-    retry_count_ = 0;
+    state_         = IoTrackerState {};
+    hist_          = {};
+    retry_count_   = 0;
     pending_count_ = 0;
     std::ranges::fill(pending_slots_, std::uint8_t { 0 });
     std::ranges::iota(free_slots_.begin(), free_slots_.begin() + queue_depth, std::uint16_t { 0 });
@@ -574,7 +574,7 @@ std::expected<void, UringError> CompletionQueue::finalize_cqe(const io_uring_cqe
 }
 
 template <IoContext Context> void CompletionQueue::drain_all_completions(const Context& ctx) noexcept {
-    io_uring* ring = shared_state_.ring.get_ring();
+    io_uring* ring             = shared_state_.ring.get_ring();
     const auto submit_prepared = [ring]() noexcept -> bool {
         const int res = io_uring_submit(ring);
         return res >= 0;
@@ -599,8 +599,7 @@ template <IoContext Context> void CompletionQueue::drain_all_completions(const C
     while (tracker_.pending_count() != 0 || pending_cancels_ != 0) {
         if (!submit_prepared()) { print_warning("io_uring: submission retry failed during shutdown"); }
         const auto wait_result = wait_one_cqe();
-        if (!wait_result && wait_result.error() != std::errc::timed_out
-            && wait_result.error() != std::errc::interrupted
+        if (!wait_result && wait_result.error() != std::errc::timed_out && wait_result.error() != std::errc::interrupted
             && wait_result.error() != std::errc::resource_unavailable_try_again) {
             print_warning(std::format("io_uring: completion wait failed ({})", wait_result.error().message()));
         }

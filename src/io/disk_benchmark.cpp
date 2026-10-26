@@ -421,8 +421,7 @@ struct IoGeometry {
     const std::string& filename, UringEngine& engine, const IoParams& params, bool& file_owned) {
     return IoFile::create(filename, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR)
         .transform_error([](std::error_code ec) {
-            return BenchmarkError { BenchmarkError::Phase::WritePhase,
-                posix::SysCallError { ec, "File Creation" } };
+            return BenchmarkError { BenchmarkError::Phase::WritePhase, posix::SysCallError { ec, "File Creation" } };
         })
         .and_then([&engine, &params, &file_owned](IoFile wf) {
             file_owned = true;
@@ -507,8 +506,7 @@ std::string DiskBenchmark::format_error(const BenchmarkError& err) {
     std::stop_token stop, const std::move_only_function<bool() const noexcept>& interrupt_cb) {
     if (const auto val { validate_config(config) }; !val) { return std::unexpected { val.error() }; }
 
-    const std::string filename {
-        std::format("{}.{}.{}", config::kTestFilename, posix::getpid(), generate_seed()) };
+    const std::string filename { std::format("{}.{}.{}", config::kTestFilename, posix::getpid(), generate_seed()) };
     const auto dir_path { std::filesystem::path(filename).parent_path() };
     const posix::BlockSize hw { posix::get_block_size(dir_path.empty() ? "." : dir_path) };
 
