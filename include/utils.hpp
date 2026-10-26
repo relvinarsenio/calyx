@@ -396,15 +396,6 @@ inline constexpr auto check_disk_space
     return {};
 };
 
-inline constexpr auto get_test_filename
-    = []() noexcept -> std::string { return std::format("{}.{}", ::config::kTestFilename, posix::getpid()); };
-
-inline constexpr auto cleanup_artifacts = []() noexcept {
-    const std::string disk_file = get_test_filename();
-    std::error_code error_status;
-    if (fs::exists(disk_file, error_status)) { fs::remove(disk_file, error_status); }
-};
-
 inline constexpr auto capitalize = [](std::string_view text) noexcept -> std::string {
     if (text.empty()) { return {}; }
 
