@@ -12,6 +12,7 @@
 #include "file_descriptor.hpp"
 #include "interrupts.hpp"
 #include "locale_probe.hpp"
+#include "numeric_cast.hpp"
 #include "scope.hpp"
 #include "speed_test.hpp"
 #include "utils.hpp"
@@ -25,6 +26,7 @@
 #include <cstdint>
 #include <format>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <numeric>
@@ -182,8 +184,8 @@ void print_success_row(const SpeedEntryResult& entry) {
  * Uses the median throughput as the robust center and a normal-consistent median
  * absolute deviation as scale, with a mean absolute deviation fallback to
  * keep all throughput samples influential when MAD is zero. The Cauchy weight
- * decreases continuously without a fixed outlier cutoff. If every throughput
- * is identical, their common value is returned.
+ * decreases continuously without a fixed outlier cutoff. A strictly positive
+ * scale makes identical and empty samples well-defined without special branches.
  *
  * @param runs Collected benchmark run results.
  * @param phase Pointer-to-member selecting write or read metrics from each run.
@@ -192,14 +194,11 @@ void print_success_row(const SpeedEntryResult& entry) {
 [[nodiscard]] double cauchy_weighted_avg_throughput(
     std::span<const DiskIORunResult> runs, const DiskIOMetrics DiskIORunResult::* phase) {
 
-    if (runs.empty()) { return 0.0; }
+    std::vector<double> values(std::max(runs.size(), 1uz));
 
-    std::vector<double> values;
-    values.reserve(runs.size());
-
-    for (const auto& run : runs) {
-        values.push_back((run.*phase).bw_bytes_per_sec);
-    }
+    std::ranges::transform(runs, values.begin(), [phase](const DiskIORunResult& run) {
+        return (run.*phase).bw_bytes_per_sec;
+    });
 
     std::ranges::sort(values);
 
@@ -216,10 +215,12 @@ void print_success_row(const SpeedEntryResult& entry) {
 
     constexpr double kNormalMadScale = 1.482602218505602;
     const double mean_absolute_deviation
-        = std::accumulate(deviations.begin(), deviations.end(), 0.0) / static_cast<double>(deviations.size());
-    const double scale = std::max(kNormalMadScale * median_sorted(deviations), mean_absolute_deviation);
-
-    if (scale == 0.0) { return center; }
+        = std::accumulate(deviations.begin(), deviations.end(), 0.0) / toDouble(deviations.size());
+    const double scale = std::max({
+        kNormalMadScale * median_sorted(deviations),
+        mean_absolute_deviation,
+        std::numeric_limits<double>::min(),
+    });
 
     double weighted_sum {};
     double total_weight {};
