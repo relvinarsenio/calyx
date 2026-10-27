@@ -180,9 +180,10 @@ void print_success_row(const SpeedEntryResult& entry) {
  * @brief Computes Cauchy-weighted average throughput across benchmark runs.
  *
  * Uses the median throughput as the robust center and a normal-consistent median
- * absolute deviation as scale. The Cauchy weight decreases continuously with
- * the distance from the center, without a fixed outlier cutoff. When the
- * deviation scale is zero, the median is returned.
+ * absolute deviation as scale, with a mean absolute deviation fallback to
+ * keep all throughput samples influential when MAD is zero. The Cauchy weight
+ * decreases continuously without a fixed outlier cutoff. If every throughput
+ * is identical, their common value is returned.
  *
  * @param runs Collected benchmark run results.
  * @param phase Pointer-to-member selecting write or read metrics from each run.
@@ -214,7 +215,9 @@ void print_success_row(const SpeedEntryResult& entry) {
     std::ranges::sort(deviations);
 
     constexpr double kNormalMadScale = 1.482602218505602;
-    const double scale = kNormalMadScale * median_sorted(deviations);
+    const double mean_absolute_deviation
+        = std::accumulate(deviations.begin(), deviations.end(), 0.0) / static_cast<double>(deviations.size());
+    const double scale = std::max(kNormalMadScale * median_sorted(deviations), mean_absolute_deviation);
 
     if (scale == 0.0) { return center; }
 
