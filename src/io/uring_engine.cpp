@@ -509,6 +509,8 @@ template <IoContext Context>
 std::expected<void, UringError> CompletionQueue::handle_completion(const io_uring_cqe* cqe) {
     constexpr bool is_write = std::remove_cvref_t<Context>::is_write_op;
     const auto tag          = io_uring_cqe_get_data64(cqe);
+    /** @note Batch peeks expose liburing's internal timeouts on kernels without EXT_ARG. */
+    if (tag == LIBURING_UDATA_TIMEOUT) { return {}; }
     if (tag == UringTimeoutController::kTimerTag) {
         shared_state_.timeout_controller.set_timer_armed(false);
         if (cqe->res == -ETIME) { return make_unexpected(ExecutionError::Timeout); }

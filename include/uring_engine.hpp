@@ -505,8 +505,9 @@ class UringTimeoutController {
     std::uint64_t last_recalc_completed_ = 0;
 
 public:
-    static constexpr std::uint64_t kTimerTag  = UINT64_MAX; ///< user_data sentinel for the timeout SQE.
-    static constexpr std::uint64_t kCancelTag = UINT64_MAX - 1; ///< user_data sentinel for the cancel SQE.
+    /** @note UINT64_MAX is reserved for liburing's legacy timeout completions. */
+    static constexpr std::uint64_t kTimerTag  = UINT64_MAX - 1; ///< user_data sentinel for the timeout SQE.
+    static constexpr std::uint64_t kCancelTag = UINT64_MAX - 2; ///< user_data sentinel for the cancel SQE.
 
     [[nodiscard]] std::chrono::nanoseconds get_cached_timeout(
         const metrics::LatencyHistogram& hist, std::uint64_t completed) noexcept {
