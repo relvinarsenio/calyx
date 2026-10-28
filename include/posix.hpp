@@ -388,10 +388,10 @@ public:
         scope_exit errno_guard { [saved_errno]() noexcept { errno = saved_errno; } };
 
         std::int32_t attr { 0 };
-        if (::ioctl(fd_.native_handle(), toInt(FS_IOC_GETFLAGS), &attr) != 0) { return; }
+        if (!fd_.ioctl(FS_IOC_GETFLAGS, attr)) { return; }
 
         attr |= FS_NOCOW_FL;
-        ::ioctl(fd_.native_handle(), toInt(FS_IOC_SETFLAGS), &attr);
+        static_cast<void>(fd_.ioctl(FS_IOC_SETFLAGS, attr));
     }
 
     /** @brief Access the underlying raw file descriptor. */
