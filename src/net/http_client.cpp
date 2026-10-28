@@ -410,6 +410,7 @@ std::expected<void, std::string> HttpClient::download(std::string_view url, cons
                     .and_then([this, &headers, &write_ctx, url_str = std::string { url }] {
                         return set_option(CURLOPT_URL, url_str.c_str())
                             .and_then([this, &headers] { return set_option(CURLOPT_HTTPHEADER, headers.get()); })
+                            .and_then([this] { return set_option(CURLOPT_FAILONERROR, 1L); })
                             .and_then([this] { return set_option(CURLOPT_WRITEFUNCTION, write_file_callback); })
                             .and_then([this, &write_ctx] { return set_option(CURLOPT_WRITEDATA, &write_ctx); })
                             .and_then(

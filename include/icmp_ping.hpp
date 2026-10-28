@@ -23,7 +23,6 @@
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <netinet/ip_icmp.h>
-#include <optional>
 #include <poll.h>
 #include <ranges>
 #include <span>
@@ -167,9 +166,7 @@ private:
     /**
      * @brief Generates a 64-bit transaction nonce for echo request correlation and stale reply filtering.
      */
-    [[nodiscard]] static std::uint64_t generate_nonce() noexcept {
-        return generate_seed();
-    }
+    [[nodiscard]] static std::uint64_t generate_nonce() noexcept { return generate_seed(); }
 
     /**
      * @brief Computes 16-bit Internet Checksum with ones' complement carry folding (RFC 1071 Sec 4.1).
@@ -177,7 +174,10 @@ private:
     [[nodiscard]] static std::uint16_t calculate_checksum(std::span<const std::byte> buffer) noexcept {
         constexpr auto accumulate = [](this auto self, auto it, auto end, std::uint32_t acc) noexcept -> std::uint32_t {
             if (it == end) { return acc; }
-            if (it + 1 == end) { return acc + (toUInt(std::to_integer<std::uint8_t>(*it)) << 8u); }
+            if (it + 1 == end) {
+                const auto pair = std::array { *it, std::byte { 0 } };
+                return acc + toUInt(std::bit_cast<std::uint16_t>(pair));
+            }
             const auto pair = std::array { *it, *(it + 1) };
             return self(it + 2, end, acc + toUInt(std::bit_cast<std::uint16_t>(pair)));
         };
@@ -280,6 +280,17 @@ private:
         const auto first_byte { std::to_integer<std::uint8_t>(buf.front()) };
         const bool is_ip_hdr { (first_byte & kIpVersionMask) == kIPv4HeaderVersion };
         const std::uint32_t icmp_offset { is_ip_hdr ? calculate_icmp_offset(buf) : 0u };
+        if (is_ip_hdr) {
+            if (icmp_offset < sizeof(struct iphdr)) {
+                return std::unexpected(std::make_error_code(std::errc::bad_message));
+            }
+            std::array<std::byte, sizeof(struct iphdr)> ip_bytes {};
+            std::ranges::copy(buf.first(sizeof(struct iphdr)), ip_bytes.begin());
+            const auto ip_header { std::bit_cast<struct iphdr>(ip_bytes) };
+            if (posix::netorder(ip_header.tot_len) != buf.size()) {
+                return std::unexpected(std::make_error_code(std::errc::message_size));
+            }
+        }
 
         const auto hdr { extract_icmphdr(buf, icmp_offset) };
         if (!hdr) { return std::unexpected(hdr.error()); }
@@ -288,22 +299,25 @@ private:
         const auto pl { extract_echo_payload(buf, payload_offset) };
         if (!pl) { return std::unexpected(pl.error()); }
 
+        if (calculate_checksum(buf.subspan(icmp_offset)) != 0) {
+            return std::unexpected(std::make_error_code(std::errc::bad_message));
+        }
+
         return echo_reply_v4 { .header = *hdr, .payload = *pl };
     }
 
     /**
      * @brief Receives IPv4 ICMP reply header using minimum reassembly buffer size (RFC 791).
      */
-    [[nodiscard]] static std::optional<echo_reply_v4> receive_echo_reply_v4(const posix::file_descriptor& fd) noexcept {
+    [[nodiscard]] static auto receive_echo_reply_v4(const posix::file_descriptor& fd) noexcept
+        -> std::expected<echo_reply_v4, std::error_code> {
         std::array<std::byte, 576uz> recv_buf {};
         struct sockaddr_in reply_addr {};
 
         return posix::recvfrom(fd, std::span { recv_buf }, reply_addr)
             .and_then([&recv_buf](std::size_t bytes) noexcept {
                 return parse_reply_icmphdr_v4(std::span { recv_buf }.first(bytes));
-            })
-            .transform([](echo_reply_v4 reply) noexcept -> std::optional<echo_reply_v4> { return reply; })
-            .value_or(std::nullopt);
+            });
     }
 
     /**
@@ -325,16 +339,15 @@ private:
     /**
      * @brief Receives IPv6 ICMPv6 reply header using minimum link MTU buffer size (RFC 8200 Sec 5).
      */
-    [[nodiscard]] static std::optional<echo_reply_v6> receive_echo_reply_v6(const posix::file_descriptor& fd) noexcept {
+    [[nodiscard]] static auto receive_echo_reply_v6(const posix::file_descriptor& fd) noexcept
+        -> std::expected<echo_reply_v6, std::error_code> {
         std::array<std::byte, 1280uz> recv_buf {};
         struct sockaddr_in6 reply_addr {};
 
         return posix::recvfrom(fd, std::span { recv_buf }, reply_addr)
             .and_then([&recv_buf](std::size_t bytes) noexcept {
                 return parse_reply_icmp6hdr_v6(std::span { recv_buf }.first(bytes));
-            })
-            .transform([](echo_reply_v6 reply) noexcept -> std::optional<echo_reply_v6> { return reply; })
-            .value_or(std::nullopt);
+            });
     }
 
     /**
@@ -370,7 +383,11 @@ private:
     [[nodiscard]] static bool ping_host_multiplexed(const std::string_view ip, const std::chrono::milliseconds timeout,
         const std::int32_t af, const std::int32_t icmp_proto, RequestBuilder&& build_req, ReplyReceiver&& recv_reply,
         ReplyCheck&& is_valid_reply) noexcept {
-        if (!has_valid_route<Addr>(af, ip)) { return false; }
+        const auto t0 { std::chrono::steady_clock::now() };
+        const auto budget_expired { [t0, timeout]() noexcept {
+            return get_remaining_timeout(t0, timeout) <= std::chrono::milliseconds(0);
+        } };
+        if (budget_expired() || !has_valid_route<Addr>(af, ip) || budget_expired()) { return false; }
 
         Addr icmp_addr {};
         set_sa_family_and_port(icmp_addr, af, 0);
@@ -384,44 +401,55 @@ private:
         posix::file_descriptor icmp_fd;
         const auto req { build_req(posix::getpid()) };
         bool icmp_sent { false };
+        if (budget_expired()) { return false; }
         if (icmp_sock_res) {
             icmp_fd   = std::move(*icmp_sock_res);
             icmp_sent = posix::sendto(icmp_fd, std::as_bytes(std::span { &req, 1uz }), icmp_addr).has_value();
         }
 
-        const auto init_tcp { [ip, af](const std::uint16_t port, posix::file_descriptor& fd) noexcept -> bool {
+        enum class ConnectState {
+            Failed,
+            Pending,
+            Connected
+        };
+        const auto init_tcp { [ip, af, &budget_expired](
+                                  const std::uint16_t port, posix::file_descriptor& fd) noexcept -> ConnectState {
+            if (budget_expired()) { return ConnectState::Failed; }
             Addr addr {};
             set_sa_family_and_port(addr, af, port);
-            if (!set_sa_ip(addr, af, ip)) { return false; }
+            if (!set_sa_ip(addr, af, ip)) { return ConnectState::Failed; }
 
             auto res { posix::socket(af, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0) };
-            if (!res) { return false; }
+            if (!res) { return ConnectState::Failed; }
 
             fd = std::move(*res);
+            if (budget_expired()) { return ConnectState::Failed; }
             const auto conn { posix::connect(fd, addr) };
-            if (conn.has_value()) { return true; }
-            return conn.error() == posix::make_error(EINPROGRESS);
+            if (conn.has_value()) { return ConnectState::Connected; }
+            return conn.error() == posix::make_error(EINPROGRESS) ? ConnectState::Pending : ConnectState::Failed;
         } };
 
         posix::file_descriptor tcp80_fd;
         posix::file_descriptor tcp443_fd;
-        const bool tcp80_active { init_tcp(80, tcp80_fd) };
-        const bool tcp443_active { init_tcp(443, tcp443_fd) };
+        const auto tcp80_state { init_tcp(80, tcp80_fd) };
+        if (tcp80_state == ConnectState::Connected) { return true; }
+        const auto tcp443_state { init_tcp(443, tcp443_fd) };
+        if (tcp443_state == ConnectState::Connected) { return true; }
 
         const pollfd icmp_pfd {
             .fd = icmp_sent ? icmp_fd.native_handle() : -1, .events = POLLIN | POLLERR | POLLHUP, .revents = 0
         };
-        const pollfd tcp80_pfd {
-            .fd = tcp80_active ? tcp80_fd.native_handle() : -1, .events = POLLOUT | POLLERR | POLLHUP, .revents = 0
-        };
-        const pollfd tcp443_pfd {
-            .fd = tcp443_active ? tcp443_fd.native_handle() : -1, .events = POLLOUT | POLLERR | POLLHUP, .revents = 0
-        };
+        const pollfd tcp80_pfd { .fd = tcp80_state == ConnectState::Pending ? tcp80_fd.native_handle() : -1,
+            .events                  = POLLOUT | POLLERR | POLLHUP,
+            .revents                 = 0 };
+        const pollfd tcp443_pfd { .fd = tcp443_state == ConnectState::Pending ? tcp443_fd.native_handle() : -1,
+            .events                   = POLLOUT | POLLERR | POLLHUP,
+            .revents                  = 0 };
 
         std::array<pollfd, 3> pfds { icmp_pfd, tcp80_pfd, tcp443_pfd };
 
-        const auto t0 { std::chrono::steady_clock::now() };
         while (true) {
+            if (pfds[0].fd == -1 && pfds[1].fd == -1 && pfds[2].fd == -1) { break; }
             const auto rem { get_remaining_timeout(t0, timeout) };
             if (rem <= std::chrono::milliseconds(0)) { break; }
 
@@ -431,7 +459,11 @@ private:
             if (pfds[0].revents & POLLIN) {
                 const auto reply { recv_reply(icmp_fd) };
                 if (reply && is_valid_reply(*reply, req)) { return true; }
-                if (!reply) { pfds[0].fd = -1; }
+                if (!reply
+                    && !posix::is_any_of(reply.error(), std::errc::resource_unavailable_try_again,
+                        std::errc::interrupted, std::errc::message_size, std::errc::bad_message)) {
+                    pfds[0].fd = -1;
+                }
             } else if (pfds[0].revents & (POLLERR | POLLHUP)) {
                 pfds[0].fd = -1;
             }
@@ -447,8 +479,6 @@ private:
                 if (opt.has_value() && *opt == 0) { return true; }
                 pfds[2].fd = -1;
             }
-
-            if (pfds[0].fd == -1 && pfds[1].fd == -1 && pfds[2].fd == -1) { break; }
         }
 
         return false;

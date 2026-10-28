@@ -12,6 +12,7 @@
 #include "file_descriptor.hpp"
 #include "interrupts.hpp"
 #include "locale_probe.hpp"
+#include "numeric_cast.hpp"
 #include "scope.hpp"
 #include "speed_test.hpp"
 #include "utils.hpp"
@@ -20,12 +21,15 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdint>
 #include <format>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
+#include <numeric>
 #include <optional>
 #include <print>
 #include <ranges>
@@ -33,6 +37,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 namespace ui {
 
@@ -167,32 +172,67 @@ void print_success_row(const SpeedEntryResult& entry) {
 }
 
 /**
- * @brief Computes stability-weighted average throughput across benchmark runs.
+ * @brief Returns the median of an already sorted, nonempty sample.
+ */
+[[nodiscard]] double median_sorted(std::span<const double> values) noexcept {
+    return std::midpoint(values[(values.size() - 1) / 2], values[values.size() / 2]);
+}
+
+/**
+ * @brief Computes Cauchy-weighted average throughput across benchmark runs.
  *
- * Uses the Coefficient of Variation (σ/μ) from each run's latency histogram as a quality
- * signal. Runs with lower CV (tighter latency distribution) receive proportionally higher
- * weight, reducing the influence of runs contaminated by system interference.
+ * Uses the median throughput as the robust center and a normal-consistent median
+ * absolute deviation as scale, with a mean absolute deviation fallback to
+ * keep all throughput samples influential when MAD is zero. The Cauchy weight
+ * decreases continuously without a fixed outlier cutoff. A strictly positive
+ * scale makes identical and empty samples well-defined without special branches.
  *
- * Weight is capped at kMaxWeight to prevent a single low-CV run from dominating the
- * average — a Winsorization strategy standard in meta-analysis (Cochran, 1954).
- *
- * @param runs   Collected benchmark run results.
- * @param phase  Pointer-to-member selecting write or read metrics from each run.
+ * @param runs Collected benchmark run results.
+ * @param phase Pointer-to-member selecting write or read metrics from each run.
  * @return Weighted average throughput in bytes/second.
  */
-[[nodiscard]] double weighted_avg_throughput(
+[[nodiscard]] double cauchy_weighted_avg_throughput(
     std::span<const DiskIORunResult> runs, const DiskIOMetrics DiskIORunResult::* phase) {
-    const auto [weighted_bw, total_weight] = std::ranges::fold_left(
-        runs, std::pair { 0.0, 0.0 }, [phase](auto acc, const DiskIORunResult& run) {
-            static constexpr double kCvFloor    = 0.01;
-            static constexpr double kMaxWeight  = 10.0;
-            static constexpr double kUnitWeight = 1.0;
-            const auto& metrics                 = run.*phase;
-            const double stability_weight       = std::min(kUnitWeight / std::max(metrics.cv, kCvFloor), kMaxWeight);
-            return std::pair { acc.first + metrics.bw_bytes_per_sec * stability_weight, acc.second + stability_weight };
-        });
 
-    return (total_weight > 0.0) ? weighted_bw / total_weight : 0.0;
+    std::vector<double> values(std::max(runs.size(), 1uz));
+
+    std::ranges::transform(
+        runs, values.begin(), [phase](const DiskIORunResult& run) { return (run.*phase).bw_bytes_per_sec; });
+
+    std::ranges::sort(values);
+
+    const double center = median_sorted(values);
+
+    std::vector<double> deviations;
+    deviations.reserve(values.size());
+
+    for (const double value : values) {
+        deviations.push_back(std::abs(value - center));
+    }
+
+    std::ranges::sort(deviations);
+
+    constexpr double kNormalMadScale = 1.482602218505602;
+    const double mean_absolute_deviation
+        = std::accumulate(deviations.begin(), deviations.end(), 0.0) / toDouble(deviations.size());
+    const double scale = std::max({
+        kNormalMadScale * median_sorted(deviations),
+        mean_absolute_deviation,
+        std::numeric_limits<double>::min(),
+    });
+
+    double weighted_sum {};
+    double total_weight {};
+
+    for (const double value : values) {
+        const double u      = (value - center) / scale;
+        const double weight = 1.0 / (1.0 + u * u);
+
+        weighted_sum += value * weight;
+        total_weight += weight;
+    }
+
+    return weighted_sum / total_weight;
 }
 
 [[nodiscard]] metrics::LatencyHistogram aggregate_histograms(
@@ -359,8 +399,8 @@ void print_disk_run_result(const DiskIORunResult& result) {
 }
 
 void render_disk_results_summary(std::span<const DiskIORunResult> disk_runs, double cycles_to_ns) {
-    const double avg_write_bps = weighted_avg_throughput(disk_runs, &DiskIORunResult::write);
-    const double avg_read_bps  = weighted_avg_throughput(disk_runs, &DiskIORunResult::read);
+    const double avg_write_bps = cauchy_weighted_avg_throughput(disk_runs, &DiskIORunResult::write);
+    const double avg_read_bps  = cauchy_weighted_avg_throughput(disk_runs, &DiskIORunResult::read);
     std::println("{:<{}} :  {}  \u2502  {}", "   I/O Speed (Average)", config::kIoLabelWidth,
         color::colorize(std::format("Write {:>10}/s", format_bytes(toULong(avg_write_bps))), color::kYellow),
         color::colorize(std::format("Read {:>10}/s", format_bytes(toULong(avg_read_bps))), color::kCyan));

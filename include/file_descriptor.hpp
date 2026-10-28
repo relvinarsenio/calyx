@@ -277,6 +277,15 @@ public:
     }
 
     /**
+     * @brief Toggle @c O_DIRECT on this open file description without reopening its path.
+     * @param enable If true, sets O_DIRECT; otherwise clears it.
+     * @return Success, or an error if the descriptor/filesystem does not support the change.
+     */
+    [[nodiscard]] auto set_direct(bool enable) const noexcept -> std::expected<void, std::error_code> {
+        return update_fcntl_flag(F_GETFL, F_SETFL, O_DIRECT, enable);
+    }
+
+    /**
      * @brief Toggle the @c FD_CLOEXEC file descriptor flag.
      * @param enable If true, sets FD_CLOEXEC; otherwise clears it.
      */

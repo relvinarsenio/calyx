@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <arpa/inet.h>
+#include <array>
 #include <bit>
 #include <cerrno>
 #include <chrono>
@@ -388,10 +389,10 @@ public:
         scope_exit errno_guard { [saved_errno]() noexcept { errno = saved_errno; } };
 
         std::int32_t attr { 0 };
-        if (::ioctl(fd_.native_handle(), toInt(FS_IOC_GETFLAGS), &attr) != 0) { return; }
+        if (!fd_.ioctl(FS_IOC_GETFLAGS, attr)) { return; }
 
         attr |= FS_NOCOW_FL;
-        ::ioctl(fd_.native_handle(), toInt(FS_IOC_SETFLAGS), &attr);
+        static_cast<void>(fd_.ioctl(FS_IOC_SETFLAGS, attr));
     }
 
     /** @brief Access the underlying raw file descriptor. */
@@ -568,8 +569,9 @@ namespace sys_helpers {
  */
 [[nodiscard]] inline auto get_system_entropy() noexcept -> std::pair<std::uint64_t, std::uint64_t> {
     const auto raw_addr { ::getauxval(AT_RANDOM) };
-    const auto* ptr { std::bit_cast<const std::uint64_t*>(raw_addr) };
-    const auto [aux_low, aux_high] { (raw_addr != 0) ? std::make_pair(ptr[0], ptr[1]) : std::make_pair(0UL, 0UL) };
+    std::array<std::uint64_t, 2> aux {};
+    if (raw_addr != 0) { std::memcpy(aux.data(), std::bit_cast<const void*>(raw_addr), sizeof(aux)); }
+    const auto [aux_low, aux_high] { aux };
     using u_nanoseconds = std::chrono::duration<std::uint64_t, std::nano>;
     const auto time_ns {
         std::chrono::duration_cast<u_nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count()
@@ -1134,8 +1136,12 @@ template <cast::standard_integer_type T>
  * @brief Convert network address string to binary format.
  */
 template <network_address AddrIn>
+    requires(std::same_as<std::remove_cvref_t<AddrIn>, struct in_addr>
+        || std::same_as<std::remove_cvref_t<AddrIn>, struct in6_addr>)
 [[nodiscard]] inline auto inet_pton(std::int32_t af, std::string_view ip, AddrIn& dst) noexcept
     -> std::expected<void, std::error_code> {
+    constexpr std::int32_t expected_af = std::same_as<std::remove_cvref_t<AddrIn>, struct in_addr> ? AF_INET : AF_INET6;
+    if (af != expected_af) { return std::unexpected(make_error(EAFNOSUPPORT)); }
     if (ip.size() >= INET6_ADDRSTRLEN) { return std::unexpected(make_error(EINVAL)); }
     std::array<char, INET6_ADDRSTRLEN> buf {};
     std::copy_n(ip.data(), ip.size(), buf.data());
@@ -1176,7 +1182,7 @@ template <socket_option T>
     T optval {};
     socklen_t optlen { cast::static_converter<socklen_t> {}(sizeof(optval)) };
     return expect_result<error_style::posix>(::getsockopt(fd.native_handle(), level, optname, &optval, &optlen))
-        .and_then([optval](const auto&) noexcept { return expect_result<error_style::pthreads>(optval); });
+        .transform([optval](const auto&) noexcept { return optval; });
 }
 
 /**

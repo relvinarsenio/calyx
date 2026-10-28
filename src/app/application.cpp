@@ -185,8 +185,8 @@ struct NetworkMetadata {
     const std::string city    = raw.city.empty() ? "-" : raw.city;
     const std::string country = raw.country.empty() ? "-" : raw.country;
     const std::string isp     = (raw.asn != 0 && !raw.asOrganization.empty())
-            ? std::format("AS{} {}", raw.asn, raw.asOrganization)
-            : raw.asOrganization;
+        ? std::format("AS{} {}", raw.asn, raw.asOrganization)
+        : raw.asOrganization;
 
     return NetworkMetadata {
         .isp     = std::move(isp),
@@ -296,7 +296,7 @@ std::string build_zswap_secondary_info(const ZSwapStats& stats) {
     const auto page_size = get_page_size();
     const auto metrics   = std::to_array<std::tuple<std::string_view, std::uint64_t, std::string_view>>(
         { { "Spilled", stats.written_back, color::kCyan }, { "Rejected", stats.reject_reclaim_fail, color::kRed },
-              { "Capped", stats.pool_limit_hit, color::kRed } });
+            { "Capped", stats.pool_limit_hit, color::kRed } });
 
     return metrics | std::views::filter([](const auto& item) { return std::get<1>(item) > 0; })
         | std::views::transform([page_size](const auto& item) {
@@ -504,8 +504,6 @@ std::expected<void, std::string> Application::run(int argc, char* argv[]) {
         = dispatch_cli_request(requested, [this, &app_name]() { show_help(app_name); }, [this]() { show_version(); });
 
     if (cli_exit.has_value()) { return {}; }
-
-    scope_exit cleanup_guard { []() noexcept { cleanup_artifacts(); } };
 
     auto http = HttpClient::create();
     if (!http) { return std::unexpected(std::format("\n[!] HttpClient create failed: {}", http.error())); }

@@ -505,8 +505,9 @@ class UringTimeoutController {
     std::uint64_t last_recalc_completed_ = 0;
 
 public:
-    static constexpr std::uint64_t kTimerTag  = UINT64_MAX; ///< user_data sentinel for the timeout SQE.
-    static constexpr std::uint64_t kCancelTag = UINT64_MAX - 1; ///< user_data sentinel for the cancel SQE.
+    /** @note UINT64_MAX is reserved for liburing's legacy timeout completions. */
+    static constexpr std::uint64_t kTimerTag  = UINT64_MAX - 1; ///< user_data sentinel for the timeout SQE.
+    static constexpr std::uint64_t kCancelTag = UINT64_MAX - 2; ///< user_data sentinel for the cancel SQE.
 
     [[nodiscard]] std::chrono::nanoseconds get_cached_timeout(
         const metrics::LatencyHistogram& hist, std::uint64_t completed) noexcept {
@@ -556,7 +557,9 @@ class IoTracker {
     std::vector<std::uint16_t> retry_slots_ {};
     std::vector<std::uint16_t> free_slots_ {};
     std::vector<std::uint64_t> deltas_ {};
-    std::size_t retry_count_ = 0;
+    std::vector<std::uint8_t> pending_slots_ {};
+    std::size_t pending_count_ {};
+    std::size_t retry_count_ {};
     IoTrackerState state_ {};
     metrics::LatencyHistogram hist_ {};
 
@@ -578,6 +581,11 @@ public:
 
     [[nodiscard]] std::span<const std::uint16_t> get_free_slots(std::size_t limit) const noexcept;
     void consume_free_slots(std::size_t count) noexcept;
+
+    void mark_pending(std::uint16_t idx) noexcept;
+    void complete_pending(std::uint16_t idx) noexcept;
+    [[nodiscard]] std::span<const std::uint8_t> pending_slots() const noexcept { return pending_slots_; }
+    [[nodiscard]] std::size_t pending_count() const noexcept { return pending_count_; }
 
     [[nodiscard]] std::expected<void, UringError> queue_retry_slot(std::uint16_t idx) noexcept;
     [[nodiscard]] std::expected<std::uint16_t, UringError> resolve_cqe_slot(std::uint64_t tag) const noexcept;
@@ -619,6 +627,7 @@ class CompletionQueue {
     UringSharedState shared_state_;
     IoTracker& tracker_;
     std::vector<io_uring_cqe*> cqe_buffer_ {};
+    std::size_t pending_cancels_ {};
 
     [[nodiscard]] static bool is_retryable_wait_error(std::int32_t rc) noexcept;
 
