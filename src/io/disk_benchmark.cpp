@@ -77,15 +77,16 @@ public:
      */
     [[nodiscard]] static std::expected<IoFile, std::error_code> create(
         const std::string& path, bool& file_owned) {
-        return posix::file::open(path, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR)
-            .and_then([&file_owned](posix::file file) -> std::expected<IoFile, std::error_code> {
-                file_owned = true;
-                const auto direct { file.descriptor().set_direct(true) };
-                if (!direct && !posix::is_any_of(direct.error().value(), EINVAL, EOPNOTSUPP, ENOTSUP)) {
-                    return std::unexpected { direct.error() };
-                }
-                return IoFile { std::move(file) };
-            });
+        auto opened { posix::file::open(path, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR) };
+        if (!opened) { return std::unexpected { opened.error() }; }
+
+        file_owned = true;
+        const auto direct { opened->descriptor().set_direct(true) };
+        if (!direct && !posix::is_any_of(direct.error().value(), EINVAL, EOPNOTSUPP, ENOTSUP)) {
+            return std::unexpected { direct.error() };
+        }
+
+        return IoFile { std::move(*opened) };
     }
 
     [[nodiscard]] static std::expected<IoFile, std::error_code> open(const std::string& path) {
