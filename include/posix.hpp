@@ -13,8 +13,8 @@
 #include "scope.hpp"
 
 #include <algorithm>
-#include <array>
 #include <arpa/inet.h>
+#include <array>
 #include <bit>
 #include <cerrno>
 #include <chrono>
@@ -570,9 +570,7 @@ namespace sys_helpers {
 [[nodiscard]] inline auto get_system_entropy() noexcept -> std::pair<std::uint64_t, std::uint64_t> {
     const auto raw_addr { ::getauxval(AT_RANDOM) };
     std::array<std::uint64_t, 2> aux {};
-    if (raw_addr != 0) {
-        std::memcpy(aux.data(), std::bit_cast<const void*>(raw_addr), sizeof(aux));
-    }
+    if (raw_addr != 0) { std::memcpy(aux.data(), std::bit_cast<const void*>(raw_addr), sizeof(aux)); }
     const auto [aux_low, aux_high] { aux };
     using u_nanoseconds = std::chrono::duration<std::uint64_t, std::nano>;
     const auto time_ns {

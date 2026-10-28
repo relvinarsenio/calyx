@@ -189,11 +189,12 @@ static constexpr ArmPartEntry kCaviumParts[] = {
 
 static constexpr ArmPartEntry kQcomParts[] = {
     { 0x001, "Oryon" },
-    { 0x002, "Oryon-v2/v3" },
+    { 0x002, "Oryon-2" },
     { 0x00f, "Scorpion" },
     { 0x02d, "Scorpion" },
     { 0x04d, "Krait" },
     { 0x06f, "Krait" },
+    { 0x200, "Kryo" },
     { 0x201, "Kryo" },
     { 0x205, "Kryo" },
     { 0x211, "Kryo" },
@@ -219,6 +220,7 @@ static constexpr ArmPartEntry kNvidiaParts[] = {
     { 0x003, "Denver-2" },
     { 0x004, "Carmel" },
     { 0x010, "Olympus" },
+    { 0x011, "Rigel" },
     { 0xd4f, "Grace-C1" },
 };
 
@@ -287,13 +289,15 @@ static constexpr ArmPartEntry kAppleParts[] = {
     { 0x055, "M4-Pro-Performance" },
     { 0x058, "M4-Max-Efficiency" },
     { 0x059, "M4-Max-Performance" },
-    // --- ARMv9.2-A Latest generation (2024-2026 architectures) ---
-    { 0x060, "A18-Efficiency" },
-    { 0x061, "A18-Performance" },
+    // --- A18 Pro and M5 family cores ---
+    { 0x060, "A18-Pro-Efficiency" },
+    { 0x061, "A18-Pro-Performance" },
     { 0x062, "M5-Efficiency" },
     { 0x063, "M5-Performance" },
-    { 0x064, "A18-Pro-Efficiency" },
-    { 0x065, "A18-Pro-Performance" },
+    { 0x064, "M5-Pro-M-Core" },
+    { 0x065, "M5-Pro-Performance" },
+    { 0x068, "M5-Max-M-Core" },
+    { 0x069, "M5-Max-Performance" },
 };
 
 static constexpr ArmPartEntry kFaradayParts[] = {
@@ -334,6 +338,8 @@ static constexpr ArmPartEntry kHisiParts[] = {
     { 0xd01, "TaiShan-v110" },
     { 0xd02, "TaiShan-v120" },
     { 0xd03, "TaiShan-v130" },
+    { 0xd06, "Kunpeng-950" },
+    { 0xd22, "Kunpeng-920" },
     { 0xd40, "Cortex-A76" },
     { 0xd41, "Cortex-A77" },
 };
@@ -341,7 +347,8 @@ static constexpr ArmPartEntry kHisiParts[] = {
 static constexpr ArmPartEntry kAmpereParts[] = {
     { 0xac3, "Ampere-1" },
     { 0xac4, "Ampere-1a" },
-    { 0xac5, "Ampere-2" },
+    { 0xac5, "Ampere-1b" },
+    { 0xac7, "Ampere-1c" },
 };
 
 static constexpr ArmPartEntry kApmParts[] = {
@@ -398,6 +405,8 @@ static constexpr auto kArmImplementers = std::to_array<ArmImplEntry>({
  * @return std::optional<std::string> The name if found, otherwise std::nullopt.
  */
 inline constexpr auto lookup_arm_name = [](std::int32_t impl, std::int32_t part) -> std::optional<std::string> {
+    if (impl < 0 || impl > 0xff || part < 0 || part > 0xfff) { return std::nullopt; }
+
     auto impl_it = std::ranges::find_if(kArmImplementers, [impl](const auto& e) { return e.impl_id == impl; });
     if (impl_it == std::end(kArmImplementers)) { return std::nullopt; }
 
@@ -431,7 +440,8 @@ inline constexpr auto parse_cpuinfo_hex
     if (string_utils::starts_with_ic<"0x">(val_str)) { val_str.remove_prefix(2); }
     std::int32_t val = 0;
     auto [ptr, ec]   = std::from_chars(val_str.data(), val_str.data() + val_str.size(), val, 16);
-    return (ec == std::errc {}) ? std::optional { val } : std::nullopt;
+    return (ec == std::errc {} && ptr == val_str.data() + val_str.size() && val >= 0) ? std::optional { val }
+                                                                                      : std::nullopt;
 };
 
 /**
@@ -450,7 +460,7 @@ inline constexpr auto parse_midr_sysfs = []() -> std::optional<std::string> {
 
     std::uint64_t midr = 0;
     auto [ptr, ec]     = std::from_chars(val_str.data(), val_str.data() + val_str.size(), midr, 16);
-    if (ec != std::errc {}) { return std::nullopt; }
+    if (ec != std::errc {} || ptr != val_str.data() + val_str.size()) { return std::nullopt; }
 
     const std::int32_t impl = toInt((midr >> 24) & 0xFF);
     const std::int32_t part = toInt((midr >> 4) & 0xFFF);
@@ -471,7 +481,9 @@ inline constexpr auto resolve_arm_model_name = []() -> std::optional<std::string
     if (!cpuinfo.empty()) {
         const auto impl_opt = parse_cpuinfo_hex(cpuinfo, "CPU implementer");
         const auto part_opt = parse_cpuinfo_hex(cpuinfo, "CPU part");
-        if (impl_opt && part_opt) { return lookup_arm_name(*impl_opt, *part_opt); }
+        if (impl_opt && part_opt) {
+            if (auto name = lookup_arm_name(*impl_opt, *part_opt)) { return name; }
+        }
     }
 
     ///< @brief Strategy 2: read MIDR_EL1 register from sysfs (kernel ≥ 4.11)
