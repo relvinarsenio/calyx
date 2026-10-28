@@ -196,9 +196,8 @@ void print_success_row(const SpeedEntryResult& entry) {
 
     std::vector<double> values(std::max(runs.size(), 1uz));
 
-    std::ranges::transform(runs, values.begin(), [phase](const DiskIORunResult& run) {
-        return (run.*phase).bw_bytes_per_sec;
-    });
+    std::ranges::transform(
+        runs, values.begin(), [phase](const DiskIORunResult& run) { return (run.*phase).bw_bytes_per_sec; });
 
     std::ranges::sort(values);
 

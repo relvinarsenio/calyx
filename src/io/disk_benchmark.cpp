@@ -75,8 +75,7 @@ public:
      * @note A failed O_CREAT | O_DIRECT open can still create a directory entry.
      *       Keeping the same owned descriptor also permits buffered fallback safely.
      */
-    [[nodiscard]] static std::expected<IoFile, std::error_code> create(
-        const std::string& path, bool& file_owned) {
+    [[nodiscard]] static std::expected<IoFile, std::error_code> create(const std::string& path, bool& file_owned) {
         auto opened { posix::file::open(path, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR) };
         if (!opened) { return std::unexpected { opened.error() }; }
 

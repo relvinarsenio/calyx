@@ -167,9 +167,7 @@ private:
     /**
      * @brief Generates a 64-bit transaction nonce for echo request correlation and stale reply filtering.
      */
-    [[nodiscard]] static std::uint64_t generate_nonce() noexcept {
-        return generate_seed();
-    }
+    [[nodiscard]] static std::uint64_t generate_nonce() noexcept { return generate_seed(); }
 
     /**
      * @brief Computes 16-bit Internet Checksum with ones' complement carry folding (RFC 1071 Sec 4.1).
