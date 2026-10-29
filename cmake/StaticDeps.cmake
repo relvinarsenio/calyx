@@ -16,20 +16,20 @@ if(NPROC EQUAL 0)
 endif()
 
 # =============================================================================
-# Centralized 3rd-party dependency versions and SHA256 checksums
+# Centralized dependency versions, archive checksums, and immutable source revisions
 # =============================================================================
 set(ZLIB_DEP_VERSION     "1.3.2")
 set(ZLIB_DEP_HASH        "SHA256=bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16")
 
-set(LIBRESSL_DEP_VERSION "4.3.2")
-set(LIBRESSL_DEP_HASH    "SHA256=edf01aee24c65d69e6a9efcb9d44bcda682ff9d4f3bbbd95e794e1dfa90847b5")
+set(LIBRESSL_DEP_VERSION "4.4.0")
+set(LIBRESSL_DEP_HASH    "SHA256=7d02522ad5070b9adb32eb253ecabce181184a3750cf65abac0675ee908687c1")
 
-set(CURL_DEP_VERSION     "8.21.0")
-set(CURL_DEP_TAG         "8_21_0")
-set(CURL_DEP_HASH        "SHA256=aa1b66a70eace83dc624508745646c08ae561de512ab403adffb93ac87fc72e6")
+set(CURL_DEP_VERSION     "8.23.0")
+set(CURL_DEP_TAG         "8_23_0")
+set(CURL_DEP_HASH        "SHA256=8dadd7d2536a314f982ad05a651b713f426bf7d02cc2c76cffb9796f2218e6c5")
 
-set(GLAZE_DEP_VERSION    "7.8.4")
-set(GLAZE_DEP_HASH       "SHA256=65331a8f8ffa56a3c5990eb31119db8afc1cec0b48de57b4ebbc9c1286ea74a3")
+set(GLAZE_DEP_VERSION    "9.1.0")
+set(GLAZE_DEP_COMMIT     "43b175e7446862b84ed07b2e5f5138433777680e")
 
 set(LIBURING_DEP_VERSION "2.15")
 set(LIBURING_DEP_HASH    "SHA256=8d052f2622dcb3678cbaee5ff582a87572672a6c0a56533cdda5b65cb636120a")
@@ -246,8 +246,8 @@ message(CHECK_START "Fetching dependency: glaze")
 
 FetchContent_Declare(
     glaze
-    URL "https://github.com/stephenberry/glaze/archive/refs/tags/v${GLAZE_DEP_VERSION}.tar.gz"
-    URL_HASH "${GLAZE_DEP_HASH}"
+    GIT_REPOSITORY "https://github.com/stephenberry/glaze.git"
+    GIT_TAG "${GLAZE_DEP_COMMIT}"
 )
 FetchContent_MakeAvailable(glaze)
 message(CHECK_PASS "header-only JSON library (v${GLAZE_DEP_VERSION})")

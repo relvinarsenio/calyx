@@ -1,4 +1,5 @@
-cmake_minimum_required(VERSION 3.24)
+# Glaze 9.1.0 requires CMake 3.31.
+cmake_minimum_required(VERSION 3.31)
 
 # Fix FetchContent timestamp warning (CMP0135), LTO Policy (CMP0069), & return() argument check (CMP0140)
 cmake_policy(SET CMP0135 NEW)
@@ -182,12 +183,12 @@ endif()
 # =============================================================================
 # 5. Embedded Certificate Generation
 # =============================================================================
-set(CACERT_HASH "SHA256=86a1f3366afac7c6f8ae9f3c779ac221129328c43f0ab2b8817eb2f362a5025c")
+set(CACERT_HASH "SHA256=beb7e6dfe6499926e52c075c27bcfbe4c957f8609c575b3860273ae2806f63eb")
 
 message(CHECK_START "Downloading CA certificate bundle")
 
 file(DOWNLOAD 
-    "https://curl.se/ca/cacert-2026-05-14.pem" 
+    "https://curl.se/ca/cacert-2026-10-20.pem" 
     "${CMAKE_BINARY_DIR}/cacert.pem"
     EXPECTED_HASH ${CACERT_HASH}
     TLS_VERIFY ON
