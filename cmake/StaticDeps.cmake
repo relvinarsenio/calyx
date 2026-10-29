@@ -246,8 +246,7 @@ message(CHECK_START "Fetching dependency: glaze")
 
 FetchContent_Declare(
     glaze
-    GIT_REPOSITORY "https://github.com/stephenberry/glaze.git"
-    GIT_TAG "${GLAZE_DEP_COMMIT}"
+    URL "https://github.com/stephenberry/glaze/archive/${GLAZE_DEP_COMMIT}.tar.gz"
 )
 FetchContent_MakeAvailable(glaze)
 message(CHECK_PASS "header-only JSON library (v${GLAZE_DEP_VERSION})")

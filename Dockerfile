@@ -16,7 +16,6 @@ RUN --mount=type=cache,id=apk-${TARGETARCH},target=/var/cache/apk,sharing=locked
     coreutils \
     g++ \
     gcc \
-    git \
     libstdc++ \
     libstdc++-dev \
     linux-headers \

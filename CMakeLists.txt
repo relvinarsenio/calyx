@@ -183,7 +183,7 @@ endif()
 # =============================================================================
 # 5. Embedded Certificate Generation
 # =============================================================================
-set(CACERT_HASH "SHA256=beb7e6dfe6499926e52c075c27bcfbe4c957f8609c575b3860273ae2806f63eb")
+set(CACERT_HASH "SHA256=796f1389bfea13c0ed78f663b765baaff54a508e5483786bd6ece73c5e3e3cbe")
 
 message(CHECK_START "Downloading CA certificate bundle")
 
