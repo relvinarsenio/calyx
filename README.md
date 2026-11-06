@@ -68,35 +68,34 @@ bash <(curl -fsL https://calyx.pages.dev/run)
 
 ## Building from Source
 
-You can build a fully static binary with Docker.
-
-> [!IMPORTANT]
-> The `build-static.sh` script uses Docker for a consistent build.
-> Manual host builds may fail or behave differently depending on the build environment.
+Calyx uses a small C++ build driver to orchestrate the Docker-based static build. CMake remains responsible for configuring the application and its static dependencies; the build driver replaces the former shell orchestration script.
 
 ### Requirements
-*   **OS**: Linux
-*   **Arch**: `x86_64` or `aarch64`
-*   **Kernel**: 5.10 or newer
-*   **Docker**: 20.10+ (23.0+ recommended)
+* **OS**: Linux
+* **Arch**: `x86_64` or `aarch64`
+* **Docker**: 20.10+ with BuildKit support
+* **C++ compiler**: a compiler with C++20 support (used only to bootstrap the build driver)
+* **Docker Buildx**: required when targeting a platform different from the host
 
 ### Steps
-1.  Clone:
-    ```bash
-    git clone https://github.com/relvinarsenio/calyx.git
-    cd calyx
-    ```
-2.  Build:
-    ```bash
-    chmod +x build-static.sh
-    ./build-static.sh
-    ```
 
-The binary lands at `./dist/calyx`. Run it:
-```bash
-./dist/calyx
-```
+1. Clone:
+   ```bash
+   git clone https://github.com/relvinarsenio/calyx.git
+   cd calyx
+   ```
+2. Bootstrap the build driver:
+   ```bash
+   c++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow -o nob nob.cpp
+   ```
+3. Build:
+   ```bash
+   ./nob
+   ```
 
+The build driver automatically rebuilds itself when `nob.cpp` changes. The resulting static binary is written to `./dist/calyx`.
+
+Use `./nob --help` to see the available options. For example, `--fresh-build` clears only the CMake build cache, `--rebuild-image` rebuilds the toolchain image and clears project caches, `--update-image` pulls the latest builder image, and `--platform linux/arm64` selects an explicit target architecture. `--clean` removes Calyx-related Docker resources without pruning unrelated Docker images.
 ---
 
 ## Example Output

@@ -6,11 +6,11 @@
 
 # Enforce minimum toolchain versions supporting ISO C++23 core features
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 20)
-    message(FATAL_ERROR "❌ Clang 20+ required for C++23 features. Detected: Clang ${CMAKE_CXX_COMPILER_VERSION}.\nPlease use Docker: ./build-static.sh")
+    message(FATAL_ERROR "❌ Clang 20+ required for C++23 features. Detected: Clang ${CMAKE_CXX_COMPILER_VERSION}.\nBuild with the repository build driver: ./nob")
 endif()
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 14)
-    message(FATAL_ERROR "❌ GCC 14+ required for C++23 features. Detected: GCC ${CMAKE_CXX_COMPILER_VERSION}.\nPlease use Docker: ./build-static.sh")
+    message(FATAL_ERROR "❌ GCC 14+ required for C++23 features. Detected: GCC ${CMAKE_CXX_COMPILER_VERSION}.\nBuild with the repository build driver: ./nob")
 endif()
 
 if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
@@ -64,7 +64,7 @@ block(SCOPE_FOR VARIABLES PROPAGATE HAS_STD_PRINT HAS_STD_EXPECTED HAS_STD_FORMA
 endblock()
 
 if(NOT HAS_STD_PRINT OR NOT HAS_STD_EXPECTED OR NOT HAS_STD_FORMAT)
-    message(FATAL_ERROR "${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION} lacks standard library C++23 <print>, <expected>, or <format> support.\nPlease use Docker: ./build-static.sh")
+    message(FATAL_ERROR "${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION} lacks standard library C++23 <print>, <expected>, or <format> support.\nBuild with the repository build driver: ./nob")
 endif()
 
 log_section("Compiler & C++23 Standard Library")

@@ -44,11 +44,11 @@ jobs:
         env:
           DOCKERFILE_CHANGED: ${{ steps.changed-files.outputs.any_changed }}
         run: |
-          chmod +x build-static.sh
+          c++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow -o nob nob.cpp
           if [[ "$DOCKERFILE_CHANGED" == "true" ]]; then
-            ./build-static.sh --platform ${{ matrix.platform }} --rebuild-image
+            ./nob --platform ${{ matrix.platform }} --rebuild-image
           else
-            ./build-static.sh --platform ${{ matrix.platform }}
+            ./nob --platform ${{ matrix.platform }}
           fi
 
       - name: Upload Artifact
